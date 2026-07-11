@@ -187,6 +187,16 @@ resolve_nvcc() {   # -> path to an actual CUDA compiler binary, or ""
     return 0
 }
 
+_nvcc_probe() {   # nvcc [extra flags...] -> 0 if a trivial .cu compiles
+    local nv="$1"; shift
+    local t; t="$(mktemp -d "${TMPDIR:-/tmp}/nvcc-probe.XXXXXX")" || return 1
+    echo 'int main(){return 0;}' > "$t/p.cu"
+    local rc=0
+    "$nv" "$@" -c "$t/p.cu" -o "$t/p.o" >/dev/null 2>&1 || rc=1
+    rm -rf "$t"
+    return $rc
+}
+
 step_llama() {
     if command -v llama-server >/dev/null 2>&1 && [ ! -x bin/llama-server ]; then
         ok "llama-server already on PATH: $(command -v llama-server) — skipping build (run './install.sh llama --force' to build in-tree anyway)"
@@ -226,14 +236,51 @@ step_llama() {
         fi
     fi
 
+    # nvcc caps the host gcc major it accepts (e.g. CUDA 13.3 -> gcc <= 15) and
+    # bleeding-edge distros ship newer. Probe; if the system compiler is
+    # rejected, hunt for a compat g++-XX, else offer nvcc's documented
+    # -allow-unsupported-compiler escape (explicit opt-in, never silent).
+    local ccbin="" cuda_extra=""
+    if [ "$cuda_flag" = "-DGGML_CUDA=ON" ] && ! _nvcc_probe "$nvcc"; then
+        say "llama: nvcc rejects the system gcc (host compiler too new for this CUDA toolkit) — probing for a compatible one"
+        local cand
+        for cand in ${VINKONA_NVCC_CCBIN:-} g++-15 g++-14 g++-13 g++-12; do
+            command -v "$cand" >/dev/null 2>&1 || continue
+            if _nvcc_probe "$nvcc" -ccbin "$(command -v "$cand")"; then
+                ccbin="$(command -v "$cand")"; break
+            fi
+        done
+        if [ -n "$ccbin" ]; then
+            ok "compatible host compiler: $ccbin"
+        elif _nvcc_probe "$nvcc" -allow-unsupported-compiler; then
+            warn "no CUDA-compatible host compiler found (checked g++-15..g++-12)."
+            warn "  1. Install a compat gcc, then re-run this task"
+            warn "     (Fedora: sudo dnf install gcc14-c++   Ubuntu: sudo apt install g++-14 — then it's picked up automatically)"
+            warn "  2. Or force the build with nvcc's -allow-unsupported-compiler (works in practice for llama.cpp; NVIDIA says 'at your own risk')"
+            if [ "${VINKONA_NVCC_ALLOW_UNSUPPORTED:-}" = 1 ]; then
+                cuda_extra="-allow-unsupported-compiler"
+            elif [ -t 0 ] || [ "${VINKONA_ASSUME_TTY:-}" = 1 ]; then
+                printf "Force with -allow-unsupported-compiler? [Y/n]: "
+                local a; read -r a
+                case "$a" in n*|N*) die "aborted — install a compat gcc (option 1) and re-run" ;; esac
+                cuda_extra="-allow-unsupported-compiler"
+            else
+                die "aborted — install a compat gcc (option 1), or set VINKONA_NVCC_ALLOW_UNSUPPORTED=1 to force"
+            fi
+        else
+            die "nvcc can't compile even with -allow-unsupported-compiler — install a compat gcc (Fedora: gcc14-c++, Ubuntu: g++-14) and re-run"
+        fi
+    fi
+
     local src="$VINKONA_VAR/build/llama.cpp"
     say "llama: cloning/updating llama.cpp into $src"
     if [ -d "$src/.git" ]; then git -C "$src" pull --ff-only; else
         mkdir -p "$VINKONA_VAR/build"
         git clone --depth 1 https://github.com/ggml-org/llama.cpp "$src"
     fi
-    say "llama: building llama-server ($cuda_flag${nvcc:+, nvcc: $nvcc}) — this takes a while"
+    say "llama: building llama-server ($cuda_flag${nvcc:+, nvcc: $nvcc}${ccbin:+, host: $ccbin}${cuda_extra:+, forced: $cuda_extra}) — this takes a while"
     cmake -S "$src" -B "$src/build" $cuda_flag ${nvcc:+-DCMAKE_CUDA_COMPILER="$nvcc"} \
+          ${ccbin:+-DCMAKE_CUDA_HOST_COMPILER="$ccbin"} ${cuda_extra:+-DCMAKE_CUDA_FLAGS="$cuda_extra"} \
           -DBUILD_SHARED_LIBS=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=ON >/dev/null
     cmake --build "$src/build" --target llama-server -j"$(nproc)"
     mkdir -p bin
