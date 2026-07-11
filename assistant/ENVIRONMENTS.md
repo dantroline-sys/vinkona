@@ -6,7 +6,7 @@ conflict with the core stack (and with each other), so they're kept strictly apa
 | venv          | runs in          | what lives in it |
 |---------------|------------------|------------------|
 | `vinkona_env`   | host + container | The core Python services: the **cascade** (voice loop), **ASR** (faster-whisper) + soxr + rnnoise, the **memory** system, the **research worker**, and the **config** web UI. *(Formerly `personaplex_env` — renamed; Vinkona is a local cascade now, not PersonaPlex.)* |
-| `orpheus_env` | container        | **Orpheus** TTS (on vLLM). |
+| `orpheus_env` | container        | **Orpheus** TTS (on vLLM). Built on Python 3.10–3.13 — vLLM's dependency chain (numba) doesn't support newer interpreters yet, so `install_orpheus.sh` picks a suitable one (and offers to install `python3.13` if the system only has a newer python). |
 | `neutts_env`  | container        | **NeuTTS** (alternative TTS engine). |
 
 The llama.cpp LM launchers — `serve_fast_lm.sh`, `serve_big_lm.sh`, `serve_big_lm2.sh`,

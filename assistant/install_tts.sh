@@ -20,9 +20,10 @@ vk_require_tools espeak-ng || exit 1
 echo "== Creating isolated venv: $ENV_DIR =="
 # Recreate from scratch if there's no working activate script (a partial venv
 # from a failed run, or python3-venv missing, leaves a dir with no bin/activate).
+# Override the interpreter with PYTHON=python3.13 if a NeuTTS dep lags yours.
 if [ ! -f "$ENV_DIR/bin/activate" ]; then
     rm -rf "$ENV_DIR"
-    python3 -m venv "$ENV_DIR" || true
+    "${PYTHON:-python3}" -m venv "$ENV_DIR" || true
 fi
 if [ ! -f "$ENV_DIR/bin/activate" ]; then
     echo "ERROR: failed to create venv at $ENV_DIR."

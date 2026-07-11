@@ -44,6 +44,24 @@ export PATH="$VINKONA_ROOT/bin:$PATH"
 
 mkdir -p "$VINKONA_VAR/cache" "$VINKONA_VAR/tmp"
 
+# ── vk_pick_python: newest CPython 3.x on PATH within [min,max] minors ──────
+# Usage:  PY="$(vk_pick_python 10 13 || true)"   # empty if none qualifies
+# Prefers plain python3 when it qualifies (fewest surprises), then scans
+# newest-first. For stacks whose deps cap the interpreter (vLLM/numba).
+vk_pick_python() {
+    local min="$1" max="$2" x m
+    if command -v python3 >/dev/null 2>&1; then
+        m="$(python3 -c 'import sys; print(sys.version_info[1])' 2>/dev/null)" || m=""
+        if [ -n "$m" ] && [ "$m" -ge "$min" ] && [ "$m" -le "$max" ]; then
+            echo python3; return 0
+        fi
+    fi
+    for ((x=max; x>=min; x--)); do
+        command -v "python3.$x" >/dev/null 2>&1 && { echo "python3.$x"; return 0; }
+    done
+    return 1
+}
+
 # ── vk_require_tools: check for system tools, offer to install the missing ──
 # Usage:   vk_require_tools gcc make "libtoolize:libtool" "g++:gcc-c++|g++" || exit 1
 # Spec:    tool[:package] — package may be "dnfname|aptname" where they differ.
