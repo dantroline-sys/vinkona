@@ -177,6 +177,16 @@ step_models() {
     esac
 }
 
+resolve_nvcc() {   # -> path to an actual CUDA compiler binary, or ""
+    # Always returns 0: an empty result is data, not an error (set -e safety).
+    if command -v nvcc >/dev/null 2>&1; then command -v nvcc; return 0; fi
+    local c
+    for c in /usr/local/cuda/bin/nvcc "${CUDA_HOME:-}/bin/nvcc" "${CUDA_PATH:-}/bin/nvcc"; do
+        [ -x "$c" ] && { echo "$c"; return 0; }
+    done
+    return 0
+}
+
 step_llama() {
     if command -v llama-server >/dev/null 2>&1 && [ ! -x bin/llama-server ]; then
         ok "llama-server already on PATH: $(command -v llama-server) — skipping build (run './install.sh llama --force' to build in-tree anyway)"
@@ -184,16 +194,47 @@ step_llama() {
     fi
     vk_require_tools git cmake gcc "g++:gcc-c++|g++" make \
         || die "building llama.cpp needs the C++ toolchain + cmake (see above)"
+
+    # CUDA needs TWO things: the driver (nvidia-smi, to run) and the toolkit's
+    # nvcc (to build). A bare /usr/local/cuda directory proves neither.
+    local cuda_flag="-DGGML_CUDA=OFF" nvcc=""
+    if [ -n "$(driver_cuda)" ]; then
+        nvcc="$(resolve_nvcc)"
+        if [ -z "$nvcc" ]; then
+            say "llama: NVIDIA driver detected, but no CUDA compiler (nvcc) — required to BUILD GPU support"
+            if vk_require_tools "nvcc:cuda-toolkit|nvidia-cuda-toolkit"; then
+                nvcc="$(resolve_nvcc)"
+            fi
+        fi
+        if [ -n "$nvcc" ]; then
+            cuda_flag="-DGGML_CUDA=ON"
+        else
+            warn "no nvcc available — refusing to silently build a CPU-only llama-server for a GPU machine."
+            warn "Your options:"
+            warn "  1. Install the CUDA toolkit, then re-run this task"
+            warn "     (Fedora: dnf install cuda-toolkit from NVIDIA's cuda repo — https://developer.nvidia.com/cuda-downloads;"
+            warn "      Ubuntu/distrobox: apt install nvidia-cuda-toolkit)"
+            warn "  2. Run this task INSIDE the CUDA distrobox (its image ships nvcc) — the LM services must then run there too"
+            warn "  3. Already have a llama-server binary on this machine? Put it on PATH, symlink it into ./bin/, or set LLAMA_SERVER=/path"
+            if [ -t 0 ] || [ "${VINKONA_ASSUME_TTY:-}" = 1 ]; then
+                printf "Build CPU-ONLY anyway (slow for chat-size models)? [y/N]: "
+                local a; read -r a
+                case "$a" in y*|Y*) ;; *) die "aborted — GPU build needs nvcc (see options above)" ;; esac
+            else
+                die "aborted — GPU build needs nvcc (see options above)"
+            fi
+        fi
+    fi
+
     local src="$VINKONA_VAR/build/llama.cpp"
     say "llama: cloning/updating llama.cpp into $src"
     if [ -d "$src/.git" ]; then git -C "$src" pull --ff-only; else
         mkdir -p "$VINKONA_VAR/build"
         git clone --depth 1 https://github.com/ggml-org/llama.cpp "$src"
     fi
-    local cuda_flag="-DGGML_CUDA=OFF"
-    if command -v nvcc >/dev/null 2>&1 || [ -d /usr/local/cuda ]; then cuda_flag="-DGGML_CUDA=ON"; fi
-    say "llama: building llama-server ($cuda_flag) — this takes a while"
-    cmake -S "$src" -B "$src/build" $cuda_flag -DBUILD_SHARED_LIBS=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=ON >/dev/null
+    say "llama: building llama-server ($cuda_flag${nvcc:+, nvcc: $nvcc}) — this takes a while"
+    cmake -S "$src" -B "$src/build" $cuda_flag ${nvcc:+-DCMAKE_CUDA_COMPILER="$nvcc"} \
+          -DBUILD_SHARED_LIBS=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=ON >/dev/null
     cmake --build "$src/build" --target llama-server -j"$(nproc)"
     mkdir -p bin
     cp "$src/build/bin/llama-server" bin/
