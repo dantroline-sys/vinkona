@@ -173,6 +173,9 @@ stop() {
   pkill -f 'llm_server\.py|llama-server|serve_tunnel\.sh|8765:127\.0\.0\.1:8765' 2>/dev/null
   # Reap the box services + vLLM's detached EngineCore/Worker so no GPU memory leaks.
   reap_box 'tts_server\.py|cascade_server\.py|config_server\.py|research_worker\.py|VLLM::|EngineCore'
+  # If anything above died holding the pty in a raw state (the old reaper
+  # self-kill did exactly this), put the terminal back so typing stays visible.
+  [ -t 0 ] && stty sane 2>/dev/null
   echo "stopped."
 }
 

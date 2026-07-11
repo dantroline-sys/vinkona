@@ -28,7 +28,7 @@ import importlib.util
 import json
 import re
 import ssl
-import sys
+import subprocess
 import time
 import types
 import uuid
@@ -165,6 +165,9 @@ class CascadeServer:
         # One conversation at a time: the web text chat is only available while no
         # audio session is running, and vice versa.
         self.active_kind = None
+        # Degraded-mode notices (e.g. TLS fell back to plain ws://) — shown in
+        # the web UI via /api/status and the trace feed.
+        self.startup_warnings: list = []
         # Heartbeat file the idle research worker reads to know when to stand down.
         try:
             self._activity_path = self._cfgmod.activity_path(
@@ -224,7 +227,8 @@ class CascadeServer:
     async def handle_status(self, _req):
         """Is a conversation in progress?  The text-chat page polls this to gate itself."""
         return web.json_response({"active": self.active_kind is not None,
-                                  "kind": self.active_kind})
+                                  "kind": self.active_kind,
+                                  "warnings": self.startup_warnings})
 
     async def handle_chat_page(self, _req):
         """Serve the web text-chat UI (intranet-reachable, same origin as the WS)."""
@@ -1498,14 +1502,30 @@ def main():
     if ssl_dir:
         cert, key = Path(ssl_dir) / "cert.pem", Path(ssl_dir) / "key.pem"
         if not (cert.exists() and key.exists()):
-            _log(f"TLS is enabled (server.ssl_dir = {ssl_dir!r}) but {cert} / {key} don't exist yet.")
-            _log("Easiest fix: re-run './install.sh core' — it generates a self-signed pair. Or by hand:")
-            _log(f"  mkdir -p {ssl_dir} && openssl req -x509 -newkey rsa:4096 "
-                 f"-keyout {key} -out {cert} -days 3650 -nodes -subj /CN=vinkona")
-            _log('(Or set server.ssl_dir to "" for plain ws:// — LAN only; the access token still gates connections.)')
-            sys.exit(1)
-        ssl_ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-        ssl_ctx.load_cert_chain(certfile=str(cert), keyfile=str(key))
+            # Self-heal: generate the self-signed pair right here (same command
+            # ./install.sh core runs). Only if that fails do we fall back to
+            # plain ws:// — running beats refusing to start, but never silently:
+            # it's logged AND pushed to the web UI's Live feed via the trace.
+            _log(f"TLS is on (server.ssl_dir = {ssl_dir!r}) but {cert} is missing — generating a self-signed pair ...")
+            try:
+                Path(ssl_dir).mkdir(parents=True, exist_ok=True)
+                subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:4096",
+                                "-keyout", str(key), "-out", str(cert),
+                                "-days", "3650", "-nodes", "-subj", "/CN=vinkona"],
+                               check=True, capture_output=True, timeout=60)
+                _log(f"created {cert} (self-signed, 10 years) — TLS is on")
+            except Exception as e:
+                warning = ("TLS certs are missing and could not be generated — running UNENCRYPTED ws:// "
+                           "(the access token still gates connections, but audio is in the clear on your LAN). "
+                           "Fix: re-run './install.sh core', or create certs/ per the README.")
+                _log(f"cert generation failed ({e}).")
+                _log(warning)
+                trace.write({"ts": time.time(), "session": "startup",
+                             "kind": "warning", "text": warning})
+                srv.startup_warnings.append(warning)
+        if cert.exists() and key.exists():
+            ssl_ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+            ssl_ctx.load_cert_chain(certfile=str(cert), keyfile=str(key))
     host, port = cfg["server"]["host"], cfg["server"]["port"]
     _log(f"cascade server on {'https' if ssl_ctx else 'http'}://{host}:{port}  tts={cfg['tts']['url']}")
     web.run_app(app, host=host, port=port, ssl_context=ssl_ctx, print=None)
