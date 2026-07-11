@@ -114,16 +114,21 @@ reference example of writing a host.
 
 ## Getting started
 
-Each component has a single installer at its root — with an uninstaller:
+```bash
+./install.sh        # interactive checklist — pick off tasks until everything is green
+./install.sh all    # or just run every missing piece in order
+./install.sh status # see where you stand;  ./install.sh uninstall  to undo
+```
 
-- **Assistant:** `cd assistant && ./install.sh all` — venvs, dependencies,
-  models, an in-tree llama.cpp build. Details in
-  [`assistant/README.md`](assistant/README.md) and
-  [`assistant/ENVIRONMENTS.md`](assistant/ENVIRONMENTS.md); run the stack with
-  the `vinkona.sh` tmux orchestrator.
-- **Knowledge host:** `cd knowledge-host && ./install.sh` — venv + config,
-  then `./ingest.sh` and `./run.sh`. Details in
-  [`knowledge-host/README.md`](knowledge-host/README.md). Large third-party
+The top-level installer drives one installer per component (each also usable
+directly, with its own uninstall):
+
+- **Assistant** ([`assistant/README.md`](assistant/README.md),
+  [`assistant/ENVIRONMENTS.md`](assistant/ENVIRONMENTS.md)) — venvs,
+  dependencies, models, an in-tree llama.cpp build. Run the stack with the
+  `vinkona.sh` tmux orchestrator.
+- **Knowledge host** ([`knowledge-host/README.md`](knowledge-host/README.md))
+  — venv + config, then `./ingest.sh` and `./run.sh`. Large third-party
   datasets used by optional importers are documented in
   [`knowledge-host/external/README.md`](knowledge-host/external/README.md) and
   are downloaded separately.
