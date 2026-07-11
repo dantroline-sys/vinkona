@@ -152,10 +152,14 @@ case "$cmd" in
         ;;
     attach)
         resolve_services
-        if runs_assistant; then
+        if runs_assistant && tmux has-session -t vinkona 2>/dev/null; then
             (cd assistant && ./vinkona.sh attach)
-        else
+        elif tmux has-session -t "$KB_SESSION" 2>/dev/null; then
+            runs_assistant && say "the assistant session isn't running (./vinkona.sh start) — attaching the knowledge host instead"
             exec tmux attach -t "$KB_SESSION"
+        else
+            echo "nothing is running — './vinkona.sh start' first"
+            exit 1
         fi
         ;;
     services)

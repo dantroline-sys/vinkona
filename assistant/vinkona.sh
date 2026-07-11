@@ -79,12 +79,18 @@ reap_box() {                               # pattern -> thorough kill INSIDE the
   # GPU, then SIGKILL any stragglers.  Run for box services so a restart can't collide
   # with an orphan still holding VRAM.
   #
-  # The pattern travels as an ENV VAR, not interpolated into the script text:
-  # otherwise the reaper shell's own command line contains the pattern, pkill -f
-  # matches it, and the reaper kills itself mid-job (bash then vomits the whole
-  # multi-line command as a 'Terminated' notice).
-  local pat="$1"
-  distrobox enter "$BOX" -- env VK_REAP_PAT="$pat" bash -lc '
+  # The pattern must never match its own text: distrobox wraps the command in
+  # intermediate shells whose cmdlines contain everything we pass (env vars
+  # included), so pkill -f would find the pattern there and kill the reaper
+  # itself mid-job (bash then vomits the multi-line command as a 'Terminated'
+  # notice and can leave the pty raw). The fix is the classic pgrep trick:
+  # bracket the first character of every alternation branch — '[t]ts_server'
+  # still matches tts_server processes, but the literal text '[t]ts_server'
+  # can never match the regex '[t]ts_server'.
+  local pat safe
+  pat="$1"
+  safe="$(printf '%s' "$pat" | sed -E 's/(^|\|)(.)/\1[\2]/g')"
+  distrobox enter "$BOX" -- env VK_REAP_PAT="$safe" bash -lc '
     pkill -TERM -f "$VK_REAP_PAT" 2>/dev/null
     for i in 1 2 3 4 5 6 7 8; do pgrep -f "$VK_REAP_PAT" >/dev/null 2>&1 || break; sleep 1; done
     pkill -KILL -f "$VK_REAP_PAT" 2>/dev/null
@@ -131,7 +137,15 @@ restart_one() {
 start() {
   command -v tmux >/dev/null || { echo "tmux is not installed (host)."; exit 1; }
   if tmux has-session -t "$SESSION" 2>/dev/null; then
-    echo "session '$SESSION' is already running — use './vinkona.sh restart' or 'attach'."; exit 0
+    # A live stack has windows named after services; a corpse (interrupted
+    # start, or a hand-made 'vinkona' session) doesn't — replace it rather
+    # than refusing to start against a session full of dead bash panes.
+    if tmux list-windows -t "$SESSION" -F '#W' 2>/dev/null \
+         | grep -qxE 'fast_lm|big_lm|big_lm2|embed|tunnel|tts|cascade|config|research|monitor|watchdog'; then
+      echo "session '$SESSION' is already running — use './vinkona.sh restart' or 'attach'."; exit 0
+    fi
+    echo "found a stale '$SESSION' tmux session with no service windows — replacing it"
+    tmux kill-session -t "$SESSION" 2>/dev/null
   fi
   mkdir -p "$LOGS/control"
   # Wake the container ONCE, alone, before the box windows launch: firing four
@@ -166,6 +180,49 @@ start() {
     extra="monitor + watchdog"
   fi
   echo "started '$SESSION' (${#SERVICES[@]} services + $extra).  Attach: ./vinkona.sh attach"
+}
+
+_http() {   # url -> up / not answering (port-probe fallback when curl is absent)
+  local url="$1" port
+  if command -v curl >/dev/null 2>&1; then
+    if curl -ksf -m 2 "$url" >/dev/null 2>&1; then echo "up            ($url)"; else echo "not answering ($url)"; fi
+  else
+    port="${url##*:}"; port="${port%%/*}"
+    if (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null; then exec 3>&- 2>/dev/null; echo "listening     (:$port)"; else echo "not listening (:$port)"; fi
+  fi
+}
+
+_port() {   # port -> listening / not
+  if (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null; then exec 3>&- 2>/dev/null; echo "up            (:$1)"; else echo "not listening (:$1)"; fi
+}
+
+svc_check() {   # service name -> one-line state
+  case "$1" in
+    fast_lm)  _http "http://127.0.0.1:11435/health" ;;
+    big_lm)   _http "http://127.0.0.1:11438/health" ;;
+    big_lm2)  _http "http://127.0.0.1:11440/health" ;;
+    embed)    _http "http://127.0.0.1:11437/health" ;;
+    tts)      _port 11436 ;;
+    cascade)  _port 8998 ;;
+    config)   _port 8090 ;;
+    research) if distrobox enter "$BOX" -- pgrep -f '[r]esearch_worker\.py' >/dev/null 2>&1; then
+                echo "up            (process)"; else echo "not running"; fi ;;
+    tunnel)   if pgrep -f '[s]erve_tunnel\.sh|8765:127\.0\.0\.1:8765' >/dev/null 2>&1; then
+                echo "up            (process)"; else echo "not running   (fine if tools.tunnel is off)"; fi ;;
+    *)        echo "?" ;;
+  esac
+}
+
+status() {
+  if ! tmux has-session -t "$SESSION" 2>/dev/null; then
+    echo "session '$SESSION' not running"; return 1
+  fi
+  echo "session '$SESSION' up (mode: $(read_mode))"
+  local s name where cmd killpat
+  for s in "${SERVICES[@]}"; do
+    IFS='|' read -r name where cmd killpat <<<"$s"
+    printf '  %-9s %s\n' "$name" "$(svc_check "$name")"
+  done
 }
 
 stop() {
@@ -248,7 +305,7 @@ case "${1:-}" in
             elif [ -n "${2:-}" ]; then set_services; restart_one "$2"                 # one service
             else set_services; stop; sleep 2; start; fi ;;
   attach)   tmux attach -t "$SESSION" ;;
-  status)   tmux list-windows -t "$SESSION" 2>/dev/null || echo "session '$SESSION' not running" ;;
+  status)   set_services; status ;;
   mode)     read_mode ;;
   plan)     set_services; for s in "${SERVICES[@]}"; do IFS='|' read -r n w c k <<<"$s"
               printf '%-9s [%s]  %s\n' "$n" "$w" "$(pane_cmd "$n" "$w" $c)"; done ;;
