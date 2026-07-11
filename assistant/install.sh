@@ -182,9 +182,8 @@ step_llama() {
         ok "llama-server already on PATH: $(command -v llama-server) — skipping build (run './install.sh llama --force' to build in-tree anyway)"
         [ "${1:-}" = "--force" ] || return 0
     fi
-    for tool in git cmake gcc g++ make; do
-        command -v "$tool" >/dev/null 2>&1 || die "building llama.cpp needs $tool — install your distro's C++ toolchain + cmake"
-    done
+    vk_require_tools git cmake gcc "g++:gcc-c++|g++" make \
+        || die "building llama.cpp needs the C++ toolchain + cmake (see above)"
     local src="$VINKONA_VAR/build/llama.cpp"
     say "llama: cloning/updating llama.cpp into $src"
     if [ -d "$src/.git" ]; then git -C "$src" pull --ff-only; else

@@ -144,14 +144,12 @@ else
   say "stdlib-only install (no pip packages requested)"
 fi
 
-# ── 4. system binaries we cannot pip-install (warn, never block) ────────────
+# ── 4. system binaries we cannot pip-install (offer, never block) ───────────
 if [ "$WITH_PDF" -eq 1 ]; then
-  if ! command -v tesseract >/dev/null 2>&1 || ! command -v ocrmypdf >/dev/null 2>&1; then
-    warn "OCR fallback for scanned PDFs needs 'tesseract' and 'ocrmypdf' on PATH."
-    warn "  Fedora/RHEL: sudo dnf install tesseract ocrmypdf"
-    warn "  Debian/Ubuntu: sudo apt install tesseract-ocr ocrmypdf"
-    warn "  (PDFs with a real text layer ingest fine without it.)"
-  fi
+  vk_require_tools "tesseract:tesseract|tesseract-ocr" ocrmypdf || {
+    warn "OCR fallback unavailable — scanned PDFs with no text layer will be skipped."
+    warn "(PDFs with a real text layer ingest fine without it; re-run once installed.)"
+  }
 fi
 
 # ── 5. seed config.toml once (never clobber an existing one) ────────────────

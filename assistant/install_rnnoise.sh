@@ -16,12 +16,7 @@ echo "== Checking build tools =="
 # autogen.sh needs libtoolize (shipped by the 'libtool' package), NOT the
 # standalone /usr/bin/libtool binary (which is a separate 'libtool-bin' package
 # on Debian/Ubuntu) — so check for libtoolize, which is what actually runs.
-for tool in git gcc make autoconf automake libtoolize pkg-config; do
-    command -v "$tool" >/dev/null 2>&1 || {
-        pkg="$tool"
-        [ "$tool" = "libtoolize" ] && pkg="libtool"
-        echo "Missing: $tool — install it first (e.g. dnf install $pkg / apt install $pkg)"; exit 1; }
-done
+vk_require_tools git gcc make autoconf automake "libtoolize:libtool" pkg-config || exit 1
 
 echo "== Cloning / updating xiph/rnnoise =="
 if [ -d "$BUILD_DIR/.git" ]; then

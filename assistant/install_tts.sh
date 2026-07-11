@@ -15,15 +15,7 @@ source "$SCRIPT_DIR/env.sh"          # in-tree caches/tmp/PATH — see env.sh
 ENV_DIR="$SCRIPT_DIR/neutts_env"
 
 echo "== System dep: espeak-ng (G2P) =="
-if ! command -v espeak-ng >/dev/null 2>&1; then
-    if command -v apt >/dev/null 2>&1; then
-        sudo apt install -y espeak-ng
-    elif command -v dnf >/dev/null 2>&1; then
-        sudo dnf install -y espeak-ng
-    else
-        echo "Please install espeak-ng with your package manager."; exit 1
-    fi
-fi
+vk_require_tools espeak-ng || exit 1
 
 echo "== Creating isolated venv: $ENV_DIR =="
 # Recreate from scratch if there's no working activate script (a partial venv
