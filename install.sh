@@ -31,7 +31,7 @@ desc() {
     case "$1" in
         assistant-core) echo "assistant core (vinkona_env: cascade, ASR, memory, research, config UI)" ;;
         tts)            echo "TTS engine (orpheus or neutts, own venv; needs CUDA for orpheus)" ;;
-        models)         echo "LM weights (default GGUFs into assistant/Models/)" ;;
+        models)         echo "LM weights (download defaults from HF, or select models you copied in)" ;;
         llama)          echo "llama-server binary (llama.cpp — system PATH or built in-tree)" ;;
         knowledge-host) echo "knowledge host (.venv + config; add format flags for pdf/epub/zim)" ;;
     esac

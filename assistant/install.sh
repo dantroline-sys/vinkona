@@ -98,7 +98,83 @@ step_tts() {
     esac
 }
 
-step_models() { bash fetch_models.sh; }
+_ggufs_in_models() { find -L Models -maxdepth 2 -name '*.gguf' 2>/dev/null | sort; }
+
+_set_tier_model() {  # tier filename — update config/config.json (seed it first if absent)
+    mkdir -p config
+    [ -f config/config.json ] || cp config/config.example.json config/config.json
+    python3 - "$1" "$2" <<'PY'
+import json, sys
+tier, fname = sys.argv[1], sys.argv[2]
+path = "config/config.json"
+cfg = json.load(open(path))
+cfg.setdefault(tier, {})["model"] = fname
+json.dump(cfg, open(path, "w"), indent=2)
+print(f"  config: {tier}.model = {fname}")
+PY
+}
+
+_assign_tiers() {
+    local files=() f i c tier
+    while IFS= read -r f; do [ -n "$f" ] && files+=("$f"); done <<<"$(_ggufs_in_models)"
+    [ "${#files[@]}" -gt 0 ] || die "no .gguf files in Models/ — copy/symlink some in, or pick the download option"
+    echo "Assign models to tiers (Enter keeps the current config value):"
+    i=1; for f in "${files[@]}"; do echo "    $i) $(basename "$f")"; i=$((i+1)); done
+    for tier in fast_lm big_lm embed_lm; do
+        printf "  %s = 1-%d (Enter = keep current): " "$tier" "${#files[@]}"
+        read -r c
+        [ -z "$c" ] && continue
+        case "$c" in *[!0-9]*) warn "not a number — keeping current $tier"; continue ;; esac
+        if [ "$c" -ge 1 ] && [ "$c" -le "${#files[@]}" ]; then
+            _set_tier_model "$tier" "$(basename "${files[$((c-1))]}")"
+        else
+            warn "out of range — keeping current $tier"
+        fi
+    done
+    ok "tiers assigned — sanity-check with: ./serve_fast_lm.sh --dry-run"
+    echo "  (embed_lm must be an embedding model, e.g. nomic-embed — a chat GGUF won't work there)"
+}
+
+step_models() {
+    local existing tty=0 def c
+    existing="$(_ggufs_in_models)"
+    { [ -t 0 ] || [ "${VINKONA_ASSUME_TTY:-}" = 1 ]; } && tty=1
+    if [ "$tty" -ne 1 ]; then
+        # Non-interactive: deterministic — respect models that are already there.
+        if [ -n "$existing" ]; then ok "models already present in Models/ — skipping download"; return 0; fi
+        bash fetch_models.sh; return
+    fi
+    echo "Model weights — the LM tiers load GGUFs from Models/ (symlinks welcome)."
+    if [ -n "$existing" ]; then
+        echo "Already in Models/:"
+        echo "$existing" | sed 's|^Models/|    |'
+    fi
+    echo "  1) download the default set from Hugging Face (fast 3B ≈2 GB, big 32B ≈20 GB, embed ≈260 MB)"
+    echo "  2) use models already in Models/ (assign them to the fast/big/embed tiers)"
+    echo "  3) link .gguf files from another folder into Models/, then assign tiers"
+    echo "  s) skip for now"
+    def=1; [ -n "$existing" ] && def=2
+    printf "choice [%s]: " "$def"
+    read -r c; c="${c:-$def}"
+    case "$c" in
+        1) bash fetch_models.sh ;;
+        2) _assign_tiers ;;
+        3) printf "folder containing your .gguf files: "
+           read -r src; src="${src/#\~/$HOME}"
+           [ -d "$src" ] || die "not a folder: $src"
+           local n=0
+           for f in "$src"/*.gguf; do
+               [ -e "$f" ] || continue
+               ln -sf "$(cd "$(dirname "$f")" && pwd)/$(basename "$f")" Models/
+               n=$((n+1))
+           done
+           [ "$n" -gt 0 ] || die "no .gguf files found in $src"
+           ok "linked $n model file(s) into Models/"
+           _assign_tiers ;;
+        s|S) warn "skipped — run './install.sh models' again anytime" ;;
+        *) die "unknown choice: $c" ;;
+    esac
+}
 
 step_llama() {
     if command -v llama-server >/dev/null 2>&1 && [ ! -x bin/llama-server ]; then
