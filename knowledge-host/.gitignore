@@ -18,3 +18,7 @@ config.toml
 # personal documents are downloaded separately — see external/README.md.
 external/*
 !external/README.md
+
+# In-tree everything (see env.sh): indexes/kb/caches/tmp and the reranker GGUF.
+/var/
+/models/

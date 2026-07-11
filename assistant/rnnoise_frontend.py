@@ -20,6 +20,8 @@ Usage:
 """
 
 import ctypes
+import os
+import pathlib
 import numpy as np
 
 try:
@@ -46,8 +48,23 @@ def _fit(x: np.ndarray, n: int) -> np.ndarray:
     return np.concatenate([x, np.zeros(n - len(x), dtype=x.dtype)])
 
 
+def _find_librnnoise() -> str:
+    """The in-tree install (install_rnnoise.sh → var/rnnoise/lib) wins; the
+    VINKONA_RNNOISE_LIB env var overrides; a system-wide librnnoise.so is the
+    fallback so a distro package still works."""
+    override = os.environ.get("VINKONA_RNNOISE_LIB")
+    if override:
+        return override
+    here = pathlib.Path(__file__).resolve().parent
+    for candidate in (here / "var" / "rnnoise" / "lib" / "librnnoise.so",
+                      here / "var" / "rnnoise" / "lib64" / "librnnoise.so"):
+        if candidate.exists():
+            return str(candidate)
+    return "librnnoise.so"
+
+
 class RNNoiseFrontend:
-    def __init__(self, in_rate: int = 24000, lib_path: str = "librnnoise.so"):
+    def __init__(self, in_rate: int = 24000, lib_path: str | None = None):
         if soxr is None:
             raise RuntimeError(
                 f"soxr is required for resampling but failed to import: {_SOXR_IMPORT_ERROR}. "
@@ -56,7 +73,7 @@ class RNNoiseFrontend:
         self.in_rate = in_rate
         self._up = _RNNOISE_RATE // in_rate  # 2 for 24 kHz
 
-        self._lib = ctypes.CDLL(lib_path)
+        self._lib = ctypes.CDLL(lib_path or _find_librnnoise())
         # DenoiseState *rnnoise_create(RNNModel *model);  (model = NULL for default)
         self._lib.rnnoise_create.restype = ctypes.c_void_p
         self._lib.rnnoise_create.argtypes = [ctypes.c_void_p]

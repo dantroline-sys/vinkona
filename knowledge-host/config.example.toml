@@ -8,8 +8,8 @@
 #   lance  -> LanceDB IVF-PQ + FTS, on-disk & mmap'd. Scales to a full Wikipedia
 #             snapshot (10-40M chunks). Needs:  pip install lancedb
 backend   = "sqlite"
-db_path   = "~/.cache/vinkona-knowledge/index.db"
-lance_dir = "~/.cache/vinkona-knowledge/lance"
+db_path   = "var/index.db"     # relative paths anchor to this folder (in-tree by default)
+lance_dir = "var/lance"        # lance tables for the lance backend
 
 # ── service ───────────────────────────────────────────────────────────────-─
 host = "127.0.0.1"      # localhost only; never on the LAN

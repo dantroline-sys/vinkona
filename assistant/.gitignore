@@ -38,3 +38,9 @@ Models/*
 
 # Per-service stdout logs + restart-request control files (runtime, written by vinkona.sh).
 logs/
+
+# In-tree everything (see env.sh): caches/builds/temp, built binaries, TLS certs.
+var/
+bin/
+certs/
+moshi_src/

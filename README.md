@@ -114,16 +114,26 @@ reference example of writing a host.
 
 ## Getting started
 
-Each component has its own README and install scripts:
+Each component has a single installer at its root — with an uninstaller:
 
-- **Assistant:** [`assistant/README.md`](assistant/README.md) — Python venvs
-  ([`assistant/ENVIRONMENTS.md`](assistant/ENVIRONMENTS.md)), model downloads,
-  the `vinkona.sh` tmux orchestrator, and the Flutter client.
-- **Knowledge host:** [`knowledge-host/README.md`](knowledge-host/README.md) —
-  install, ingest your documents (and optionally a Wikipedia ZIM), and serve.
-  Large third-party datasets used by optional importers are documented in
+- **Assistant:** `cd assistant && ./install.sh all` — venvs, dependencies,
+  models, an in-tree llama.cpp build. Details in
+  [`assistant/README.md`](assistant/README.md) and
+  [`assistant/ENVIRONMENTS.md`](assistant/ENVIRONMENTS.md); run the stack with
+  the `vinkona.sh` tmux orchestrator.
+- **Knowledge host:** `cd knowledge-host && ./install.sh` — venv + config,
+  then `./ingest.sh` and `./run.sh`. Details in
+  [`knowledge-host/README.md`](knowledge-host/README.md). Large third-party
+  datasets used by optional importers are documented in
   [`knowledge-host/external/README.md`](knowledge-host/external/README.md) and
   are downloaded separately.
+
+**Filesystem guarantee:** everything Vinkona writes — config, memory, models,
+indexes, caches, logs, temp files — stays inside this folder tree; nothing
+lands in `~/.cache`, `/usr/local`, or anywhere else (see each component's
+`env.sh`). Reads can come from wherever you point them. `./install.sh
+uninstall` in each component removes what was installed; deleting the folder
+removes every trace.
 
 Rough hardware guide: the live voice path (fast LM + embeddings + TTS) fits on
 one consumer GPU; the big LM prefers a second GPU but is off the latency path,

@@ -73,7 +73,7 @@ class OpsRunner:
     def __init__(self, cfg: dict):
         self.cfg = cfg
         self.config_path = cfg.get("_config_path")
-        ctrl = cfg.get("control_dir") or "."
+        ctrl = cfg.get("control_dir") or str(Path(__file__).resolve().parent.parent / "var")
         self.logdir = Path(ctrl).expanduser() / "ops-logs"
         self.logdir.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()

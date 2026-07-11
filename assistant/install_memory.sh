@@ -10,6 +10,7 @@
 # downloads it along with the chat models).  Then run ./serve_embed.sh.
 set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/env.sh"          # in-tree caches/tmp/PATH — see env.sh
 DIR="${MODELS_DIR:-$SCRIPT_DIR/Models}"
 EMBED="nomic-embed-text-v1.5.f16.gguf"      # must match config embed_lm.model
 

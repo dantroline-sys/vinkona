@@ -83,29 +83,44 @@ sub-150 ms-TTFT fast LM, sentence-by-sentence TTS, and barge-in via VAD.
 
 ## Setup
 
-### 1. Python environments
+### 1. Install
 
 ```bash
-bash install.sh            # core venv (vinkona_env): cascade, ASR, memory, research, config UI
-bash install_orpheus.sh    # Orpheus TTS venv (vLLM)   — or install_tts.sh / install_rnnoise.sh etc.
+./install.sh               # core: vinkona_env + cascade/ASR/memory deps + rnnoise (in-tree)
+./install.sh tts orpheus   # the TTS engine, in its own venv (or: tts neutts)
+./install.sh models        # download the default GGUFs into Models/
+./install.sh llama         # build llama.cpp's llama-server into ./bin (if not on PATH)
+# or all four at once:  ./install.sh all
+# later:                ./install.sh status | uninstall [--with-models] [--purge]
 ```
 
-Three venvs are used because the TTS engines need conflicting torch/vLLM
+Each step is also a standalone script (`install_orpheus.sh`,
+`install_rnnoise.sh`, `fetch_models.sh`, …) — `install.sh` orchestrates them.
+Separate venvs are used because the TTS engines need conflicting torch/vLLM
 versions — see [`ENVIRONMENTS.md`](ENVIRONMENTS.md).
+
+**Filesystem guarantee:** everything the assistant writes stays inside this
+folder — live config, personas and memory in `config/`, weights in `Models/`,
+logs in `logs/`, caches/builds/temp in `var/`, binaries in `bin/`, venvs in
+`*_env/`. That includes third-party stacks: HuggingFace downloads, torch/vLLM
+compile caches and temp files are pinned in-tree by [`env.sh`](env.sh), which
+every service sources. Reads can come from anywhere (e.g. symlink `Models/` to
+your weight store). The only exceptions are system packages you install
+yourself (espeak-ng, C toolchain) and tmux's own socket.
+`./install.sh uninstall` removes what was installed and keeps your data;
+`--purge` removes the data too; deleting the folder removes every trace.
 
 ### 2. Models
 
 GGUF weights live in `Models/` (git-ignored; symlink to wherever you store
 them). Pick your tiers in the config UI's Models tab or `config.py` DEFAULTS —
 each tier (fast/big/embed) has its own model, GPU, and context settings.
-`fetch_models.sh` grabs a working starter set.
 
 ### 3. Configuration
 
-Live config is user data and never committed: copy
-`config/config.example.json` → `config/config.json` and
-`config/personas.example.json` → `config/personas.json`, or just edit
-everything in the web UI (`./serve_config.sh`, then http://localhost:8090).
+`./install.sh` seeds `config/config.json` + `config/personas.json` from the
+examples (they're user data, never committed). Edit them directly or in the
+web UI (`./serve_config.sh`, then http://localhost:8090).
 
 ### 4. Run everything
 

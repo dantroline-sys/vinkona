@@ -9,5 +9,6 @@
 #   ./serve_big_lm2.sh                  # uses config/config.json (big_lm2 block, inheriting big_lm)
 #   ./serve_big_lm2.sh --dry-run        # print the llama-server command
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/env.sh"          # in-tree caches/tmp/PATH — see env.sh
 cd "$SCRIPT_DIR"
 exec python3 llm_server.py --tier big_lm2 --config "$SCRIPT_DIR/config/config.json" "$@"

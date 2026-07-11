@@ -21,8 +21,51 @@
 #
 # Re-running is safe and incremental: an existing venv is reused and pip just
 # adds anything new.  config.toml is seeded once and never overwritten.
+#
+# Maintenance commands:
+#   ./install.sh status          # what's installed and how big the data is
+#   ./install.sh uninstall       # remove the venv, caches and reranker model
+#                 --purge        #   ALSO delete the knowledge base (var/) and
+#                                #   config.toml — asks for confirmation first
+#
+# Everything this script and the host write lives INSIDE this folder (see
+# env.sh): .venv, var/ (indexes, kb.db, caches, tmp), models/, config.toml.
 set -euo pipefail
 cd "$(dirname "$0")"
+source ./env.sh          # in-tree var/ caches + tmp — see env.sh
+
+# ── maintenance commands (before flag parsing) ──────────────────────────────
+if [ "${1:-}" = "status" ]; then
+  echo "Knowledge host @ $(pwd)"
+  [ -d .venv ]  && echo "  venv     .venv ($(du -sh .venv 2>/dev/null | cut -f1))" || echo "  venv     not installed"
+  [ -d var ]    && echo "  data     var/ ($(du -sh var 2>/dev/null | cut -f1)) — indexes, kb.db, caches" || echo "  data     none yet"
+  [ -d models ] && echo "  models   models/ ($(du -sh models 2>/dev/null | cut -f1))"
+  [ -f config.toml ] && echo "  config   config.toml (yours, kept on uninstall)" || echo "  config   not seeded yet"
+  echo "  All of the above lives inside this folder — nothing is written elsewhere."
+  exit 0
+fi
+if [ "${1:-}" = "uninstall" ]; then
+  purge=0; [ "${2:-}" = "--purge" ] && purge=1
+  rm -rf .venv models var/cache var/tmp
+  find . -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null || true
+  echo "removed: .venv, models/, var/cache, var/tmp (software + caches)"
+  if [ "$purge" -eq 1 ]; then
+    echo ""
+    echo "WARNING: --purge deletes the KNOWLEDGE BASE itself (var/: index.db, kb.db,"
+    echo "the distilled cards — potentially days of ingestion) and config.toml."
+    printf "Type 'purge' to confirm: "
+    read -r answer
+    if [ "$answer" = "purge" ]; then
+      rm -rf var config.toml
+      echo "knowledge base and config purged"
+    else
+      echo "skipped purge — var/ and config.toml kept"
+    fi
+  else
+    echo "kept: var/ (your knowledge base) and config.toml — './install.sh uninstall --purge' removes them too"
+  fi
+  exit 0
+fi
 
 # ── defaults ────────────────────────────────────────────────────────────────
 PYTHON="${PYTHON:-python3}"

@@ -19,8 +19,8 @@ DEFAULTS = {
     "backend": "sqlite",
 
     # sqlite backend: the index database.  lance backend: see lance_dir.
-    "db_path": "~/.cache/vinkona-knowledge/index.db",
-    "lance_dir": "~/.cache/vinkona-knowledge/lance",
+    "db_path": "var/index.db",
+    "lance_dir": "var/lance",
     "lance_table": "kb",
     # lance only: don't build the IVF-PQ ANN index below this many rows (PQ needs >=256
     # to train, and flat/exact scan is instant on a small table) — avoids a spurious
@@ -54,7 +54,7 @@ DEFAULTS = {
     # ── metacognitive distillation (spec §3,§4,§7-9) ─────────────────────────
     # The durable structured KB (canonical nodes / cards / typed edges) — the
     # "card/graph tier" source of truth, kept separate from the raw chunk store.
-    "kb_path": "~/.cache/vinkona-knowledge/kb.db",
+    "kb_path": "var/kb.db",
     # The offline distiller's LM (the big reasoning model; GPU-backed, grammar-
     # constrained JSON).  Defaults to Vinkona's big_lm tier.
     "distill_url": "http://127.0.0.1:11438",
@@ -88,7 +88,7 @@ DEFAULTS = {
     # check the lease and pause that stage if held — distil yields the 4090 (lm_fast)
     # during a live chat; verify yields the 3090 (lm_big) during Vinkona's research.
     # Held = file exists AND float(contents) > now; missing/expired/unparseable = free.
-    # Resolved as: $VINKONA_CONTROL_DIR > control_dir > ~/Vinkona/logs/control.
+    # Resolved as: $VINKONA_CONTROL_DIR > control_dir > ../assistant/logs/control (monorepo sibling).
     "control_dir": "",
     # Output budget per chunk.  Multi-concept JSON overruns a small cap and gets
     # truncated mid-array (=> unparseable); 3072 comfortably fits a dense chunk
@@ -142,7 +142,7 @@ DEFAULTS = {
     # containment-validated (must resolve under this root), so the web can pick blessed subtrees
     # but never point the crawler outside them.  Leave empty to manage library_sources by hand.
     "library_root": "",
-    "library_db": "~/.cache/vinkona-knowledge/library.db",   # its own FTS index (separate file)
+    "library_db": "var/library.db",   # its own FTS index (separate file)
     # folder → collection map (a bare key matches a path SEGMENT, a glob the whole path;
     # first match wins).  Unmapped docs take their top folder name under the root.
     #   TOML:  [library_collections]\n  fiction = "fiction"\n  papers = "science"
@@ -685,16 +685,27 @@ def load_config(path: str | None = None) -> dict:
 
     cfg["extensions"] = [e.lower() if e.startswith(".") else "." + e.lower()
                          for e in cfg["extensions"]]
+
+    # Path resolution: ~ expands; RELATIVE paths anchor to the knowledge-host
+    # root (this package's parent), never the caller's cwd — so the defaults
+    # ("var/…") land inside this tree no matter where the process starts, and
+    # an absolute path in config.toml is honoured verbatim.
+    root = Path(__file__).resolve().parent.parent
+    def _abspath(v: str) -> str:
+        return str(root / Path(v).expanduser())   # Path join: absolute rhs wins
+
     for k in _PATH_KEYS:
-        cfg[k] = str(Path(cfg[k]).expanduser())
+        cfg[k] = _abspath(cfg[k])
     if cfg["zim_path"]:
-        cfg["zim_path"] = str(Path(cfg["zim_path"]).expanduser())
+        cfg["zim_path"] = _abspath(cfg["zim_path"])
     if cfg.get("research_solved_dir"):
-        cfg["research_solved_dir"] = str(Path(cfg["research_solved_dir"]).expanduser())
+        cfg["research_solved_dir"] = _abspath(cfg["research_solved_dir"])
     if cfg.get("library_db"):
-        cfg["library_db"] = str(Path(cfg["library_db"]).expanduser())
+        cfg["library_db"] = _abspath(cfg["library_db"])
     if cfg.get("library_root"):
-        cfg["library_root"] = str(Path(cfg["library_root"]).expanduser())
-    cfg["library_sources"] = [str(Path(s).expanduser()) for s in cfg.get("library_sources", [])]
-    cfg["sources"] = [str(Path(s).expanduser()) for s in cfg["sources"]]
+        cfg["library_root"] = _abspath(cfg["library_root"])
+    if cfg.get("control_dir"):
+        cfg["control_dir"] = _abspath(cfg["control_dir"])
+    cfg["library_sources"] = [_abspath(s) for s in cfg.get("library_sources", [])]
+    cfg["sources"] = [_abspath(s) for s in cfg["sources"]]
     return cfg

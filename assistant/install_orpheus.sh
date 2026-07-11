@@ -11,6 +11,7 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/env.sh"          # in-tree caches/tmp/PATH — see env.sh
 ENV_DIR="$SCRIPT_DIR/orpheus_env"
 
 echo "== Creating isolated venv: $ENV_DIR =="

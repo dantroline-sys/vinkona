@@ -8,6 +8,7 @@
 #   ./serve_research.sh            # poll the queue forever
 #   ./serve_research.sh --once     # drain what's queued and exit
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/env.sh"          # in-tree caches/tmp/PATH — see env.sh
 source "$SCRIPT_DIR/vinkona_env/bin/activate"
 cd "$SCRIPT_DIR"
 exec python research_worker.py --config "$SCRIPT_DIR/config/config.json" "$@"

@@ -5,6 +5,7 @@
 #
 #   ./serve_config.sh           then open http://127.0.0.1:8090
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/env.sh"          # in-tree caches/tmp/PATH — see env.sh
 source "$SCRIPT_DIR/vinkona_env/bin/activate"
 cd "$SCRIPT_DIR"
 exec python config_server.py --config "$SCRIPT_DIR/config/config.json"

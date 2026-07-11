@@ -11,6 +11,7 @@
 # falls back to the in-process heuristic reranker.
 set -euo pipefail
 cd "$(dirname "$0")"
+source ./env.sh          # in-tree var/ caches + tmp — see env.sh
 
 HOST="${HOST:-127.0.0.1}"
 PORT="${PORT:-11439}"                 # next to the embed server on 11437; 11436=tts, 11438=big_lm

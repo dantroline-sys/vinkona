@@ -7,6 +7,7 @@
 #   ./adjudicate.sh --watch         # keep draining as distillation adds candidates
 set -euo pipefail
 cd "$(dirname "$0")"
+source ./env.sh          # in-tree var/ caches + tmp — see env.sh
 PY=python3
 if [ -x ".venv/bin/python3" ]; then PY=".venv/bin/python3"; fi
 ARGS=()

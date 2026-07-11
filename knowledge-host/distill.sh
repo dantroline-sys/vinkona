@@ -7,6 +7,7 @@
 #   ./distill.sh --watch --interval 60   # poll every 60s (default 30)
 set -euo pipefail
 cd "$(dirname "$0")"
+source ./env.sh          # in-tree var/ caches + tmp — see env.sh
 
 # Prefer the virtualenv built by install.sh; fall back to system python3.
 PY=python3

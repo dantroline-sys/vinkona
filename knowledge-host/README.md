@@ -33,9 +33,12 @@ quality lever at encyclopedia scale.
 ## Quick start
 
 ```bash
-cp config.example.toml config.toml      # set sources, backend, embed_url
-# (optional, for fast dense + scale)
-pip install numpy                        # or: pip install lancedb pyarrow pymupdf ...
+# 0) install — builds .venv, seeds config.toml, runs the offline smoke test
+./install.sh                             # stdlib+numpy (sqlite backend)
+./install.sh --all                       # + every parser (pdf/epub/html/zim) + lance
+./install.sh --pdf --epub                # or pick the formats your collection has
+
+# edit config.toml: sources, backend, embed_url …
 
 # 1) ingest your documents (incremental; only new/changed files are processed)
 ./ingest.sh                              # crawls config's `sources`
@@ -44,7 +47,17 @@ pip install numpy                        # or: pip install lancedb pyarrow pymup
 
 # 2) serve the query tool
 ./run.sh                                 # http://127.0.0.1:8771
+
+# later: ./install.sh status | uninstall [--purge]
 ```
+
+**Filesystem guarantee:** everything the host writes stays inside this folder —
+indexes and the knowledge base in `var/`, caches and temp in `var/cache` +
+`var/tmp`, the reranker model in `models/`, your settings in `config.toml`
+(see `env.sh`). Reads (`sources`, `zim_path`) can point anywhere. Relative
+paths in config resolve against this folder, absolute paths are honoured.
+`./install.sh uninstall` removes the software; `--purge` also removes the
+knowledge base; deleting the folder removes every trace.
 
 The embed endpoint (nomic at `127.0.0.1:11437`, shared with Vinkona's memory
 store) is **optional**: if it's down, ingestion and search run **sparse-only**

@@ -6,6 +6,7 @@
 #   ./reset.sh -y         # skip the confirmation prompt
 set -euo pipefail
 cd "$(dirname "$0")"
+source ./env.sh          # in-tree var/ caches + tmp — see env.sh
 
 # Prefer the virtualenv built by install.sh; fall back to system python3.
 PY=python3

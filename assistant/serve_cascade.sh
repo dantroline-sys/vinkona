@@ -12,6 +12,7 @@
 #
 # All settings come from config/config.json.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/env.sh"          # in-tree caches/tmp/PATH — see env.sh
 source "$SCRIPT_DIR/vinkona_env/bin/activate"
 
 # Real libcuda for faster-whisper / ctranslate2 CUDA, same as serve.sh.

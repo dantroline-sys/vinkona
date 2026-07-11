@@ -252,7 +252,7 @@ def run(kb, embedder, cfg, *, gold_path: str, retriever: str = "current_path",
 
 def _write_artifact(cfg, run_id, metrics, pairs):
     out = cfg.get("eval_out_dir") or ""
-    d = Path(out).expanduser() if out else (Path(cfg.get("control_dir") or ".") / "eval-runs")
+    d = Path(out).expanduser() if out else (Path(cfg.get("control_dir") or "var") / "eval-runs")
     try:
         d.mkdir(parents=True, exist_ok=True)
         per_query = [{"id": r.get("id"), "category": r.get("category"),

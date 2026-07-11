@@ -15,6 +15,7 @@
 #   ./serve_tunnel.sh
 set -u
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/env.sh"          # in-tree caches/tmp/PATH — see env.sh
 cd "$SCRIPT_DIR"
 
 # Line 1: connection params (tab-separated).  Lines 2+: one "-L" forward spec each

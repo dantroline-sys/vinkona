@@ -8,6 +8,7 @@
 #   ./serve_embed.sh                    # uses config/config.json
 #   ./serve_embed.sh --dry-run          # print the llama-server command
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/env.sh"          # in-tree caches/tmp/PATH — see env.sh
 cd "$SCRIPT_DIR"
 
 # Optional HARD memory ceiling (complements the vinkona.sh watchdog): if VINKONA_EMBED_MEMMAX is

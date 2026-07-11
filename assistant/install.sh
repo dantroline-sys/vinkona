@@ -1,457 +1,166 @@
 #!/bin/bash
-# =============================================================================
-# Vinkona PersonaPlex Installer — Linux/CUDA Edition
-# Supports: Fedora (bare metal) and Ubuntu (including cuda distrobox)
+# Vinkona assistant — installer / uninstaller.
 #
-# Recommended Ubuntu container: cuda:12.6.3-devel-ubuntu24.04
-#   distrobox create --image nvidia/cuda:12.6.3-devel-ubuntu24.04 --name vinkona-cuda
-#   distrobox enter vinkona-cuda
+# Everything this script (and the stack it installs) writes stays INSIDE this
+# folder tree: venvs, model weights, caches, builds, logs, config. No sudo, no
+# /usr/local, no ~/.cache. See env.sh for how that's enforced, and the README's
+# "Filesystem guarantee" section for the full contract.
 #
-# Rust mode replaces personaplex_server.py entirely — the moshi-backend binary
-# handles WebRTC signaling, audio pipeline, and CUDA inference natively.
-# Python mode uses personaplex_server.py and is simpler to debug.
-# =============================================================================
-
+# Usage:
+#   ./install.sh                   # core: vinkona_env + cascade/ASR/memory deps + rnnoise
+#   ./install.sh tts orpheus       # Orpheus TTS in its own venv (vLLM; needs CUDA)
+#   ./install.sh tts neutts        # NeuTTS in its own venv
+#   ./install.sh models            # download the default GGUFs into Models/
+#   ./install.sh llama             # build llama.cpp's llama-server into ./bin
+#   ./install.sh all               # core + tts orpheus + models (+ llama if absent)
+#   ./install.sh status            # what's installed and how big it is
+#   ./install.sh uninstall         # remove everything generated (venvs, var/, bin/)
+#                 --with-models    #   also delete downloaded weights in Models/
+#                 --purge          #   ALSO delete user data (config/, logs/) — asks first
+#
+# Components are also standalone scripts (install_asr.sh, install_orpheus.sh,
+# install_rnnoise.sh, fetch_models.sh, …) — this orchestrates them in the right
+# order. Re-running any step is safe and incremental.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-MODEL_DIR="$SCRIPT_DIR/Models/personaplex-7b-v1-raw"
-HF_REPO="nvidia/personaplex-7b-v1"
-MOSHI_SRC="$SCRIPT_DIR/moshi_src"
-OS=""
+source "$SCRIPT_DIR/env.sh"          # in-tree caches/tmp/PATH — see env.sh
+cd "$SCRIPT_DIR"
 
-# ── Terminal colours ─────────────────────────────────────────────────────────
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
-CYAN='\033[0;36m'; BOLD='\033[1m'; RESET='\033[0m'
+CYAN='\033[0;36m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; RESET='\033[0m'
+say()  { echo -e "${CYAN}==>${RESET} $*"; }
+ok()   { echo -e "${GREEN}ok:${RESET}  $*"; }
+warn() { echo -e "${YELLOW}warning:${RESET} $*" >&2; }
+die()  { echo -e "${RED}error:${RESET} $*" >&2; exit 1; }
 
-info()    { echo -e "${CYAN}[INFO]${RESET}  $*"; }
-success() { echo -e "${GREEN}[OK]${RESET}    $*"; }
-warn()    { echo -e "${YELLOW}[WARN]${RESET}  $*"; }
-die()     { echo -e "${RED}[FATAL]${RESET} $*" >&2; exit 1; }
+usage() { sed -n '2,/^set /p' "$0" | sed -n 's/^#\{1,\} \{0,1\}//p'; exit "${1:-0}"; }
 
-# ── OS detection ─────────────────────────────────────────────────────────────
-detect_os() {
-    if grep -qi "fedora" /etc/os-release 2>/dev/null; then
-        OS="fedora"
-    elif grep -qi "ubuntu\|debian" /etc/os-release 2>/dev/null; then
-        OS="ubuntu"
-    else
-        die "Unsupported OS. This script supports Fedora and Ubuntu/Debian."
+# ── steps ────────────────────────────────────────────────────────────────────
+
+step_core() {
+    say "core: virtualenv vinkona_env"
+    if [ ! -f vinkona_env/bin/activate ]; then
+        rm -rf vinkona_env
+        python3 -m venv vinkona_env || die "venv creation failed — install python3-venv / python3-virtualenv first"
     fi
-    info "Detected OS: $OS"
+    say "core: python dependencies (requirements.txt — includes torch, first run is a big download)"
+    ./vinkona_env/bin/pip install --upgrade pip -q
+    ./vinkona_env/bin/pip install -r requirements.txt
+    say "core: librnnoise (built and installed in-tree)"
+    bash install_rnnoise.sh
+    say "core: seeding live config (never overwrites an existing one)"
+    mkdir -p config
+    [ -f config/config.json ]   || cp config/config.example.json   config/config.json
+    [ -f config/personas.json ] || cp config/personas.example.json config/personas.json
+    ok "core installed — ASR models download into var/cache on first use"
 }
 
-# Unified package install — callers use package names for the detected OS.
-pkg_install() {
-    case "$OS" in
-        fedora) sudo dnf install -y "$@" ;;
-        ubuntu) sudo apt-get install -y "$@" ;;
+step_tts() {
+    local engine="${1:-orpheus}"
+    case "$engine" in
+        orpheus) bash install_orpheus.sh ;;
+        neutts)  bash install_tts.sh ;;
+        *) die "unknown TTS engine: $engine (orpheus|neutts)" ;;
     esac
 }
 
-# ── Environment checks ────────────────────────────────────────────────────────
-check_root() {
-    if [[ "$EUID" -eq 0 ]]; then
-        die "Do not run as root. Use a regular user with sudo access."
-    fi
-}
+step_models() { bash fetch_models.sh; }
 
-check_nvidia() {
-    if ! command -v nvidia-smi &>/dev/null; then
-        die "nvidia-smi not found. Ensure NVIDIA drivers are installed (or that " \
-            "GPU access is configured for this container)."
+step_llama() {
+    if command -v llama-server >/dev/null 2>&1 && [ ! -x bin/llama-server ]; then
+        ok "llama-server already on PATH: $(command -v llama-server) — skipping build (run './install.sh llama --force' to build in-tree anyway)"
+        [ "${1:-}" = "--force" ] || return 0
     fi
-    info "NVIDIA driver: $(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -1)"
-    info "GPU(s) found:  $(nvidia-smi --query-gpu=name --format=csv,noheader | tr '\n' '|' | sed 's/|$//')"
-}
-
-# ── CUDA toolkit ──────────────────────────────────────────────────────────────
-# In the cuda:12.6.3-devel-ubuntu24.04 distrobox image nvcc is pre-installed.
-# On bare-metal Fedora/Ubuntu it may need to be installed. Either way this
-# function exports all four env vars that cudarc's build.rs looks for so the
-# Rust build never fails with "Failed to execute nvcc: No such file or directory".
-ensure_cuda_toolkit() {
-    local nvcc_path=""
-    for candidate in \
-            "$(command -v nvcc 2>/dev/null)" \
-            /usr/local/cuda/bin/nvcc \
-            /usr/bin/nvcc; do
-        if [[ -x "$candidate" ]]; then
-            nvcc_path="$candidate"
-            break
-        fi
+    for tool in git cmake gcc g++ make; do
+        command -v "$tool" >/dev/null 2>&1 || die "building llama.cpp needs $tool — install your distro's C++ toolchain + cmake"
     done
-
-    if [[ -z "$nvcc_path" ]]; then
-        info "nvcc not found — installing CUDA toolkit ..."
-        case "$OS" in
-            fedora)
-                local repo_added=0
-                for fver in 40 39; do
-                    local url="https://developer.download.nvidia.com/compute/cuda/repos/fedora${fver}/x86_64/cuda-fedora${fver}.repo"
-                    if sudo dnf config-manager --add-repo "$url" 2>/dev/null; then
-                        repo_added=1; break
-                    fi
-                done
-                [[ "$repo_added" -eq 1 ]] || die "Could not add NVIDIA CUDA repo for Fedora. Add it manually and re-run."
-                sudo dnf install -y cuda-toolkit
-                ;;
-            ubuntu)
-                # For bare Ubuntu without the devel image, pull from NVIDIA's apt repo.
-                # If you are already inside the cuda devel distrobox this branch is never reached.
-                sudo apt-get install -y wget gnupg
-                wget -qO /tmp/cuda-keyring.deb \
-                    https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
-                sudo dpkg -i /tmp/cuda-keyring.deb
-                sudo apt-get update -qq
-                sudo apt-get install -y cuda-toolkit-12-6
-                ;;
-        esac
-        nvcc_path=/usr/local/cuda/bin/nvcc
-        [[ -x "$nvcc_path" ]] || \
-            die "Toolkit install finished but nvcc still missing at $nvcc_path. Check the log above."
-        success "CUDA toolkit installed."
-    else
-        info "nvcc found: $nvcc_path"
+    local src="$VINKONA_VAR/build/llama.cpp"
+    say "llama: cloning/updating llama.cpp into $src"
+    if [ -d "$src/.git" ]; then git -C "$src" pull --ff-only; else
+        mkdir -p "$VINKONA_VAR/build"
+        git clone --depth 1 https://github.com/ggml-org/llama.cpp "$src"
     fi
-
-    # Derive CUDA root from wherever nvcc actually lives (handles non-standard paths).
-    local cuda_bin_dir cuda_root
-    cuda_bin_dir="$(dirname "$nvcc_path")"
-    cuda_root="$(dirname "$cuda_bin_dir")"
-
-    export PATH="${cuda_bin_dir}${PATH:+:$PATH}"
-    export CUDA_PATH="$cuda_root"
-    export CUDA_ROOT="$cuda_root"
-    export CUDA_TOOLKIT_ROOT_DIR="$cuda_root"
-    export LD_LIBRARY_PATH="${cuda_root}/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-
-    local ver
-    ver=$(nvcc --version | grep -oP "release \K[0-9]+\.[0-9]+")
-    success "CUDA toolkit ready: $ver  (root: $cuda_root)"
-    echo "$ver"
+    local cuda_flag="-DGGML_CUDA=OFF"
+    if command -v nvcc >/dev/null 2>&1 || [ -d /usr/local/cuda ]; then cuda_flag="-DGGML_CUDA=ON"; fi
+    say "llama: building llama-server ($cuda_flag) — this takes a while"
+    cmake -S "$src" -B "$src/build" $cuda_flag -DBUILD_SHARED_LIBS=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=ON >/dev/null
+    cmake --build "$src/build" --target llama-server -j"$(nproc)"
+    mkdir -p bin
+    cp "$src/build/bin/llama-server" bin/
+    ok "installed bin/llama-server (env.sh puts ./bin on PATH for all Vinkona services)"
 }
 
-detect_cuda_version() {
-    local ver="unknown"
-    if command -v nvcc &>/dev/null; then
-        ver=$(nvcc --version | grep -oP "release \K[0-9]+\.[0-9]+")
-    elif [[ -f /usr/local/cuda/version.json ]]; then
-        ver=$(grep -oP '"cuda" : "\K[0-9]+\.[0-9]+' /usr/local/cuda/version.json 2>/dev/null || echo "unknown")
-    elif [[ -f /usr/local/cuda/version.txt ]]; then
-        ver=$(grep -oP "CUDA Version \K[0-9]+\.[0-9]+" /usr/local/cuda/version.txt 2>/dev/null || echo "unknown")
-    fi
-    echo "$ver"
+step_status() {
+    echo "Vinkona assistant @ $SCRIPT_DIR"
+    local d
+    for d in vinkona_env orpheus_env neutts_env personaplex_env; do
+        [ -d "$d" ] && echo "  venv      $d  ($(du -sh "$d" 2>/dev/null | cut -f1))"
+    done
+    [ -x bin/llama-server ] && echo "  binary    bin/llama-server" || {
+        command -v llama-server >/dev/null 2>&1 && echo "  binary    llama-server (system PATH: $(command -v llama-server))" \
+                                                || echo "  binary    llama-server MISSING — ./install.sh llama, or set LLAMA_SERVER"; }
+    if [ -L Models ]; then echo "  models    Models -> $(readlink Models) (symlink; never touched by uninstall)"
+    elif [ -d Models ]; then echo "  models    Models/ ($(du -sh Models 2>/dev/null | cut -f1), $(find Models -name '*.gguf' -o -name '*.safetensors' 2>/dev/null | wc -l) weight files)"; fi
+    [ -d var ]    && echo "  caches    var/ ($(du -sh var 2>/dev/null | cut -f1))"
+    [ -d logs ]   && echo "  runtime   logs/ ($(du -sh logs 2>/dev/null | cut -f1))"
+    [ -f config/config.json ] && echo "  userdata  config/ (config.json, personas.json, memory.db, profiles — yours, kept on uninstall)"
+    echo "  All of the above lives inside this folder — nothing is written elsewhere."
 }
 
-# Maps CUDA X.Y to the nearest PyTorch wheel tag available on download.pytorch.org.
-cuda_to_torch_tag() {
-    local ver="$1"
-    local major minor
-    major=$(echo "$ver" | cut -d. -f1)
-    minor=$(echo "$ver" | cut -d. -f2)
-    if   [[ "$major" -ge 13 ]];                            then echo "cu128"
-    elif [[ "$major" -eq 12 && "$minor" -ge 8 ]];          then echo "cu128"
-    elif [[ "$major" -eq 12 && "$minor" -ge 4 ]];          then echo "cu124"  # covers 12.4–12.7 (incl. 12.6)
-    elif [[ "$major" -eq 12 && "$minor" -ge 1 ]];          then echo "cu121"
-    else
-        warn "CUDA $ver is older than 12.1 — defaulting to cu121 (may not work)"
-        echo "cu121"
-    fi
-}
+step_uninstall() {
+    local with_models=0 purge=0 a
+    for a in "$@"; do case "$a" in
+        --with-models) with_models=1 ;;
+        --purge)       purge=1 ;;
+        *) die "unknown uninstall flag: $a" ;;
+    esac; done
 
-# ── Model download ────────────────────────────────────────────────────────────
-download_model() {
-    info "Checking for model weights in $MODEL_DIR ..."
-    if [[ -d "$MODEL_DIR" && "$(ls -A "$MODEL_DIR" 2>/dev/null)" ]]; then
-        success "Model directory already populated — skipping download."
-        return
-    fi
-    mkdir -p "$MODEL_DIR"
+    say "removing generated artifacts (source files and user data are kept)"
+    local d
+    for d in vinkona_env orpheus_env neutts_env personaplex_env var bin moshi_src; do
+        [ -e "$d" ] && { rm -rf "$d"; ok "removed $d/"; }
+    done
+    find . -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null || true
 
-    if ! command -v huggingface-cli &>/dev/null; then
-        info "Installing huggingface_hub CLI ..."
-        pip install --quiet huggingface_hub
-    fi
-
-    if ! huggingface-cli whoami &>/dev/null; then
-        echo ""
-        warn "Not logged into HuggingFace. Run:  huggingface-cli login"
-        warn "Then re-run this installer."
-        exit 1
-    fi
-
-    info "Downloading $HF_REPO → $MODEL_DIR"
-    info "(~14 GB at fp16 — this will take a while)"
-    huggingface-cli download "$HF_REPO" --local-dir "$MODEL_DIR"
-    success "Model downloaded."
-}
-
-# ── Python installation ───────────────────────────────────────────────────────
-install_python() {
-    info "=== Python + CUDA mode ==="
-
-    case "$OS" in
-        fedora)
-            if ! command -v python3.12 &>/dev/null; then
-                info "Installing python3.12 via dnf ..."
-                sudo dnf install -y python3.12 python3.12-devel python3.12-pip
-            fi
-            ;;
-        ubuntu)
-            info "Ensuring python3.12, venv, and dev headers are present ..."
-            sudo apt-get update -qq
-            sudo apt-get install -y python3.12 python3.12-venv python3.12-dev python3-pip
-            ;;
-    esac
-
-    info "Creating virtualenv: vinkona_env"
-    python3.12 -m venv "$SCRIPT_DIR/vinkona_env"
-    # shellcheck disable=SC1091
-    source "$SCRIPT_DIR/vinkona_env/bin/activate"
-    pip install --upgrade --quiet pip wheel
-
-    local cuda_ver
-    cuda_ver=$(detect_cuda_version)
-    if [[ "$cuda_ver" == "unknown" ]]; then
-        warn "Could not detect CUDA version — defaulting to cu124."
-        cuda_ver="12.4"
-    fi
-    local torch_tag
-    torch_tag=$(cuda_to_torch_tag "$cuda_ver")
-    info "CUDA $cuda_ver → PyTorch wheel: $torch_tag"
-
-    sed -i "s|whl/cu[0-9]*|whl/${torch_tag}|g" "$SCRIPT_DIR/requirements.txt"
-
-    info "Installing PyTorch (CUDA build) ..."
-    pip install --quiet torch --index-url "https://download.pytorch.org/whl/${torch_tag}"
-
-    info "Verifying CUDA is visible to PyTorch ..."
-    python3 - <<'PYCHECK'
-import torch, sys
-avail = torch.cuda.is_available()
-count = torch.cuda.device_count()
-print(f"  CUDA available: {avail}  |  Devices: {count}")
-if not avail:
-    print("ERROR: PyTorch cannot see a CUDA device. Check driver and toolkit.")
-    sys.exit(1)
-PYCHECK
-
-    info "Installing remaining Python dependencies ..."
-    pip install --quiet -r "$SCRIPT_DIR/requirements.txt"
-
-    success "Python environment ready."
-    download_model
-    generate_python_serve_script
-}
-
-generate_python_serve_script() {
-    local out="$SCRIPT_DIR/serve.sh"
-    info "Writing $out ..."
-    cat > "$out" <<'EOF'
-#!/bin/bash
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$SCRIPT_DIR/vinkona_env/bin/activate"
-
-# 0 = first GPU (RTX 3090), 1 = second GPU (RTX 4090).
-# Use the higher-VRAM card for best inference throughput.
-export CUDA_VISIBLE_DEVICES=0
-export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-
-python "$SCRIPT_DIR/personaplex_server.py" \
-  --hf-repo nvidia/personaplex-7b-v1 \
-  --lm-config         "$SCRIPT_DIR/Models/personaplex-7b-v1-raw/config.json" \
-  --moshi-weight      "$SCRIPT_DIR/Models/personaplex-7b-v1-raw/model.safetensors" \
-  --text-tokenizer    "$SCRIPT_DIR/Models/personaplex-7b-v1-raw/tokenizer_spm_32k_3.model" \
-  --voice-prompt-dir  "$SCRIPT_DIR/Models/personaplex-7b-v1-raw/voices" \
-  -q 8 \
-  --debug
-EOF
-    chmod +x "$out"
-    success "serve.sh written."
-}
-
-# ── Rust installation ─────────────────────────────────────────────────────────
-install_rust() {
-    info "=== Rust + CUDA mode ==="
-    info "Builds kyutai moshi-backend from source. Replaces personaplex_server.py."
-    info "Estimated build time: 5–15 min on a fast CPU."
-
-    info "Installing system build dependencies ..."
-    case "$OS" in
-        fedora)
-            sudo dnf install -y openssl-devel pkg-config alsa-lib-devel clang git cmake
-            ;;
-        ubuntu)
-            sudo apt-get update -qq
-            # libclang-dev provides clang-sys headers required by some crates.
-            # libasound2-dev provides ALSA for audio I/O.
-            sudo apt-get install -y \
-                libssl-dev \
-                pkg-config \
-                libasound2-dev \
-                libclang-dev \
-                clang \
-                git \
-                cmake \
-                build-essential
-            ;;
-    esac
-
-    # cudarc (Rust CUDA bindings) requires nvcc at build time.
-    # This is always pre-installed in the cuda:12.6.3-devel-ubuntu24.04 image.
-    local cuda_ver
-    cuda_ver=$(ensure_cuda_toolkit)
-
-    # Rust toolchain
-    if ! command -v cargo &>/dev/null; then
-        info "Rust toolchain not found — installing via rustup ..."
-        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path
-        # shellcheck disable=SC1091
-        source "$HOME/.cargo/env"
-        rustup default stable
-    else
-        info "Rust found: $(rustc --version)"
-        rustup update stable
-    fi
-    # shellcheck disable=SC1091
-    source "$HOME/.cargo/env"
-
-    # Clone Kyutai moshi repo (shallow — we only need the tip)
-    if [[ -d "$MOSHI_SRC" ]]; then
-        info "Updating existing source in $MOSHI_SRC ..."
-        git -C "$MOSHI_SRC" pull --ff-only
-    else
-        info "Cloning kyutai-labs/moshi ..."
-        git clone --depth 1 https://github.com/kyutai-labs/moshi "$MOSHI_SRC"
-    fi
-
-    # Locate the Rust backend crate (handles both single-crate and workspace layouts)
-    local rust_backend_dir="$MOSHI_SRC/rust/moshi-backend"
-    [[ ! -d "$rust_backend_dir" ]] && rust_backend_dir="$MOSHI_SRC/rust"
-    [[ -f "$rust_backend_dir/Cargo.toml" ]] || \
-        die "Cannot find Cargo.toml under $MOSHI_SRC/rust. Check the repo layout."
-
-    info "Building with --features cuda ..."
-    cargo build \
-        --release \
-        --features cuda \
-        --manifest-path "$rust_backend_dir/Cargo.toml"
-
-    # Find the compiled binary.
-    # Cargo workspaces put all binaries under the workspace root's target/, not
-    # the individual crate's directory — so we search broadly rather than assuming.
-    local binary=""
-    while IFS= read -r candidate; do
-        if [[ -x "$candidate" ]]; then
-            binary="$candidate"
-            break
+    if [ "$with_models" -eq 1 ] || [ "$purge" -eq 1 ]; then
+        if [ -L Models ]; then
+            warn "Models is a symlink to $(readlink Models) — leaving the target alone, removing only the link"
+            rm Models; mkdir Models; touch Models/.gitkeep
+        elif [ -d Models ]; then
+            rm -rf Models; mkdir Models; touch Models/.gitkeep; ok "removed downloaded weights in Models/"
         fi
-    done < <(find "$MOSHI_SRC/rust/target/release" -maxdepth 1 -type f -name "moshi*" 2>/dev/null | sort)
+    fi
 
-    if [[ -z "$binary" ]]; then
+    if [ "$purge" -eq 1 ]; then
         echo ""
-        echo -e "${RED}[FATAL]${RESET} Build finished but no moshi* binary found." >&2
-        echo    "        Searched: $MOSHI_SRC/rust/target/release" >&2
-        echo    "        Contents of that directory:" >&2
-        ls -lh "$MOSHI_SRC/rust/target/release" 2>/dev/null | grep -v '\.d$' | head -20 >&2
-        echo    "        Run:  find ~/vinkona/moshi_src/rust/target -name 'moshi*' -type f" >&2
-        exit 1
+        warn "--purge deletes YOUR DATA: config/ (memory.db, personas, live config, ws token) and logs/."
+        warn "This is the assistant's memory of you. It cannot be recovered."
+        printf "Type 'purge' to confirm: "
+        read -r answer
+        if [ "$answer" = "purge" ]; then
+            # Only user data — the tracked *.example.json templates stay.
+            rm -rf config/profiles logs certs
+            rm -f config/config.json config/personas.json config/memory.db* \
+                  config/active_profile config/trace.jsonl config/ws_token.txt
+            ok "user data purged"
+        else
+            warn "skipped user-data purge"
+        fi
     fi
-
-    info "Copying $binary → $SCRIPT_DIR/moshi-backend"
-    cp "$binary" "$SCRIPT_DIR/moshi-backend"
-    success "Rust binary ready."
-
-    # Minimal pip install just to get huggingface-cli for the model download
-    pip install --quiet --user huggingface_hub 2>/dev/null || \
-        python3 -m pip install --quiet --user huggingface_hub 2>/dev/null || true
-    download_model
-
-    generate_rust_serve_script
-    print_rust_config_note
+    ok "uninstalled. What remains is the source tree (and your data unless purged) — delete the folder to remove everything."
 }
 
-generate_rust_serve_script() {
-    local out="$SCRIPT_DIR/serve_rust.sh"
-    info "Writing $out ..."
-    cat > "$out" <<'RUSTSERVE'
-#!/bin/bash
-# Rust moshi-backend launcher.
-# Run:  ./moshi-backend --help   to verify CLI flags and adjust below.
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-# For a 3090+4090 rig, prefer the 4090 (index 1) for best inference throughput.
-export CUDA_VISIBLE_DEVICES=1
-export RUST_LOG=info
-
-"$SCRIPT_DIR/moshi-backend" \
-  --config    "$SCRIPT_DIR/Models/personaplex-7b-v1-raw/config.json" \
-  --model-dir "$SCRIPT_DIR/Models/personaplex-7b-v1-raw" \
-  --port 8001 \
-  "$@"
-RUSTSERVE
-    chmod +x "$out"
-    success "serve_rust.sh written."
-}
-
-print_rust_config_note() {
-    echo ""
-    echo -e "${BOLD}${YELLOW}=== Rust mode: next steps ===${RESET}"
-    echo "  1. Run:  ./moshi-backend --help"
-    echo "     Verify the CLI flags — update serve_rust.sh if they differ from above."
-    echo "  2. The Rust binary handles WebRTC directly."
-    echo "     Point your Flutter client at port 8001 (or whatever you configure)."
-    echo "  3. personaplex_server.py is NOT used in Rust mode."
-    echo ""
-}
-
-# ── Main ──────────────────────────────────────────────────────────────────────
-print_banner() {
-    echo ""
-    echo -e "${BOLD}${CYAN}╔════════════════════════════════════════════════════╗${RESET}"
-    echo -e "${BOLD}${CYAN}║   Vinkona PersonaPlex Installer — CUDA Edition       ║${RESET}"
-    echo -e "${BOLD}${CYAN}║   Fedora (bare metal) · Ubuntu · CUDA distrobox    ║${RESET}"
-    echo -e "${BOLD}${CYAN}╚════════════════════════════════════════════════════╝${RESET}"
-    echo ""
-    echo -e "  ${BOLD}1)${RESET} Python  —  moshi + FastAPI/aiortc + personaplex_server.py"
-    echo -e "             Simpler to debug. ~15–30 ms overhead per audio cycle."
-    echo ""
-    echo -e "  ${BOLD}2)${RESET} Rust    —  moshi-backend binary (replaces Python server entirely)"
-    echo -e "             Best latency. ~1–3 ms overhead. ~5–15 min build time."
-    echo ""
-}
-
-main() {
-    check_root
-    detect_os
-    check_nvidia
-    print_banner
-
-    local mode
-    if [[ $# -gt 0 ]]; then
-        mode="$1"
-        info "Non-interactive mode: option $mode"
-    else
-        read -rp "Select install mode [1/2]: " mode
-    fi
-
-    case "$mode" in
-        1) install_python ;;
-        2) install_rust   ;;
-        *) die "Invalid selection '$mode'. Choose 1 (Python) or 2 (Rust)." ;;
-    esac
-
-    echo ""
-    success "══════════════════════════════════════════"
-    success "Installation complete."
-    if [[ "$mode" == "1" ]]; then
-        success "Launch with:  ./serve.sh"
-    else
-        success "Launch with:  ./serve_rust.sh"
-        success "Check flags:  ./moshi-backend --help"
-    fi
-    success "══════════════════════════════════════════"
-}
-
-main "$@"
+# ── dispatch ─────────────────────────────────────────────────────────────────
+cmd="${1:-core}"
+case "$cmd" in
+    core)       step_core ;;
+    tts)        shift; step_tts "${1:-orpheus}" ;;
+    models)     step_models ;;
+    llama)      shift || true; step_llama "${1:-}" ;;
+    all)        step_core; step_tts orpheus; step_models
+                { command -v llama-server >/dev/null 2>&1 || [ -x bin/llama-server ]; } || step_llama ;;
+    status)     step_status ;;
+    uninstall)  shift || true; step_uninstall "$@" ;;
+    -h|--help|help) usage 0 ;;
+    *)          echo "unknown command: $cmd" >&2; usage 1 ;;
+esac

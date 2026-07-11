@@ -8,6 +8,7 @@
 # the engine arg only selects which venv to activate.  Override the GPU with
 # CUDA_VISIBLE_DEVICES=N ./serve_tts.sh ...
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/env.sh"          # in-tree caches/tmp/PATH — see env.sh
 ENGINE="${1:-orpheus}"
 CONFIG="$SCRIPT_DIR/config/config.json"
 

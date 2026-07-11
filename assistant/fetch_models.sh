@@ -10,6 +10,7 @@
 # Needs: pip install -U "huggingface_hub[cli]"   (and `git lfs` is NOT required).
 set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/env.sh"          # in-tree caches/tmp/PATH — see env.sh
 DIR="${MODELS_DIR:-$SCRIPT_DIR/Models}"
 mkdir -p "$DIR"
 

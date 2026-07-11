@@ -20,7 +20,10 @@ import time
 FAST = "lm_fast"     # the 4090 (fast extractor)
 BIG = "lm_big"       # the 3090 (big verifier / reconciler)
 
-_DEFAULT = "~/Vinkona/logs/control"
+# Default: the sibling assistant's control dir in the monorepo layout
+# (<repo>/knowledge-host/knowledgehost/lm_lease.py -> <repo>/assistant/logs/control).
+_DEFAULT = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+                        "assistant", "logs", "control")
 
 
 def control_dir(cfg=None) -> str:
