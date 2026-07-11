@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vinkona — Text Chat</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, sans-serif; margin: 0; background:#15171c; color:#e6e8ec;
+    height:100dvh; display:flex; flex-direction:column; }
+  header { padding: 12px 20px; background:#1e2128; border-bottom:1px solid #2c303a;
+    display:flex; align-items:center; gap:14px; flex-wrap:wrap; }
+  header h1 { margin:0; font-size:16px; }
+  header .sub { color:#8b93a1; font-size:12px; }
+  .spacer { flex:1; }
+  .pill { font-size:12px; border-radius:10px; padding:2px 10px; border:1px solid #333a46; color:#8b93a1; }
+  .pill.ok { color:#7dd3a0; border-color:#2f5e44; }
+  .pill.busy, .pill.err { color:#f0a08a; border-color:#5e352f; }
+  select, button, textarea { background:#0f1116; color:#e6e8ec; border:1px solid #333a46;
+    border-radius:6px; font-size:13px; font-family:inherit; }
+  select { padding:6px 8px; }
+  button { padding:7px 14px; cursor:pointer; }
+  button.primary { background:#3b82f6; border-color:#3b82f6; color:#fff; }
+  button:hover { filter:brightness(1.1); }
+  button:disabled { opacity:.5; cursor:default; filter:none; }
+  main { flex:1; overflow-y:auto; padding:20px; }
+  .wrap { max-width: 760px; margin:0 auto; display:flex; flex-direction:column; gap:12px; }
+  .msg { max-width:78%; padding:10px 14px; border-radius:14px; font-size:14px; line-height:1.45;
+    white-space:pre-wrap; word-wrap:break-word; }
+  .msg.user { align-self:flex-end; background:#25636b; border-bottom-right-radius:4px; }
+  .msg.assistant { align-self:flex-start; background:#23262e; border:1px solid #2c303a; border-bottom-left-radius:4px; }
+  .msg.system { align-self:center; background:none; border:1px dashed #4a3a32; color:#e0b07d;
+    font-size:12.5px; text-align:center; }
+  .role { font-size:11px; color:#8b93a1; margin:0 0 2px; }
+  footer { border-top:1px solid #2c303a; background:#1b1e25; padding:12px 20px; }
+  .composer { max-width:760px; margin:0 auto; display:flex; gap:10px; align-items:flex-end; }
+  textarea { flex:1; resize:none; padding:10px; min-height:44px; max-height:160px; }
+  .hint { max-width:760px; margin:6px auto 0; color:#8b93a1; font-size:11.5px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Vinkona</h1>
+  <span class="sub">text chat + voice</span>
+  <span class="spacer"></span>
+  <label class="sub"><input type="checkbox" id="speak" checked onchange="onSpeakToggle()"> 🔊 speak replies</label>
+  <label class="sub" for="persona">persona</label>
+  <select id="persona" onchange="reconnect()"></select>
+  <button id="newBtn" onclick="reconnect()">New session</button>
+  <span id="status" class="pill">connecting…</span>
+</header>
+
+<main><div id="log" class="wrap"></div></main>
+
+<footer>
+  <div class="composer">
+    <textarea id="input" placeholder="Type a message…  (Enter to send, Shift+Enter for a new line)"
+              rows="1" disabled></textarea>
+    <button id="send" class="primary" onclick="send()" disabled>Send</button>
+  </div>
+  <div class="hint">Type to chat; with “speak replies” on, Vinkona also voices each reply through this machine's audio out.
+    One conversation at a time — unavailable while a voice session is active. Toggling speak starts a fresh session;
+    ending one (closing the tab or “New session”) lets Vinkona update its memory from the conversation.</div>
+</footer>
+
+<script>
+let ws = null, connected = false, busy = false, lastRole = null, lastEl = null;
+// ── Audio: TTS arrives as 24 kHz float32 mono frames (kind 0x03); the browser plays
+//    them, so on the server they come out the box's own headphones. ──
+let actx = null, playCursor = 0;
+function audioOn() { return document.getElementById('speak').checked; }
+function ensureAudio() {                          // must be kicked off by a user gesture
+  if (!actx) actx = new (window.AudioContext || window.webkitAudioContext)();
+  if (actx.state === 'suspended') actx.resume();
+}
+function playFrame(f32) {
+  if (!actx || !audioOn()) return;
+  const buf = actx.createBuffer(1, f32.length, 24000);   // context resamples to its rate
+  buf.copyToChannel(f32, 0);
+  const src = actx.createBufferSource(); src.buffer = buf; src.connect(actx.destination);
+  const now = actx.currentTime;
+  if (playCursor < now) playCursor = now + 0.02;         // small lead to avoid underruns
+  src.start(playCursor);
+  playCursor += buf.duration;
+}
+function onSpeakToggle() {
+  ensureAudio();
+  // Reconnect so the server actually streams (or stops streaming) audio for this session.
+  reconnect();
+}
+const log = document.getElementById('log');
+const input = document.getElementById('input');
+const sendBtn = document.getElementById('send');
+const statusEl = document.getElementById('status');
+
+function setStatus(text, cls) { statusEl.textContent = text; statusEl.className = 'pill ' + (cls || ''); }
+function setEnabled(on) {
+  connected = on; input.disabled = !on; sendBtn.disabled = !on;
+  if (on) input.focus();
+}
+
+function addMessage(role, text) {
+  // Coalesce consecutive assistant sentence-bubbles into one growing turn.
+  if (role === 'assistant' && lastRole === 'assistant' && lastEl) {
+    lastEl.querySelector('.body').textContent += ' ' + text;
+  } else {
+    const el = document.createElement('div'); el.className = 'msg ' + role;
+    if (role !== 'system') el.innerHTML = `<div class="role">${role === 'user' ? 'you' : 'vinkona'}</div>`;
+    const body = document.createElement('div'); body.className = 'body'; body.textContent = text;
+    el.appendChild(body); log.appendChild(el);
+    lastEl = el;
+  }
+  lastRole = role;
+  document.querySelector('main').scrollTop = document.querySelector('main').scrollHeight;
+}
+
+async function loadPersonas() {
+  try {
+    const d = await (await fetch('/api/personas')).json();
+    const sel = document.getElementById('persona');
+    sel.innerHTML = '';
+    for (const p of (d.personas || [])) {
+      const o = document.createElement('option'); o.value = p.name;
+      o.textContent = p.name; if (p.name === d.default) o.selected = true;
+      sel.appendChild(o);
+    }
+  } catch (e) { /* personas optional */ }
+}
+
+function connect() {
+  busy = false; lastRole = null; lastEl = null;
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  const persona = document.getElementById('persona').value;
+  const url = `${proto}://${location.host}/api/chat?mode=text`
+    + (audioOn() ? '&speak=1' : '')
+    + (persona ? `&persona=${encodeURIComponent(persona)}` : '');
+  setStatus('connecting…', '');
+  ws = new WebSocket(url);
+  ws.binaryType = 'arraybuffer';
+
+  ws.onopen = () => {
+    // First frame must be the access token (kind 0x01), if the server requires one.
+    // Stored locally after the first prompt; ignored by the server when auth is off.
+    let tok = localStorage.getItem('vinkona_token') || '';
+    if (!tok) {
+      tok = (prompt('Access token (shown in the server log):') || '').trim();
+      if (tok) localStorage.setItem('vinkona_token', tok);
+    }
+    if (tok) {
+      const t = new TextEncoder().encode(tok);
+      const frame = new Uint8Array(t.length + 1);
+      frame[0] = 1; frame.set(t, 1);             // kind 0x01: auth
+      ws.send(frame);
+    }
+  };
+
+  ws.onmessage = (ev) => {
+    const bytes = new Uint8Array(ev.data);
+    if (!bytes.length) return;
+    const kind = bytes[0];
+    if (kind === 0x00) {                       // handshake
+      setStatus('connected', 'ok'); setEnabled(true);
+    } else if (kind === 0x02) {                // bubble {role,text}
+      try {
+        const b = JSON.parse(new TextDecoder().decode(bytes.subarray(1)));
+        if (b.role === 'system' && /busy/i.test(b.text)) busy = true;
+        addMessage(b.role, b.text);
+      } catch (e) {}
+    } else if (kind === 0x03) {                // PCM audio frame (when speak is on)
+      // byteOffset 1 isn't 4-aligned for a Float32Array view, so copy off the kind byte.
+      playFrame(new Float32Array(ev.data.slice(1)));
+    }
+  };
+  ws.onclose = (ev) => {
+    setEnabled(false);
+    if (ev && ev.code === 4401) {
+      localStorage.removeItem('vinkona_token');      // bad token — forget it, prompt next time
+      setStatus('access denied — wrong token', 'err');
+    } else if (busy) setStatus('busy — voice session active', 'busy');
+    else setStatus('disconnected', 'err');
+  };
+  ws.onerror = () => setStatus('connection error', 'err');
+}
+
+function reconnect() {
+  if (ws && ws.readyState <= 1) { ws.onclose = null; ws.close(); }
+  log.innerHTML = ''; lastRole = null; lastEl = null;
+  connect();
+}
+
+function send() {
+  const text = input.value.trim();
+  if (!text || !connected) return;
+  ensureAudio();                                 // first send unlocks audio playback
+
+  const payload = new TextEncoder().encode(JSON.stringify({ text }));
+  const frame = new Uint8Array(payload.length + 1);
+  frame[0] = 4; frame.set(payload, 1);         // kind 0x04: typed text
+  ws.send(frame);
+  input.value = ''; autoGrow();
+}
+
+function autoGrow() { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, 160) + 'px'; }
+input.addEventListener('input', autoGrow);
+input.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+});
+window.addEventListener('beforeunload', () => { if (ws) { ws.onclose = null; ws.close(); } });
+
+loadPersonas().then(connect);
+</script>
+</body>
+</html>

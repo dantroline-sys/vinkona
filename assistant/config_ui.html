@@ -1,0 +1,1555 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vinkona Config</title>
+<style>
+  :root { color-scheme: dark; }
+  body { font-family: system-ui, sans-serif; margin: 0; background:#15171c; color:#e6e8ec; }
+  header { padding: 16px 24px; background:#1e2128; border-bottom:1px solid #2c303a; }
+  header h1 { margin:0; font-size:18px; }
+  header .sub { color:#8b93a1; font-size:13px; margin-top:4px; }
+  nav { display:flex; gap:4px; padding:0 24px; background:#1e2128; border-bottom:1px solid #2c303a; }
+  nav button { background:none; border:0; color:#8b93a1; padding:12px 16px; font-size:13px;
+    cursor:pointer; border-bottom:2px solid transparent; }
+  nav button.active { color:#e6e8ec; border-bottom-color:#3b82f6; }
+  main { max-width: 980px; margin: 0 auto; padding: 24px; }
+  h2 { font-size:15px; color:#cdd3dc; border-bottom:1px solid #2c303a; padding-bottom:8px; }
+  .tab { display:none; }
+  .tab.active { display:block; }
+  .card { background:#1b1e25; border:1px solid #2c303a; border-radius:10px; padding:16px; margin:14px 0; }
+  .row { display:flex; gap:12px; flex-wrap:wrap; }
+  label { display:block; font-size:12px; color:#8b93a1; margin:10px 0 4px; }
+  input, textarea, select {
+    width:100%; box-sizing:border-box; background:#0f1116; color:#e6e8ec;
+    border:1px solid #333a46; border-radius:6px; padding:8px; font-size:13px; font-family:inherit;
+  }
+  textarea { resize:vertical; }
+  textarea.prompt { min-height:90px; }
+  textarea.raw { min-height:340px; font-family:ui-monospace,monospace; font-size:12px; }
+  .row > div { flex:1; min-width:160px; }
+  button.btn { background:#3b82f6; color:#fff; border:0; border-radius:6px; padding:9px 16px;
+    font-size:13px; cursor:pointer; }
+  button.btn.secondary { background:#2c303a; }
+  button.btn.danger { background:#7a2230; }
+  button.btn:hover { filter:brightness(1.1); }
+  .bar { display:flex; gap:10px; align-items:center; margin-top:12px; flex-wrap:wrap; }
+  .status { font-size:13px; color:#7dd3a0; }
+  .status.err { color:#f08a8a; }
+  .persona-head { display:flex; justify-content:space-between; align-items:center; }
+  .persona-head b { font-size:14px; }
+  .muted { color:#8b93a1; font-size:12px; }
+  .hint { background:#13161c; border:1px dashed #333a46; border-radius:6px; padding:10px;
+    font-size:12px; color:#9aa3b1; margin-top:10px; }
+  code { background:#0f1116; padding:1px 5px; border-radius:4px; font-size:12px; }
+  /* live feed */
+  .ev { border-left:3px solid #333a46; padding:8px 12px; margin:8px 0; background:#1b1e25; border-radius:0 8px 8px 0; }
+  .ev .meta { font-size:11px; color:#8b93a1; display:flex; gap:10px; }
+  .ev .body { font-size:13px; margin-top:4px; white-space:pre-wrap; }
+  .ev.turn { border-left-color:#3b82f6; }
+  .ev.fast_reply { border-left-color:#7dd3a0; }
+  .ev.briefing { border-left-color:#c08af0; }
+  .ev.greeting { border-left-color:#e0b450; }
+  .ev.recall { border-left-color:#5ac8c8; }
+  .ev.reflect { border-left-color:#b07de0; }
+  .ev.tool_call { border-left-color:#e0934a; }
+  .ev.tool_result { border-left-color:#e0934a; }
+  .ev.research_queued, .ev.research_start, .ev.research_done, .ev.web_query, .ev.source_try, .ev.scholarly_pick, .ev.source_pick, .ev.rss_crawl, .ev.news_digest, .ev.research_export { border-left-color:#5ac8c8; }
+  .ev.ingest_start, .ev.ingest, .ev.crawl_start, .ev.crawl { border-left-color:#6fb36f; }
+  .ev.plan_created, .ev.plan_answer, .ev.plan_ask_user { border-left-color:#b58ad8; }
+  .plan-done { opacity:.72; }
+  .plan-qs { margin-top:8px; display:flex; flex-direction:column; gap:6px; }
+  .plan-q { font-size:14px; }
+  .plan-tick { display:inline-block; width:1.2em; }
+  .plan-ans { margin:2px 0 4px 1.7em; color:#9aa; font-size:13px; }
+  .ev.garden, .ev.consolidate { border-left-color:#9a8f5a; }
+  .ev.introspect { border-left-color:#c08af0; }
+  .ev.confirm { border-left-color:#e0934a; }
+  .ev.notify_scheduled, .ev.notify_spoken { border-left-color:#e0b450; }
+  .ev.calendar_sync, .ev.calendar_op, .ev.calendar_resolve { border-left-color:#e0b450; }
+  .ev.tool_facade, .ev.tool_locked { border-left-color:#e0934a; }
+  .ev.kb_call { border-left-color:#5ac8c8; }
+  .ev.lm_error { border-left-color:#f08a8a; }
+  .ev.errored { border-left-color:#f08a8a; }
+  .ev details { margin-top:6px; }
+  .ev summary { cursor:pointer; font-size:12px; color:#8b93a1; }
+  .ev pre { background:#0f1116; padding:8px; border-radius:6px; font-size:11.5px;
+    white-space:pre-wrap; max-height:260px; overflow:auto; margin:6px 0 0; }
+  .pill { font-size:11px; background:#0f1116; border:1px solid #333a46; border-radius:10px; padding:1px 8px; }
+  .mem-meta { font-size:11px; color:#8b93a1; margin-top:8px; }
+  /* memory master-detail */
+  .mem-layout { display:grid; grid-template-columns: 290px 1fr; gap:14px; align-items:start; margin-top:14px; }
+  .mem-list { border:1px solid #2c303a; border-radius:10px; background:#1b1e25; overflow:auto; max-height:72vh; }
+  .mem-item { padding:9px 12px; border-bottom:1px solid #23272f; cursor:pointer; border-left:3px solid transparent; }
+  .mem-item:last-child { border-bottom:0; }
+  .mem-item:hover { background:#21252d; }
+  .mem-item.active { background:#26303f; border-left-color:#3b82f6; }
+  .mem-item .t { font-size:12.5px; color:#e6e8ec; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .mem-item .m { font-size:11px; color:#8b93a1; margin-top:2px; }
+  .mem-item .dot { display:inline-block; width:6px; height:6px; border-radius:50%; margin-right:5px; vertical-align:middle; }
+  .mem-item .dot.on { background:#7dd3a0; } .mem-item .dot.off { background:#7a2230; }
+  .mem-editor .card { margin:0; }
+  .mem-empty { color:#8b93a1; font-size:13px; padding:20px; }
+  @media (max-width:680px){ .mem-layout{ grid-template-columns:1fr; } }
+  /* tuning sliders */
+  .tune-row { display:grid; grid-template-columns: 300px 1fr 84px; align-items:center; gap:12px; margin:10px 0; }
+  .tune-row > label { margin:0; color:#cdd3dc; }
+  .tune-row input[type=range] { width:100%; accent-color:#3b82f6; }
+  .tune-row input[type=number] { width:84px; }
+  .tune-row .tip { grid-column:1 / -1; font-size:11px; color:#8b93a1; margin:-4px 0 4px; }
+  @media (max-width:680px){ .tune-row{ grid-template-columns:1fr; } }
+  /* settings — schema-driven form */
+  .cfg-group { border:1px solid #2c303a; border-radius:10px; margin:12px 0; background:#1b1e25; }
+  .cfg-group.cfg-sub { background:#171a20; margin:8px 0; }
+  .cfg-group > summary { cursor:pointer; padding:12px 16px; font-size:14px; font-weight:600;
+    color:#cdd3dc; list-style:none; }
+  .cfg-group > summary::-webkit-details-marker { display:none; }
+  .cfg-group > summary::before { content:'▸'; display:inline-block; width:1.1em; color:#8b93a1; }
+  .cfg-group[open] > summary::before { content:'▾'; }
+  .cfg-body { padding:2px 16px 12px; }
+  .cfg-field { display:grid; grid-template-columns:280px 1fr; align-items:start; gap:12px; margin:9px 0; }
+  .cfg-field > label { margin:6px 0 0; color:#cdd3dc; }
+  .cfg-field.bool .ctl { justify-self:start; }
+  .cfg-field input[type=checkbox] { width:auto; }
+  .cfg-field .ctl { min-width:0; }
+  .cfg-path { font-size:10.5px; color:#6b7280; font-family:ui-monospace,monospace; margin-top:2px; font-weight:400; }
+  textarea.cfg-json { font-family:ui-monospace,monospace; font-size:12px; min-height:88px; }
+  textarea.cfg-json.err { border-color:#f08a8a; }
+  .cfg-err { color:#f08a8a; font-size:11px; margin-top:3px; }
+  .cfg-search { margin:10px 0 4px; }
+  .cfg-hide { display:none !important; }
+  @media (max-width:680px){ .cfg-field{ grid-template-columns:1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Vinkona Config</h1>
+  <div class="sub">Personas &amp; tunables apply on the next call. Ports/models &amp; ASR need a service restart.
+    <a id="chatLink" href="#" target="_blank" style="color:#7aa7ff; margin-left:8px;">Open text chat ↗</a></div>
+</header>
+<nav id="tabs">
+  <button data-tab="personas" class="active">Personas</button>
+  <button data-tab="profiles">Profiles</button>
+  <button data-tab="models">Models</button>
+  <button data-tab="tuning">Tuning</button>
+  <button data-tab="services">Services</button>
+  <button data-tab="live">Live</button>
+  <button data-tab="memory">Memory</button>
+  <button data-tab="self">Self</button>
+  <button data-tab="research">Research</button>
+  <button data-tab="plans">Plans</button>
+  <button data-tab="settings">Settings</button>
+</nav>
+<main>
+
+  <!-- ── Personas ─────────────────────────────────────────────────────────── -->
+  <section id="tab-personas" class="tab active">
+    <h2>Personas <span class="muted">— the fast-LM starter prompts, greetings &amp; voices</span></h2>
+    <div id="personas"></div>
+    <div class="bar">
+      <button class="btn secondary" onclick="addPersona()">+ Add persona</button>
+      <div style="flex:1"></div>
+      <label style="margin:0">Default</label>
+      <select id="defaultPersona" style="width:auto"></select>
+      <button class="btn" onclick="savePersonas()">Save personas</button>
+      <span id="pstatus" class="status"></span>
+    </div>
+  </section>
+
+  <!-- ── Profiles ─────────────────────────────────────────────────────────── -->
+  <section id="tab-profiles" class="tab">
+    <h2>Profiles <span class="muted">— swappable bundles of memory + personalities (snapshot · fork · fresh)</span></h2>
+    <div class="bar">
+      <input id="newProfile" placeholder="new profile name…" style="width:auto;max-width:220px">
+      <button class="btn secondary" onclick="createProfile()">+ New (empty)</button>
+      <button class="btn secondary" onclick="duplicateProfile()">Snapshot current →</button>
+      <button class="btn secondary" onclick="loadProfiles()">Refresh</button>
+      <span id="prstatus" class="status"></span>
+    </div>
+    <div id="profiles"></div>
+    <div class="hint">A profile owns its own <code>memory.db</code> and <code>personas.json</code> (under
+      <code>config/profiles/&lt;name&gt;/</code>); models, ports, tuning and voices stay global.
+      <b>Switch</b> flips the active profile and restarts the cascade &amp; research worker (any live
+      conversation drops). <b>Snapshot</b> copies the current profile under the typed name without switching —
+      to <i>fork</i>, snapshot then switch to the copy. The Memory and Personas tabs always act on the active profile.</div>
+  </section>
+
+  <!-- ── Models ───────────────────────────────────────────────────────────── -->
+  <section id="tab-models" class="tab">
+    <h2>Language models <span class="muted">— each tier is a llama.cpp server: GGUF, GPU &amp; runtime flags</span></h2>
+    <div id="model-fast" class="card"></div>
+    <div id="model-big" class="card"></div>
+    <div id="model-embed" class="card"></div>
+    <div class="hint">
+      <b>Adding a model:</b> drop the <code>.gguf</code> into <code id="mdir">Models/</code>
+      (symlink that dir to wherever you keep weights), then <i>Refresh</i> and pick it.<br>
+      <b>GPU</b> is the CUDA index under <code>CUDA_DEVICE_ORDER=PCI_BUS_ID</code> — here GPU 0 = 4090, GPU 1 = 3090.
+      Live path (fast + embed) on GPU 0 with TTS; big LM alone on GPU 1.<br>
+      <b>Extra args</b> are passed straight to <code>llama-server</code> (e.g. <code>-ctk q8_0 -ctv q8_0</code> for a quantised KV cache).
+      Any change here needs that tier's server restarted (<code>./serve_fast_lm.sh</code> etc).
+    </div>
+  </section>
+
+  <!-- ── Tuning ───────────────────────────────────────────────────────────── -->
+  <section id="tab-tuning" class="tab">
+    <h2>Tuning <span class="muted">— speech pacing, barge-in &amp; noise rejection</span></h2>
+    <div id="tuning"></div>
+    <div class="bar">
+      <button class="btn" onclick="saveTuning()">Save tuning</button>
+      <button class="btn secondary" onclick="loadTuning()">Reload</button>
+      <span id="tstatus" class="status"></span>
+    </div>
+    <div class="hint">Edits write to config.json; the cascade re-reads them on the next call, so
+      reconnect (or start a new conversation) to hear changes. If sentence ends get clipped, raise
+      <b>Keep word-ending</b>; if pauses feel long, lower <b>Gap between sentences</b>; if noise cuts
+      the AI off, raise <b>Barge-in frames</b>.</div>
+  </section>
+
+  <!-- ── Services ─────────────────────────────────────────────────────────── -->
+  <section id="tab-services" class="tab">
+    <h2>Services <span class="muted">— per-service output &amp; restart (from the vinkona.sh tmux stack)</span></h2>
+    <div class="bar" style="border:1px solid #2c303a;border-radius:8px;padding:10px;flex-wrap:wrap">
+      <b>Stack mode</b> <span id="modeNow" class="pill">…</span>
+      <select id="modeSel" style="width:auto">
+        <option value="normal">normal — full voice stack</option>
+        <option value="knowledge">knowledge — 2× big LM for the knowledge-host</option>
+      </select>
+      <label style="margin:0" class="muted">4090 ctx
+        <input id="modeCtx" type="number" style="width:90px" title="big_lm2 context size (knowledge chunks are ≤2048 tokens)"></label>
+      <button class="btn danger" onclick="applyMode()">Apply (restarts the stack)</button>
+      <span id="modeStatus" class="status"></span>
+    </div>
+    <div class="hint">Knowledge mode shuts down the fast LM, TTS, cascade &amp; tunnel and runs a
+      second big LM on the 4090 (port 11440) so the knowledge-host can split distillation across
+      both GPUs. Applying does a full stack restart (~1&nbsp;min); flip back to normal when done.</div>
+    <div class="bar">
+      <select id="svcSelect" onchange="loadServiceLog()" style="width:auto;min-width:160px"></select>
+      <button class="btn secondary" onclick="loadServiceLog()">Refresh</button>
+      <label style="margin:0"><input type="checkbox" id="svcAuto" checked style="width:auto"> auto (3s)</label>
+      <button class="btn danger" onclick="restartService()">Restart this service</button>
+      <span id="svcStatus" class="status"></span>
+    </div>
+    <pre id="svcLog" style="background:#0f1116;border:1px solid #2c303a;border-radius:8px;padding:12px;
+      max-height:60vh;overflow:auto;white-space:pre-wrap;font-size:12px"></pre>
+    <div class="hint">Logs are <code>logs/&lt;service&gt;.log</code>, written by <code>vinkona.sh</code>. “Restart”
+      drops a request that the host-side <b>monitor</b> window picks up — so the stack must have been started with
+      <code>./vinkona.sh start</code>.</div>
+  </section>
+
+  <!-- ── Live ─────────────────────────────────────────────────────────────── -->
+  <section id="tab-live" class="tab">
+    <h2>Live LM activity <span class="muted">— what the fast &amp; big LM are seeing &amp; producing</span></h2>
+    <div class="bar">
+      <label style="margin:0"><input type="checkbox" id="autoLive" checked style="width:auto"> auto-refresh (2s)</label>
+      <button class="btn secondary" onclick="loadTrace()">Refresh now</button>
+      <span id="lstatus" class="muted"></span>
+    </div>
+    <div id="trace"></div>
+  </section>
+
+  <!-- ── Memory ───────────────────────────────────────────────────────────── -->
+  <section id="tab-memory" class="tab">
+    <h2>Memory <span class="muted">— browse &amp; edit what Vinkona remembers (SQLite)</span></h2>
+    <div class="bar">
+      <button class="btn secondary" onclick="addMemory()">+ Add memory</button>
+      <button class="btn secondary" onclick="loadMemory()">Refresh</button>
+      <button class="btn secondary" onclick="reembedMemory()">Re-embed all</button>
+      <button class="btn secondary" onclick="reconcileNow(this)" title="Merge near-duplicate / contradictory personal facts into clean notes; fragments are quarantined (reversible)">Reconcile now</button>
+      <label style="margin:0" class="muted"><input type="checkbox" id="memShowQ" onchange="renderMemList()" style="width:auto"> show quarantined</label>
+      <input id="memFilter" placeholder="filter…" oninput="renderMemList()"
+             style="width:auto;flex:1;min-width:100px;max-width:240px">
+      <label style="margin:0" class="muted">sort</label>
+      <select id="memSort" onchange="renderMemList()" style="width:auto">
+        <option value="priority">Priority</option>
+        <option value="created">Newest</option>
+        <option value="used">Last used</option>
+        <option value="recency">Recency (heat)</option>
+        <option value="category">Category</option>
+      </select>
+      <span id="memCount" class="muted"></span>
+      <span id="mstatus" class="status"></span>
+    </div>
+    <div class="mem-layout">
+      <div id="memList" class="mem-list"></div>
+      <div id="memEditor" class="mem-editor"></div>
+    </div>
+    <div class="hint">Pick a memory on the left to edit it on the right. Edits recompute the embedding
+      via the configured embed model and are picked up on the cascade's next connection. Priority ≥ the
+      cooldown-override threshold fires even during cooldown.</div>
+  </section>
+
+  <!-- ── Self ─────────────────────────────────────────────────────────────── -->
+  <section id="tab-self" class="tab">
+    <h2>Self <span class="muted">— Vinkona's personality, as she's defined it for herself</span></h2>
+    <div class="bar">
+      <button class="btn secondary" onclick="loadSelf()">Refresh</button>
+      <button class="btn secondary" onclick="addTrait()">+ Add trait</button>
+      <span id="selfStatus" class="status"></span>
+    </div>
+    <div class="hint">Two layers of self. <b>Character traits</b> are her structured identity
+      (declared, always in the prompt) across depth layers — <i>core</i> (innate canon),
+      <i>compensated</i> (learned adjustment), <i>surface</i> (presented). The fast LM enacts
+      the highest layer present. <b>Self-memories</b> are the looser relational insights she
+      writes over time. You're the owner here, so you can edit anything — including core canon
+      (the conversation-only restriction exists to keep untrusted data out, not you). Changes
+      apply on the cascade's next connection.</div>
+    <h3 style="margin:16px 0 6px">Inner state <span class="muted">— her current mood, as one evolving line</span></h3>
+    <div id="selfState"></div>
+    <h3 style="margin:18px 0 6px">Character traits</h3>
+    <div id="selfTraits"></div>
+    <h3 style="margin:18px 0 6px">Self-memories <span class="muted">(category “self”)</span></h3>
+    <div id="selfMems"></div>
+  </section>
+
+  <!-- ── Research ─────────────────────────────────────────────────────────── -->
+  <section id="tab-research" class="tab">
+    <h2>Research <span class="muted">— Tier-3 background learning &amp; the prompts that drive it</span></h2>
+    <div class="card">
+      <div class="tune-row">
+        <label>Background research</label>
+        <input type="checkbox" id="rEnabled" style="width:auto;justify-self:start">
+        <span></span>
+        <div class="tip">At session end the big LM proposes topics from the conversation; a worker reads them up and stores low-priority knowledge memories. Also enables the in-conversation “learn about X” tool.</div>
+      </div>
+      <div class="tune-row">
+        <label>Topics per session</label>
+        <input type="number" id="rMaxTopics" min="0" max="10" step="1" style="justify-self:start;max-width:90px">
+        <span></span>
+        <div class="tip">Cap on how many topics one conversation can queue.</div>
+      </div>
+      <div class="tune-row">
+        <label>Web search fallback</label>
+        <input type="text" id="rSearxng" placeholder="https://searxng.example/  (blank = Wikipedia only)"
+               style="justify-self:stretch">
+        <span></span>
+        <div class="tip">A SearXNG instance (JSON API enabled). When Wikipedia has no article or rate-limits the worker, research falls back to web-search snippets — without this, those topics silently learn nothing (“no source” in the live feed).</div>
+      </div>
+      <div class="tune-row">
+        <label>Tool ingest</label>
+        <input type="checkbox" id="rIngestEnabled" style="width:auto;justify-self:start">
+        <span></span>
+        <div class="tip">Periodically pull snapshots from your Mac tools (calendar, RSS, files) and memorise them, so Vinkona has ambient awareness without checking live every time. Needs the tunnel/host up.</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <b>Idle learning</b>
+      <div class="hint">When no session is open and the box has been quiet, the worker keeps learning on its own:
+        it reflects on a window of past interactions (how they went, what to remember about you, what to research — and
+        what it could now do better with current tools), researches a batch of topics, then consolidates world-knowledge
+        (merge/split). Each cycle walks <i>further back</i> through history, then wraps to the newest — so old chats get
+        re-examined, not the same recent ones repeatedly. All on the big LM — it stands down the instant you start talking.</div>
+      <div class="tune-row">
+        <label>Idle autonomous learning</label>
+        <input type="checkbox" id="rIdleEnabled" style="width:auto;justify-self:start">
+        <span></span>
+      </div>
+      <div class="tune-row">
+        <label>Idle after (seconds quiet)</label>
+        <input type="number" id="rIdleAfter" min="15" max="3600" step="15" style="justify-self:start;max-width:110px">
+        <span></span>
+      </div>
+      <div class="tune-row">
+        <label>Topics per batch</label>
+        <input type="number" id="rIdleBatch" min="1" max="10" step="1" style="justify-self:start;max-width:90px">
+        <span></span>
+      </div>
+      <div class="tune-row">
+        <label>Pause between batches (s)</label>
+        <input type="number" id="rIdlePause" min="15" max="3600" step="15" style="justify-self:start;max-width:110px">
+        <span></span>
+      </div>
+      <div class="tune-row">
+        <label>Consolidate memory (merge/split)</label>
+        <input type="checkbox" id="rIdleConsolidate" style="width:auto;justify-self:start">
+        <span></span>
+        <div class="tip">LM-driven tidying of world-knowledge memories each cycle. Personal facts are never merged or split.</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <label>Idle task focus <span class="muted">— untick to temporarily narrow idle work (bug-testing); all ticked = normal</span></label>
+      <div id="rIdleTasks" style="display:flex;flex-wrap:wrap;gap:6px 18px;margin:8px 0"></div>
+      <div class="tip">Each task still respects its own enable flag — unticking here just skips it this run. E.g. tick only “Research queue” to isolate research while bug-testing.</div>
+    </div>
+
+    <div class="card">
+      <b>Prompts</b>
+      <div class="hint">Leave a box empty to use the built-in default (shown as placeholder). These steer the big LM; it must reply with JSON.</div>
+      <label class="muted">Research proposal <span class="muted">(picks topics to learn from a conversation)</span></label>
+      <textarea class="prompt" id="rResearchPrompt"></textarea>
+      <label class="muted">Knowledge synthesis <span class="muted">(distils a fetched source into memories)</span></label>
+      <textarea class="prompt" id="rSynthPrompt"></textarea>
+      <label class="muted">Tool ingest <span class="muted">(turns a tool snapshot into memories)</span></label>
+      <textarea class="prompt" id="rIngestPrompt"></textarea>
+      <label class="muted">Session reflection <span class="muted">(curates personal memories at session end)</span></label>
+      <textarea class="prompt" id="rReflectionPrompt"></textarea>
+      <label class="muted">Idle reflection <span class="muted">(reflects on past interactions: self/relational notes + topics to research, tool-aware)</span></label>
+      <textarea class="prompt" id="rIntrospectPrompt"></textarea>
+      <label class="muted">Memory consolidation <span class="muted">(merge/split world-knowledge)</span></label>
+      <textarea class="prompt" id="rConsolidatePrompt"></textarea>
+    </div>
+    <div class="bar">
+      <button class="btn" onclick="saveResearch()">Save research</button>
+      <button class="btn secondary" onclick="loadResearch()">Reload</button>
+      <span id="rstatus" class="status"></span>
+    </div>
+    <div class="hint">The research worker (<code>serve_research.sh</code>) must be running to act on the queue. Prompt edits apply on its next poll / the cascade's next reflection.</div>
+    <div class="card" style="margin-top:14px">
+      <label>Retry dead-end research questions <span class="muted">— put failed ones back in the pile (e.g. after the web-search fix)</span></label>
+      <div class="bar">
+        <button class="btn secondary" onclick="reopenResearch('no_source')">Retry “no source found” (<span id="cntNoSource">…</span>)</button>
+        <button class="btn secondary" onclick="reopenResearch('no_answer')">Retry “source didn't answer” (<span id="cntNoAnswer">…</span>)</button>
+        <span id="reopenStatus" class="status"></span>
+      </div>
+      <div class="tip">Re-opens answered research questions whose result was a dead end (and re-opens their parent plan), so the worker researches them again on its next idle pass.</div>
+    </div>
+    <div class="card" style="margin-top:14px">
+      <label>Knowledge-host hand-off <span class="muted">— export the non-personal research hoard as <code>&lt;hash&gt;.md</code> drops</span></label>
+      <div class="bar">
+        <button class="btn secondary" onclick="reExportResearch()">Re-export everything</button>
+        <span id="reExportStatus" class="status"></span>
+      </div>
+      <div class="tip">Set the target folder in <b>Settings → research → export</b> (<code>folder</code>, and turn <code>enabled</code> on for the automatic incremental sync), then point the knowledge-host's <code>sources</code> at it. This button forces a <b>full</b> rebuild — it re-writes every drop, so it also restores any file that was removed from the folder. Personal mail/file content is never exported.</div>
+    </div>
+  </section>
+
+  <!-- ── Plans ────────────────────────────────────────────────────────────── -->
+  <section id="tab-plans" class="tab">
+    <h2>Learning plans <span class="muted">— what Vinkona set out to learn, and how it's getting on</span></h2>
+    <div class="hint">Each queued topic becomes a goal with a checklist: <b>research</b> questions it answers from sources during idle time, and <b>ask</b> questions it raises with you in conversation. Plans complete when nothing's left open.</div>
+    <div class="bar">
+      <button class="btn secondary" onclick="loadPlans()">Refresh</button>
+      <button class="btn secondary" id="planFilterAll" onclick="setPlanFilter('all')">All</button>
+      <button class="btn secondary" id="planFilterOpen" onclick="setPlanFilter('open')">Open</button>
+      <button class="btn secondary" id="planFilterDone" onclick="setPlanFilter('done')">Done</button>
+      <span id="plansStat" class="muted"></span></div>
+    <div id="plansList"></div>
+  </section>
+
+  <!-- ── Settings ─────────────────────────────────────────────────────────── -->
+  <section id="tab-settings" class="tab">
+    <h2>Settings <span class="muted">— every option in config.json, structured. New options appear here automatically.</span></h2>
+    <input id="cfgSearch" class="cfg-search" placeholder="Filter settings…  (e.g. calendar, timeout, port)" oninput="filterConfig(this.value)">
+    <div id="cfgForm"></div>
+    <div class="bar">
+      <button class="btn" onclick="saveConfig()">Save settings</button>
+      <button class="btn secondary" onclick="loadConfig()">Reload</button>
+      <span id="cstatus" class="status"></span>
+    </div>
+    <details class="card" style="margin-top:14px">
+      <summary class="muted" style="cursor:pointer">Advanced — edit raw JSON</summary>
+      <p class="muted">Escape hatch for bulk edits. “Apply” parses this into the form above; then “Save settings” writes it.</p>
+      <textarea id="rawConfig" class="raw" spellcheck="false"></textarea>
+      <div class="bar">
+        <button class="btn secondary" onclick="applyRaw()">Apply raw JSON → form</button>
+        <span id="rawstatus" class="status"></span>
+      </div>
+    </details>
+  </section>
+
+</main>
+
+<script>
+// ── Tabs ────────────────────────────────────────────────────────────────────
+const loaders = { profiles: loadProfiles, models: loadModels, tuning: loadTuning, services: startServices, live: startLive, memory: loadMemory, self: loadSelf, research: loadResearch, plans: loadPlans, settings: loadConfig };
+
+let planFilter = 'open';
+function setPlanFilter(f) { planFilter = f; loadPlans(); }
+async function loadPlans() {
+  const list = document.getElementById('plansList');
+  for (const f of ['all', 'open', 'done'])
+    document.getElementById('planFilter' + f[0].toUpperCase() + f.slice(1))
+      .classList.toggle('active', planFilter === f);
+  let d;
+  try { d = await (await fetch('/api/plans?status=' + planFilter)).json(); }
+  catch (e) { list.innerHTML = '<div class="status err">fetch failed</div>'; return; }
+  const plans = d.plans || [];
+  const c = d.counts || { total: plans.length, open: 0, done: 0 };
+  // Counts are over ALL plans, so completed ones aren't hidden by the display limit.
+  const trunc = d.shown < c.total && (planFilter === 'all' ? d.shown < c.total
+    : d.shown < (planFilter === 'open' ? c.open : c.done));
+  document.getElementById('plansStat').textContent =
+    `${c.total} total · ${c.open} open · ${c.done} done` +
+    (trunc ? ` · showing newest ${plans.length}` : '');
+  if (!plans.length) {
+    list.innerHTML = `<div class="mem-empty">No ${planFilter === 'all' ? '' : planFilter + ' '}learning plans` +
+      `${c.total ? ' in this filter' : ' yet — they appear once a research topic is queued'}.</div>`;
+    return;
+  }
+  const ICON = { answered: '✓', asked: '◐', open: '☐' };
+  list.innerHTML = plans.map(p => {
+    const done = p.status === 'done';
+    const Q = p.questions || [];
+    const openBy = k => Q.filter(q => q.kind === k && q.status === 'open').length;
+    const tot = k => Q.filter(q => q.kind === k).length;
+    // Why a plan isn't done: research answered but ask-user questions still awaiting you.
+    const rOpen = openBy('research'), aOpen = openBy('ask_user');
+    const summary = `<span class="muted">research ${tot('research') - rOpen}/${tot('research')} answered`
+      + (tot('ask_user') ? ` · ask ${aOpen} awaiting you` : '') + `</span>`;
+    const qs = Q.map(q => {
+      const ic = ICON[q.status] || '☐';
+      const tag = q.kind === 'ask_user' ? '<span class="pill">ask</span>' : '<span class="pill">research</span>';
+      const ans = q.answer ? `<div class="plan-ans">${escHtml(q.answer)}</div>` : '';
+      return `<div class="plan-q"><span class="plan-tick">${ic}</span> ${tag} <span>${escHtml(q.question)}</span>${ans}</div>`;
+    }).join('');
+    return `<div class="card plan ${done ? 'plan-done' : ''}">
+      <div class="persona-head"><b>${escHtml(p.topic || '(topic)')}</b>
+        <span class="pill" style="color:${done ? '#7dd3a0' : '#e0b35a'}">${done ? 'done' : 'open'}</span></div>
+      ${p.goal ? `<div class="muted">${escHtml(p.goal)}</div>` : ''}
+      <div style="margin:4px 0">${summary}</div>
+      <div class="plan-qs">${qs}</div>
+      <div class="bar" style="margin-top:8px">
+        <button class="btn secondary" onclick="reopenPlan(${p.id}, 'research')">Re-research</button>
+        <button class="btn secondary" onclick="reopenPlan(${p.id}, 'all')">Reset whole plan</button>
+        <span class="status" id="planStatus${p.id}"></span>
+      </div></div>`;
+  }).join('');
+}
+async function reopenPlan(pid, which) {
+  const el = document.getElementById('planStatus' + pid);
+  if (el) { el.textContent = 'working…'; el.className = 'status'; }
+  try {
+    const r = await (await fetch('/api/plan/reopen', {method: 'POST',
+      headers: {'Content-Type': 'application/json'}, body: JSON.stringify({plan_id: pid, which})})).json();
+    if (r.error) { if (el) { el.textContent = r.error; el.className = 'status err'; } return; }
+    if (el) { el.textContent = `reset ${r.reopened} question${r.reopened===1?'':'s'}`; el.className = 'status ok'; }
+    loadPlans();
+  } catch (e) { if (el) { el.textContent = String(e); el.className = 'status err'; } }
+}
+document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => {
+  document.querySelectorAll('#tabs button').forEach(x => x.classList.remove('active'));
+  document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+  b.classList.add('active');
+  document.getElementById('tab-' + b.dataset.tab).classList.add('active');
+  liveTimer && clearInterval(liveTimer); liveTimer = null;
+  svcTimer && clearInterval(svcTimer); svcTimer = null;
+  (loaders[b.dataset.tab] || (()=>{}))();
+});
+
+function escHtml(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function escAttr(s){ return (s||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;'); }
+function flash(el, ok, msg){ el.textContent = msg; el.className = 'status' + (ok?'':' err'); setTimeout(()=>el.textContent='', 3000); }
+
+// ── Personas ────────────────────────────────────────────────────────────────
+let personas = {};
+async function loadPersonas() {
+  const d = await (await fetch('/api/personas')).json();
+  personas = d.personas || {};
+  renderPersonas(d.default || Object.keys(personas)[0] || '');
+}
+function renderPersonas(def) {
+  const root = document.getElementById('personas'); root.innerHTML = '';
+  for (const [name, p] of Object.entries(personas)) {
+    const c = document.createElement('div'); c.className = 'card'; c.dataset.name = name;
+    c.innerHTML = `
+      <div class="persona-head"><b>${escHtml(name)}</b>
+        <button class="btn secondary" onclick="removePersona('${name}')">Remove</button></div>
+      <div class="row">
+        <div><label>Voice</label><input value="${escAttr(p.voice||'')}" data-f="voice"></div>
+        <div><label>Description</label><input value="${escAttr(p.description||'')}" data-f="description"></div>
+      </div>
+      <label>Greeting</label><input value="${escAttr(p.greeting||'')}" data-f="greeting">
+      <label>System prompt (fast-LM starter prompt)</label>
+      <textarea class="prompt" data-f="system_prompt">${escHtml(p.system_prompt||'')}</textarea>`;
+    root.appendChild(c);
+  }
+  const sel = document.getElementById('defaultPersona'); sel.innerHTML = '';
+  for (const name of Object.keys(personas)) {
+    const o = document.createElement('option'); o.value = name; o.textContent = name;
+    if (name === def) o.selected = true; sel.appendChild(o);
+  }
+}
+function collectPersonas() {
+  const out = {};
+  for (const c of document.querySelectorAll('#personas .card')) {
+    const p = {};
+    for (const el of c.querySelectorAll('[data-f]')) p[el.dataset.f] = el.value;
+    out[c.dataset.name] = p;
+  }
+  return { default: document.getElementById('defaultPersona').value, personas: out };
+}
+async function savePersonas() {
+  const r = await fetch('/api/personas', {method:'POST', body: JSON.stringify(collectPersonas())});
+  const d = await r.json();
+  flash(document.getElementById('pstatus'), d.ok, d.ok ? 'saved ✓' : ('error: ' + (d.error||'')));
+}
+function addPersona() {
+  const name = prompt('New persona name (lowercase, no spaces):'); if (!name) return;
+  personas[name] = {voice:'tara', description:'', greeting:'Hi.', system_prompt:'You are ...'};
+  renderPersonas(document.getElementById('defaultPersona').value);
+}
+function removePersona(name) {
+  if (!confirm('Remove persona "'+name+'"?')) return;
+  delete personas[name]; renderPersonas(document.getElementById('defaultPersona').value);
+}
+
+// ── Models ──────────────────────────────────────────────────────────────────
+const TIER_LABEL = { fast: 'Fast LM', big: 'Big LM', embed: 'Embed LM' };
+async function loadModels() {
+  await Promise.all(['fast', 'big', 'embed'].map(renderModelTier));
+}
+async function renderModelTier(tier) {
+  const el = document.getElementById('model-' + tier);
+  el.innerHTML = `<b>${TIER_LABEL[tier]}</b> <span class="muted">loading…</span>`;
+  let d;
+  try { d = await (await fetch('/api/models?tier=' + tier)).json(); }
+  catch (e) { el.innerHTML = `<b>${TIER_LABEL[tier]}</b> <span class="status err">fetch failed</span>`; return; }
+  document.getElementById('mdir').textContent = (d.models_dir || 'Models') + '/';
+  const s = d.settings || {};
+  const installed = d.models || [];
+  const opts = installed.map(m =>
+    `<option value="${escAttr(m)}"${m === s.model ? ' selected' : ''}>${escHtml(m)}</option>`).join('');
+  const missing = s.model && !installed.includes(s.model)
+    ? `<option value="${escAttr(s.model)}" selected>${escHtml(s.model)} (not in ${escHtml(d.models_dir)})</option>` : '';
+  const disabled = !s.url;
+  el.innerHTML = `
+    <div class="persona-head"><b>${TIER_LABEL[tier]}</b>
+      <span class="pill">${disabled ? 'disabled (no url)' : escHtml(s.url)}</span></div>
+    <label>GGUF model <span class="muted">— in ${escHtml(d.models_dir)}/</span></label>
+    <select data-f="model">${missing}${opts}${installed.length||missing?'':'<option value="">(no .gguf files found)</option>'}</select>
+    <div class="row">
+      <div><label>GPU index</label><input data-f="gpu" type="number" min="0" value="${s.gpu!=null?s.gpu:0}"></div>
+      <div><label>Context size (-c)</label><input data-f="ctx_size" type="number" value="${s.ctx_size!=null?s.ctx_size:4096}"></div>
+      <div><label>GPU layers (-ngl)</label><input data-f="n_gpu_layers" type="number" value="${s.n_gpu_layers!=null?s.n_gpu_layers:99}"></div>
+      <div><label>Flash attn</label><select data-f="flash_attn"><option value="true"${s.flash_attn?' selected':''}>on</option><option value="false"${!s.flash_attn?' selected':''}>off</option></select></div>
+    </div>
+    <label>Extra llama-server args (space-separated)</label>
+    <input data-f="extra_args" value="${escAttr((s.extra_args||[]).join(' '))}">
+    ${tier === 'big' ? `
+    <label>Conversation lead <span class="muted">— how much the big LM drives the chat (applies on the next conversation, no restart)</span></label>
+    <select data-f="lead">
+      <option value="0"${s.lead===0?' selected':''}>0 — facts only (fast LM follows)</option>
+      <option value="1"${s.lead===1?' selected':''}>1 — nudge when the chat stalls or loops</option>
+      <option value="2"${s.lead===2?' selected':''}>2 — actively leads (proposes a next move)</option>
+    </select>
+    <label>Briefing prompt <span class="muted">— how the planner directs the voice model (blank = built-in default, shown as placeholder; applies next conversation, no restart)</span></label>
+    <textarea class="prompt" data-f="briefing_prompt" placeholder="${escAttr(s.briefing_default||'')}">${escHtml(s.briefing_prompt||'')}</textarea>
+    <div class="bar"><button class="btn secondary" type="button" onclick="resetBriefing()">Reset to default</button><span class="muted">fills the box with the built-in default — edit it or save as-is</span></div>` : ''}
+    <div class="bar">
+      <button class="btn" onclick="saveModel('${tier}')">Save</button>
+      <button class="btn secondary" onclick="renderModelTier('${tier}')">Refresh</button>
+      <span class="muted">change needs a server restart</span>
+      <span id="ms-${tier}" class="status"></span>
+    </div>`;
+}
+async function saveModel(tier) {
+  const el = document.getElementById('model-' + tier);
+  const g = f => el.querySelector(`[data-f="${f}"]`).value;
+  const cfg = JSON.parse(await (await fetch('/api/config')).text());
+  const key = { fast: 'fast_lm', big: 'big_lm', embed: 'embed_lm' }[tier];
+  Object.assign(cfg[key], {
+    model: g('model'),
+    gpu: parseInt(g('gpu')) || 0,
+    ctx_size: parseInt(g('ctx_size')) || 4096,
+    n_gpu_layers: parseInt(g('n_gpu_layers')),
+    flash_attn: g('flash_attn') === 'true',
+    extra_args: g('extra_args').trim() ? g('extra_args').trim().split(/\s+/) : [],
+  });
+  if (tier === 'big') {
+    cfg.big_lm.lead = parseInt(g('lead'));
+    cfg.big_lm.briefing_prompt = g('briefing_prompt').trim() || null;   // blank ⇒ built-in default
+  }
+  const d = await (await fetch('/api/config', {method:'POST', body: JSON.stringify(cfg)})).json();
+  flash(document.getElementById('ms-' + tier), d.ok, d.ok ? 'saved ✓ (restart this LM)' : 'error');
+  loadConfig();
+}
+// Fill the briefing box with the built-in default (held in the textarea's placeholder),
+// so a ruined prompt can be restored and copied.
+function resetBriefing() {
+  const el = document.querySelector('#model-big [data-f="briefing_prompt"]');
+  if (el) el.value = el.placeholder || '';
+}
+
+// ── Services (logs + restart) ───────────────────────────────────────────────
+let svcTimer = null;
+async function startServices() {
+  await loadServices();
+  loadMode();
+  loadServiceLog();
+  svcTimer = setInterval(() => { if (document.getElementById('svcAuto').checked) loadServiceLog(); }, 3000);
+}
+async function loadMode() {
+  try {
+    const d = await (await fetch('/api/mode')).json();
+    document.getElementById('modeNow').textContent = d.mode;
+    document.getElementById('modeSel').value = d.mode;
+    const ctx = document.getElementById('modeCtx');
+    if (!ctx.value) ctx.value = d.big_lm2_ctx || 4096;
+  } catch (e) {}
+}
+async function applyMode() {
+  const mode = document.getElementById('modeSel').value;
+  const ctx = parseInt(document.getElementById('modeCtx').value) || null;
+  if (!confirm(`Switch the stack to "${mode}" mode? This restarts the whole Vinkona stack (~1 min).`)) return;
+  const s = document.getElementById('modeStatus');
+  s.textContent = 'applying…'; s.className = 'status';
+  const body = { mode }; if (ctx) body.big_lm2_ctx = ctx;
+  const d = await (await fetch('/api/mode', {method:'POST', body: JSON.stringify(body)})).json();
+  if (d.ok) flash(s, true, `switching to ${d.mode} — stack restarting, reconnect in ~1 min`);
+  else flash(s, false, 'error: ' + (d.error || ''));
+}
+async function loadServices() {
+  let d; try { d = await (await fetch('/api/services')).json(); } catch (e) { return; }
+  const sel = document.getElementById('svcSelect'); const cur = sel.value;
+  sel.innerHTML = '';
+  for (const s of (d.services || [])) {
+    const o = document.createElement('option'); o.value = s.name; o.textContent = s.name;
+    sel.appendChild(o);
+  }
+  if (cur) sel.value = cur;
+  if (!(d.services || []).length) document.getElementById('svcStatus').textContent = 'no logs — start the stack with ./vinkona.sh start';
+}
+async function loadServiceLog() {
+  const name = document.getElementById('svcSelect').value;
+  if (!name) return;
+  const log = document.getElementById('svcLog');
+  let d; try { d = await (await fetch('/api/logs?service=' + encodeURIComponent(name) + '&n=300')).json(); }
+  catch (e) { return; }
+  const atBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 20;
+  log.textContent = d.text || '(empty)';
+  if (atBottom) log.scrollTop = log.scrollHeight;
+}
+async function restartService() {
+  const name = document.getElementById('svcSelect').value;
+  if (!name || !confirm('Restart service "' + name + '"?')) return;
+  const d = await (await fetch('/api/restart', {method:'POST', body: JSON.stringify({service:name})})).json();
+  flash(document.getElementById('svcStatus'), d.ok, d.ok ? 'restart requested ✓' : ('error: ' + (d.error||'')));
+}
+
+// ── Live feed ───────────────────────────────────────────────────────────────
+let liveTimer = null;
+function startLive() { loadTrace(); liveTimer = setInterval(() => {
+  if (document.getElementById('autoLive').checked) loadTrace(); }, 2000); }
+function ts(t) { return new Date(t * 1000).toLocaleTimeString(); }
+async function loadTrace() {
+  let d;
+  try { d = await (await fetch('/api/trace?n=200')).json(); }
+  catch (e) { return; }
+  const root = document.getElementById('trace');
+  const evs = (d.events || []).slice().reverse();
+  document.getElementById('lstatus').textContent = evs.length ? `${evs.length} events` : 'no activity yet — start a conversation';
+  root.innerHTML = evs.map(renderEvent).join('');
+}
+function renderEvent(e) {
+  const meta = `<div class="meta"><span>${ts(e.ts)}</span>
+    <span class="pill">${escHtml(e.kind)}</span>
+    ${e.session ? `<span>sess ${escHtml(e.session)}</span>` : ''}
+    ${e.persona ? `<span>${escHtml(e.persona)}</span>` : ''}
+    ${e.model ? `<span>${escHtml(e.model)}</span>` : ''}</div>`;
+  let body = '';
+  let cls = e.kind;
+  if (e.kind === 'turn') {
+    const tools = e.tools_offered || null;
+    const toolPill = tools
+      ? `<div class="meta"><span class="pill" style="color:${tools.length ? '#7dd3a0' : '#f0a08a'}">${tools.length ? tools.length + ' tools offered: ' + escHtml(tools.join(', ')) : 'no tools offered (catalogue empty — check tools/tunnel)'}</span></div>`
+      : '';
+    const hist = e.history || null;
+    body = `<div class="body"><b>User:</b> ${escHtml(e.user)}</div>${toolPill}
+      ${e.recalled ? `<details><summary>recalled memory</summary><pre>${escHtml(e.recalled)}</pre></details>` : ''}
+      ${e.briefing ? `<details><summary>big-LM briefing in context</summary><pre>${escHtml(e.briefing)}</pre></details>` : ''}
+      <details><summary>full system prompt sent to fast LM</summary><pre>${escHtml(e.system)}</pre></details>
+      ${hist ? `<details><summary>conversation window sent to fast LM (${hist.length} msgs)</summary><pre>${escHtml(hist.map(m => m.role.toUpperCase() + ': ' + (m.content||'')).join('\n\n'))}</pre></details>` : ''}`;
+  } else if (e.kind === 'fast_reply') {
+    const ft = e.first_token_ms != null ? ` <span class="pill">${Math.round(e.first_token_ms)} ms to first token</span>` : '';
+    body = `<div class="body"><b>Vinkona:</b> ${escHtml(e.text)}</div><div class="meta">${ft}</div>`;
+  } else if (e.kind === 'recall') {
+    const n = (e.matched || []).length;
+    const d = e.diag || {};
+    let embed;
+    if (!d.embed_attempted) embed = `<span class="pill" style="color:#f0a08a">embed: skipped — ${d.n_embeddable||0}/${e.store_size} memories have embeddings (use “Re-embed all”)</span>`;
+    else if (d.embed_ok) embed = `<span class="pill" style="color:#7dd3a0">embed: queried ✓</span>`;
+    else embed = `<span class="pill" style="color:#f0a08a">embed: FAILED — is serve_embed.sh up on :11437?</span>`;
+    const diag = `<div class="meta"><span class="pill">triggers hit: ${d.trigger_hits||0}</span>${embed}</div>`;
+    const rel = (e.related && e.related.length)
+      ? `<details><summary>possibly related (two-hop): ${e.related.length}</summary><pre>${escHtml(e.related.map(p=>'• '+p).join('\n'))}</pre></details>` : '';
+    let detail;
+    if (n) detail = `<pre>${escHtml(e.matched.map(m => `• ${m.payload}   [${(m.triggers||[]).join(', ')}]`).join('\n'))}</pre>` + rel;
+    else if (e.store_size === 0) detail = `<div class="meta">store is empty — check memory.db_path and restart the cascade so it reloads the DB.</div>`;
+    else detail = `<div class="meta">nothing matched — your wording lacks the exact trigger words, so this needs semantic recall. Make sure serve_embed.sh is running and the memories are embedded (Re-embed all), or add more trigger synonyms in the Memory tab.</div>`;
+    body = `<div class="body"><b>${n} of ${e.store_size}</b> memories matched for “${escHtml(e.query)}”</div>${diag}${detail}`;
+  } else if (e.kind === 'tool_call') {
+    const a = e.arguments || {};
+    const q = Object.keys(a).length
+      ? escHtml(Object.entries(a).map(([k, v]) => `${k}=${String(v).slice(0, 80)}`).join(' · '))
+      : '<span class="meta">no args</span>';
+    body = `<div class="body">🔧 calling <b>${escHtml(e.name)}</b> — ${q}</div>`;
+  } else if (e.kind === 'tool_result') {
+    const ok = e.ok !== false;
+    const n = (e.bytes != null) ? e.bytes : (e.result || '').length;
+    const status = ok
+      ? `<span class="pill" style="color:#7dd3a0">${n} bytes</span>`
+      : `<span class="pill" style="color:#f0a08a">errored · ${n} bytes</span>`;
+    const prev = (e.preview != null) ? e.preview : (e.result || '');
+    const truncated = (e.bytes != null && e.bytes > prev.length);
+    const more = (truncated && e.result && e.result.length > prev.length)
+      ? `<details><summary>more (first ${e.result.length} of ${n} bytes)</summary><pre>${escHtml(e.result)}</pre></details>` : '';
+    body = `<div class="body">${ok ? '↩︎' : '⚠️'} <b>${escHtml(e.name)}</b> returned ${status}</div>`
+         + `<pre>${escHtml(prev)}${truncated ? '…' : ''}</pre>${more}`;
+    if (!ok) cls += ' errored';
+  } else if (e.kind === 'reflect') {
+    body = `<div class="body">reflection wrote <b>${e.applied}</b> memory op(s); store now has ${e.store_size}.</div>`;
+  } else if (e.kind === 'research_queued') {
+    const ts = (e.topics||[]).map(t => typeof t === 'string' ? t : `${t.topic}${t.reason?' — '+t.reason:''}`);
+    body = `<div class="body">🔎 queued research (${ts.length})</div><pre>${escHtml(ts.map(t=>'• '+t).join('\n'))}</pre>`;
+  } else if (e.kind === 'research_start') {
+    body = `<div class="body">🔎 researching <b>${escHtml(e.topic)}</b></div><div class="meta">query: ${escHtml(e.query||'')}${e.reason?' · why: '+escHtml(e.reason):''}</div>`;
+  } else if (e.kind === 'research_done') {
+    body = `<div class="body">📚 learned <b>${e.learned}</b> note(s) on ${escHtml(e.topic)}${e.error?` · <span style="color:#f0a08a">${escHtml(e.error)}</span>`:''}</div>`;
+  } else if (e.kind === 'ingest_start') {
+    body = `<div class="body">📥 ingesting <b>${escHtml(e.source)}</b> via tool ${escHtml(e.tool||'')}</div><pre>${escHtml(JSON.stringify(e.arguments||{}))}</pre>`;
+  } else if (e.kind === 'crawl_start') {
+    body = `<div class="body">📨 crawling <b>${escHtml(e.source)}</b> via ${escHtml(e.tool||'')} <span class="pill">from #${e.offset||0}</span></div>`;
+  } else if (e.kind === 'crawl') {
+    const sk = e.skipped ? ` · ${e.skipped} already-read skipped` : '';
+    const w = e.wrapped ? ' · reached the end, restarting' : ` · ${e.items||0} item(s) from #${e.offset||0}${sk}`;
+    body = `<div class="body">📨 learned <b>${e.learned||0}</b> from ${escHtml(e.source)}${w}</div>`;
+  } else if (e.kind === 'ingest') {
+    body = `<div class="body">📥 ingested <b>${e.learned}</b> from ${escHtml(e.source)}${e.error?` · <span style="color:#f0a08a">${escHtml(e.error)}</span>`:''}</div>`;
+  } else if (e.kind === 'garden') {
+    body = `<div class="body">🌱 gardening — expired ${e.expired}, merged ${e.merged}, pruned ${e.pruned} (store ${e.store_size})</div>`;
+  } else if (e.kind === 'introspect') {
+    const ts = (e.topics||[]).map(t => escHtml(t.topic||'')).join(', ') || '(no new topics)';
+    const win = e.window ? ` · turns ${e.window.from}–${e.window.to} (${e.window.turns})` : '';
+    body = `<div class="body">💭 idle reflection${win} — ${e.learned||0} memory op(s), queued ${e.count||0}: ${ts}</div>`;
+  } else if (e.kind === 'consolidate') {
+    body = `<div class="body">🧹 consolidation — merged ${e.merged||0}, split ${e.split||0}, removed ${e.removed||0} (store ${e.store_size})</div>`;
+  } else if (e.kind === 'notify_scheduled') {
+    body = `<div class="body">🔔 queued ${e.count||0} notification(s)${e.text?`: ${escHtml(e.text)}${e.when?` (${escHtml(e.when)})`:''}`:''}</div>`;
+  } else if (e.kind === 'notify_spoken') {
+    body = `<div class="body">🔔 voiced ${e.count||0} reminder(s): ${escHtml((e.texts||[]).join('; '))}</div>`;
+  } else if (e.kind === 'confirm') {
+    const icon = {ask:'🤔', approved:'✅', declined:'🚫'}[e.decision] || '❓';
+    body = `<div class="body">${icon} confirm ${escHtml(e.decision||'')}${e.tools?` · ${escHtml((e.tools||[]).join(', '))}`:''}</div>`;
+  } else if (e.kind === 'lm_error') {
+    body = `<div class="body">⚠️ LM error from <b>${escHtml(e.model||'')}</b>${e.status?` (HTTP ${e.status})`:''}${e.had_tools?' · request had tools':''}</div><pre>${escHtml(e.detail||'')}</pre>`;
+  } else if (e.kind === 'write_outcome') {
+    const icon = {ok: '✅', conflict: '⛔', failed: '❌', error: '❌', unknown: '❓'}[e.status] || '❓';
+    const v = (e.status === 'ok') ? (e.verified ? ' · verified on calendar' : ' · NOT verified') : '';
+    body = `<div class="body">${icon} write <b>${escHtml(e.tool || '')}</b> — ${escHtml(e.status || '')}${v}${e.detail ? ' · ' + escHtml(e.detail) : ''}</div>`;
+    if (e.status !== 'ok' || e.verified === false) cls += ' errored';
+  } else if (e.kind === 'plan_created') {
+    body = `<div class="body">🎯 learning plan for <b>${escHtml(e.topic || '')}</b> (#${e.plan || '?'})</div>`;
+  } else if (e.kind === 'plan_answer') {
+    const f = e.error ? ' · ⚠️ ' + escHtml(e.error) : e.found === false ? ' · no source found' :
+      ` · learned ${e.learned || 0}${e.sources ? ' · via ' + escHtml(e.sources) : ''}` +
+      (e.considered_chars ? ` · read ${e.considered_chars.toLocaleString()} chars` : '') +
+      (e.warn ? ` · ⚠️ ${escHtml(e.warn)}` : '');
+    body = `<div class="body">🎯 answered <b>${escHtml(e.question || '')}</b>${f}</div>` +
+      (e.answer ? `<details><summary>question → answer</summary><pre>Q: ${escHtml(e.question||'')}\n\nA: ${escHtml(e.answer||'')}</pre></details>` : '');
+    if (e.found === false || e.error) cls += ' errored';
+  } else if (e.kind === 'plan_ask_user') {
+    body = `<div class="body">🙋 raising with the user: ${escHtml((e.questions || []).join('; '))}</div>`;
+  } else if (e.kind === 'doc_grounding') {
+    body = `<div class="body">📄 grounding briefing in <b>${escHtml(e.title || '')}</b> <span class="pill">${e.bytes || 0} chars</span></div>`;
+  } else if (e.kind === 'briefing') {
+    body = `<div class="body">${escHtml(e.text)}</div>
+      ${e.prompt ? `<details><summary>full context sent to big LM (planner)</summary><pre>${escHtml((e.system ? 'SYSTEM: ' + e.system + '\n\n' : '') + e.prompt)}</pre></details>` : ''}
+      <div class="meta"><span class="pill">${e.elapsed_s}s</span>${e.model ? `<span class="pill">${escHtml(e.model)}</span>` : ''}</div>`;
+  } else if (e.kind === 'greeting') {
+    body = `<div class="body">${escHtml(e.text)}</div>`;
+  } else if (e.kind === 'calendar_sync') {
+    body = `<div class="body">📅 calendar consolidated — <b>${e.created||0}</b> created, ${e.adopted||0} adopted, <b>${e.updated||0}</b> updated, ${e.skipped||0} unchanged, ${e.pruned||0} pruned, ${e.noted||0} noted</div>`;
+  } else if (e.kind === 'calendar_op') {
+    const ico = e.ok === false ? '⚠️' : ({read:'📖', create:'➕', adopt:'🏷️', update:'✏️', delete:'🗑️', note:'📝'}[e.op] || '•');
+    let d = '', extra = '';
+    if (e.op === 'read') {
+      if (e.ok === false) {
+        d = `${escHtml(e.detail||'read failed')} <span class="pill">${e.bytes||0} B</span>`;
+        const det = (e.keys ? 'top-level keys: ' + escHtml((e.keys||[]).join(', ')) + '\n\n' : '') + 'raw head:\n' + escHtml(e.sample||'');
+        extra = `<details><summary>what the host returned</summary><pre>${det}</pre></details>`;
+      } else {
+        d = `${e.events} events (${e.bytes||0} B) · <b>${e.origins}</b> to mirror, ${e.mirrors} mirrored, ${e.own||0} your own · plan ${escHtml(JSON.stringify(e.plan||{}))}`;
+        extra = `<details><summary>per-event fields</summary><pre>${escHtml((e.fields||[]).join(', ')) || '(events are not objects)'}\n\nContract needs: id, calendar, notes (+ title, start, end, location)</pre></details>`;
+      }
+    } else d = `${escHtml(e.title||e.vinkona_id||'')}${e.noted?' (noted)':''}${e.ok===false?' — '+escHtml(e.detail||'failed'):''}`;
+    body = `<div class="body">${ico} <b>${escHtml(e.op)}</b> <span class="pill">${escHtml(e.tool||'')}</span> ${d}</div>${extra}`;
+  } else if (e.kind === 'tool_facade') {
+    body = `<div class="body">🧰 fast-LM tools: <b>${(e.offered||[]).length}</b> offered</div>
+      <details><summary>offered (${(e.offered||[]).length}) · hidden (${(e.hidden||[]).length}) · available (${(e.available||[]).length})</summary><pre>offered:   ${escHtml((e.offered||[]).join(', '))}\n\nhidden:    ${escHtml((e.hidden||[]).join(', '))}\n\navailable: ${escHtml((e.available||[]).join(', '))}</pre></details>`;
+  } else if (e.kind === 'kb_call') {
+    const ok = e.outcome === 'ok';
+    const ico = ok ? '✅' : (e.outcome === 'abstain' || e.outcome === 'empty' || e.outcome === 'low_confidence' ? '🚫' : '⚠️');
+    const conf = e.confidence != null ? `<span class="pill">conf ${(+e.confidence).toFixed(2)}</span>` : '';
+    const by = e.by ? `<span class="pill">${escHtml(e.by)}</span>` : '';
+    body = `<div class="body">🔎 <b>${escHtml(e.tool)}</b>${by}${e.live?' <span class="pill">live</span>':''} ${ico} <span class="pill">${escHtml(e.outcome)}</span> ${conf} <span class="pill">${e.count||0} hit${e.count===1?'':'s'}</span></div>
+      <details><summary>question → answer</summary><pre>Q: ${escHtml(e.query||'')}\n\nA: ${escHtml(e.answer||'(nothing returned)')}</pre></details>`;
+  } else if (e.kind === 'tool_locked') {
+    body = `<div class="body">🔗 <b>${escHtml(e.wrapper)}</b> → <span class="pill">${escHtml(e.tool)}</span> <span class="muted">${escHtml(JSON.stringify(e.args||{}))}</span></div>`;
+  } else if (e.kind === 'source_pick' || e.kind === 'scholarly_pick') {
+    body = `<div class="body">🧭 research sources chosen: <b>${escHtml((e.sources||[]).join(', ')||'(none)')}</b> <span class="muted">${escHtml(e.query||'')}</span></div>`;
+  } else if (e.kind === 'source_try') {
+    const ico = {'knowledge base':'📚','document library':'🗂️','wikipedia':'📖','web search':'🌐',
+      'OpenAlex':'🎓','Europe PMC':'⚕️','openFDA':'💊','Wikipedia/Wikidata':'📚','Wiktionary':'🔤',
+      'Stack Exchange':'💬','Hacker News':'📰','GDELT':'🌍','Open Library':'📖','Internet Archive':'🏛️',
+      'arXiv':'🎓','PubMed':'⚕️','Semantic Scholar':'🎓','Crossref':'🎓'}[e.tool] || '🔎';
+    const sz = e.found && e.chars ? ` <span class="pill">${e.chars.toLocaleString()} chars</span>` : '';
+    const sq = e.search_query && e.search_query !== e.query ? ` <span class="pill">🔑 ${escHtml(e.search_query)}</span>` : '';
+    body = `<div class="body">${ico} ${escHtml(e.tool||'source')} ${e.found?'✅':'—'}${sz} <span class="muted">${escHtml(e.query||'')}</span>${sq}${e.url?` <span class="pill">${escHtml((e.url||'').slice(0,60))}</span>`:''}</div>` +
+      (e.preview ? `<details><summary>what it retrieved</summary><pre>${escHtml(e.preview)}${e.chars > 600 ? '\n… (' + (e.chars-600).toLocaleString() + ' more chars archived)' : ''}</pre></details>` : '');
+  } else if (e.kind === 'rss_crawl') {
+    const err = e.error ? ` <span class="pill">⚠️ ${escHtml(e.error)}</span>` : '';
+    body = `<div class="body">📰 news crawl <span class="pill">${escHtml(e.tool||'')}</span> ${e.found||0} fetched · <b>${e.new||0}</b> new · archive ${e.total||0}${err}</div>`;
+  } else if (e.kind === 'news_digest') {
+    body = `<div class="body">🗞️ news digest — <b>${e.items||0}</b> headlines → ${e.chars||0} chars <span class="muted">${escHtml(e.day||'')}</span></div>`;
+  } else if (e.kind === 'research_export') {
+    const err = e.error ? ` <span class="pill">⚠️ ${escHtml(e.error)}</span>` : '';
+    body = `<div class="body">📤 research export ${e.full?'<span class="pill">full</span>':''} — <b>${e.written||0}</b> written · ${e.skipped||0} unchanged · ${e.questions||0} question(s)${err} <span class="muted">${escHtml(e.folder||'')}</span></div>`;
+  } else if (e.kind === 'web_query') {
+    body = `<div class="body">🌐 web search ${e.found?'✅':'—'} <span class="muted">${escHtml(e.query||'')}</span>${e.url?` <span class="pill">${escHtml((e.url||'').slice(0,60))}</span>`:''}</div>`;
+  } else if (e.kind === 'calendar_resolve') {
+    if (e.status === 'unresolved') {
+      body = `<div class="body">🗓️ ⚠️ <b>couldn't resolve a date</b> from <span class="pill">${escHtml(e.date_ref||'')}</span> — asked the user to clarify (nothing booked)</div>`;
+    } else {
+      const when = e.end ? `${escHtml(e.start||'')} → ${escHtml(e.end||'')}` : escHtml(e.start||'(all day)');
+      body = `<div class="body">🗓️ <span class="pill">${escHtml(e.date_ref||'')}</span> → <b>${when}</b>${e.note?` <span class="muted">(${escHtml(e.note)})</span>`:''}</div>`;
+    }
+  } else {
+    body = `<pre>${escHtml(JSON.stringify(e, null, 2))}</pre>`;
+  }
+  return `<div class="ev ${escAttr(cls)}">${meta}${body}</div>`;
+}
+
+// ── Memory ──────────────────────────────────────────────────────────────────
+let memEntries = [], memSelId = null;            // master-detail state
+async function loadMemory() {
+  let d;
+  try { d = await (await fetch('/api/memory')).json(); }
+  catch (e) { return; }
+  if (d.error) {
+    document.getElementById('memEditor').innerHTML = '';
+    document.getElementById('memList').innerHTML = `<div class="mem-empty status err">${escHtml(d.error)}</div>`;
+    document.getElementById('memCount').textContent = ''; return;
+  }
+  memEntries = d.entries || [];
+  // Keep the current selection if it still exists; otherwise pick the first.
+  if (memSelId !== '__new__' && !memEntries.find(e => e.id === memSelId))
+    memSelId = memEntries.length ? memEntries[0].id : null;
+  renderMemList(); renderMemEditor(); updateMemCount();
+}
+function updateMemCount() {
+  const n = memEntries.length, emb = memEntries.filter(e => e.has_embedding).length;
+  document.getElementById('memCount').textContent =
+    n ? `${n} ${n === 1 ? 'memory' : 'memories'} · ${emb} embedded` : 'no memories yet';
+}
+function renderMemList() {
+  const q = (document.getElementById('memFilter').value || '').toLowerCase();
+  const list = document.getElementById('memList'); list.innerHTML = '';
+  if (memSelId === '__new__')
+    list.appendChild(memItem({ id: '__new__', _new: true }));
+  let shown = memEntries;
+  if (!((document.getElementById('memShowQ') || {}).checked))
+    shown = shown.filter(e => e.status !== 'quarantined');   // hide reconcile fragments by default
+  if (q) shown = shown.filter(e =>
+    ((e.payload || '') + ' ' + (e.triggers || []).join(' ') + ' ' + (e.category || '')).toLowerCase().includes(q));
+  shown = sortMems(shown.slice());
+  shown.forEach(e => list.appendChild(memItem(e)));
+  if (!shown.length && memSelId !== '__new__')
+    list.innerHTML = `<div class="mem-empty muted">No memories${q ? ' match the filter' : ' yet'}.</div>`;
+}
+function sortMems(arr) {
+  const by = (document.getElementById('memSort') || {}).value || 'priority';
+  const num = (v) => (typeof v === 'number' ? v : 0);
+  const cmp = {
+    priority: (a, b) => num(b.priority) - num(a.priority) || num(b.created_at) - num(a.created_at),
+    created:  (a, b) => num(b.created_at) - num(a.created_at),
+    used:     (a, b) => num(b.last_used) - num(a.last_used) || num(b.created_at) - num(a.created_at),
+    recency:  (a, b) => num(b.recency) - num(a.recency) || num(b.priority) - num(a.priority),
+    category: (a, b) => (a.category || '').localeCompare(b.category || '') || num(b.priority) - num(a.priority),
+  }[by];
+  return cmp ? arr.sort(cmp) : arr;
+}
+function memItem(e) {
+  const row = document.createElement('div');
+  row.className = 'mem-item' + (e.id === memSelId ? ' active' : '');
+  row.onclick = () => selectMemory(e.id);
+  if (e._new) { row.innerHTML = '<div class="t"><i>new memory…</i></div>'; return row; }
+  const dot = `<span class="dot ${e.has_embedding ? 'on' : 'off'}"></span>`;
+  const qp = e.status === 'quarantined' ? '<span class="pill">quarantined</span> ' : '';
+  row.innerHTML = `<div class="t">${dot}${qp}${escHtml((e.payload || '(empty)').slice(0, 90))}</div>
+    <div class="m">p${e.priority != null ? e.priority : 1} · ${escHtml(e.category || 'general')} · ${escHtml(e.source || '—')}</div>`;
+  return row;
+}
+function selectMemory(id) { memSelId = id; renderMemList(); renderMemEditor(); }
+function renderMemEditor() {
+  const ed = document.getElementById('memEditor'); ed.innerHTML = '';
+  if (memSelId === '__new__') {
+    ed.appendChild(memCard({ triggers: [], context_tags: [], priority: 5, category: 'general', source: 'manual' }));
+    return;
+  }
+  const e = memEntries.find(x => x.id === memSelId);
+  if (!e) { ed.innerHTML = '<div class="mem-empty muted">Select a memory on the left, or add one.</div>'; return; }
+  ed.appendChild(memCard(e));
+}
+function memCard(e) {
+  const c = document.createElement('div'); c.className = 'card'; c.dataset.id = e.id || '';
+  const when = t => t ? new Date(t * 1000).toLocaleString() : '—';
+  c.innerHTML = `
+    <div class="persona-head">
+      <b>${e.id ? escHtml(e.id) : '<span class="muted">new</span>'}</b>
+      <span class="pill">${e.has_embedding ? 'embedded' : 'no embedding'}</span>
+    </div>
+    <label>Payload (text injected into the LM)</label>
+    <textarea class="prompt" data-f="payload">${escHtml(e.payload||'')}</textarea>
+    <div class="row">
+      <div><label>Triggers (comma-separated)</label><input data-f="triggers" value="${escAttr((e.triggers||[]).join(', '))}"></div>
+      <div><label>Context tags (comma-separated)</label><input data-f="context_tags" value="${escAttr((e.context_tags||[]).join(', '))}"></div>
+    </div>
+    <div class="row">
+      <div><label>Priority</label><input data-f="priority" type="number" value="${e.priority!=null?e.priority:1}"></div>
+      <div><label>Category</label><input data-f="category" value="${escAttr(e.category||'general')}"></div>
+      <div><label>Expiry (unix sec, blank = never)</label><input data-f="expiry" value="${e.expiry!=null?e.expiry:''}"></div>
+      <div><label>Source</label><input data-f="source" value="${escAttr(e.source||'manual')}"></div>
+    </div>
+    <div class="mem-meta">recency ${e.recency||0} · last used ${when(e.last_used)} · created ${when(e.created_at)} · cooldown until ${when(e.cooldown_until)}${e.doc_id ? ` · <a href="#" onclick="viewSource('${e.doc_id}',this);return false" style="color:#7aa7ff">view source ↗</a>` : ''}</div>
+    <div class="src" style="display:none"></div>
+    <div class="bar">
+      <button class="btn" onclick="saveMemory(this)">Save</button>
+      ${e.id && e.status === 'quarantined' ? `<button class="btn secondary" onclick="restoreMemory('${e.id}')">Restore</button>` : ''}
+      ${e.id ? `<button class="btn danger" onclick="deleteMemory('${e.id}')">Delete</button>` : ''}
+      <span class="status"></span>
+    </div>`;
+  return c;
+}
+function addMemory() {
+  memSelId = '__new__'; renderMemList(); renderMemEditor();
+  document.getElementById('memEditor').querySelector('[data-f="payload"]').focus();
+}
+async function saveMemory(btn) {
+  const c = btn.closest('.card'), g = f => c.querySelector(`[data-f="${f}"]`).value;
+  const body = {
+    id: c.dataset.id || '',
+    payload: g('payload'),
+    triggers: g('triggers').split(',').map(s=>s.trim()).filter(Boolean),
+    context_tags: g('context_tags').split(',').map(s=>s.trim()).filter(Boolean),
+    priority: parseInt(g('priority')) || 1,
+    category: g('category'),
+    expiry: g('expiry').trim() ? parseFloat(g('expiry')) : null,
+    source: g('source'),
+  };
+  const d = await (await fetch('/api/memory', {method:'POST', body: JSON.stringify(body)})).json();
+  const s = c.querySelector('.status');
+  if (d.ok) { flash(s, true, d.embedded ? 'saved ✓' : 'saved (no embedding — embed model down)');
+    memSelId = d.id; loadMemory(); }            // keep the just-saved memory selected
+  else flash(s, false, 'error: ' + (d.error||''));
+}
+async function deleteMemory(id) {
+  if (!confirm('Delete memory ' + id + '?')) return;
+  await fetch('/api/memory/delete', {method:'POST', body: JSON.stringify({id})});
+  if (memSelId === id) memSelId = null;          // fall back to the first on reload
+  loadMemory();
+}
+async function restoreMemory(id) {
+  await fetch('/api/memory/status', {method:'POST', body: JSON.stringify({id, status:'active'})});
+  loadMemory();
+}
+async function reconcileNow(btn) {
+  const s = document.getElementById('mstatus');
+  s.textContent = 'queueing…'; s.className = 'status';
+  const d = await (await fetch('/api/reconcile', {method:'POST', body:'{}'})).json();
+  if (d.ok) flash(s, true, 'queued ✓ — the research worker reconciles on its next tick; Refresh to see results');
+  else flash(s, false, 'error: ' + (d.error || 'is the research worker running?'));
+}
+async function viewSource(docId, link) {
+  const box = link.closest('.card').querySelector('.src');
+  if (box.style.display === 'block') { box.style.display = 'none'; return; }
+  box.style.display = 'block'; box.innerHTML = '<span class="muted">loading…</span>';
+  const d = await (await fetch('/api/document?id=' + encodeURIComponent(docId))).json();
+  if (d.error) { box.innerHTML = '<span class="status err">source not found</span>'; return; }
+  box.innerHTML = `<div class="muted">${escHtml(d.title||'')} · ${escHtml(d.url||'')} · fetched ${d.fetched_at?new Date(d.fetched_at*1000).toLocaleString():'—'}</div>`
+    + `<pre style="max-height:240px;overflow:auto;white-space:pre-wrap;background:#0f1116;padding:8px;border-radius:6px;font-size:11.5px">${escHtml((d.text||'').slice(0,4000))}</pre>`;
+}
+async function reembedMemory() {
+  const s = document.getElementById('mstatus');
+  s.textContent = 'embedding…'; s.className = 'status';
+  const d = await (await fetch('/api/memory/reembed', {method:'POST', body:'{}'})).json();
+  if (d.error) { flash(s, false, 'error: ' + d.error); return; }
+  flash(s, d.embedded === d.total, `embedded ${d.embedded}/${d.total}` +
+        (d.embedded < d.total ? ' — is serve_embed.sh running?' : ' ✓'));
+  loadMemory();
+}
+
+// ── Self (Vinkona's self-authored personality: identity store + self-memories) ─
+const LAYERS = ['core', 'compensated', 'surface'];
+let selfData = { self: null, attributes: [], self_memories: [] };
+async function loadSelf() {
+  try { selfData = await (await fetch('/api/self')).json(); }
+  catch (e) { return flash(document.getElementById('selfStatus'), false, 'load error'); }
+  renderSelf();
+}
+function renderSelf() {
+  renderSelfState();
+  const box = document.getElementById('selfTraits'); box.innerHTML = '';
+  const attrs = selfData.attributes || [];
+  for (const layer of LAYERS) {
+    const inLayer = attrs.filter(a => a.layer === layer);
+    if (!inLayer.length) continue;
+    const h = document.createElement('div'); h.className = 'muted';
+    h.style.cssText = 'margin:8px 0 4px;text-transform:uppercase;font-size:11px;letter-spacing:.04em';
+    h.textContent = layer + (layer === 'core' ? ' · canon' : '');
+    box.appendChild(h);
+    inLayer.forEach(a => box.appendChild(traitRow(a)));
+  }
+  if (!attrs.length) box.innerHTML = '<div class="muted">No traits yet — seeded from the persona on her next connect, or add one.</div>';
+  if (newTrait) box.appendChild(traitRow({ _new: true, facet: 'trait', layer: 'core' }));
+
+  const m = document.getElementById('selfMems'); m.innerHTML = '';
+  const mems = selfData.self_memories || [];
+  if (!mems.length) m.innerHTML = '<div class="muted">No self-memories yet — she writes these as she reflects.</div>';
+  mems.forEach(e => m.appendChild(selfMemCard(e)));
+}
+function renderSelfState() {
+  const box = document.getElementById('selfState'); box.innerHTML = '';
+  const c = document.createElement('div'); c.className = 'card'; c.style.padding = '8px 10px';
+  const hist = (selfData.state_history || []).slice(1, 6).map(h =>
+    `<div class="mem-meta">${escHtml((h.text||'').slice(0,120))} <span class="muted">· ${escHtml(h.source||'')} · ${h.created_at?new Date(h.created_at*1000).toLocaleDateString():''}</span></div>`).join('');
+  c.innerHTML = `
+    <textarea class="prompt" data-f="state" style="min-height:46px" placeholder="(unset — she'll form one as she reflects)">${escHtml(selfData.state||'')}</textarea>
+    <div class="bar"><span class="muted" style="flex:1">how she's feeling right now</span>
+      <button class="btn" onclick="saveSelfState(this)">Save</button><span class="status"></span></div>
+    ${hist ? '<div class="muted" style="margin-top:6px">earlier:</div>'+hist : ''}`;
+  box.appendChild(c);
+}
+async function saveSelfState(btn) {
+  const c = btn.closest('.card');
+  const d = await (await fetch('/api/self/state', {method:'POST',
+    body: JSON.stringify({text: c.querySelector('[data-f="state"]').value})})).json();
+  if (d.ok) { loadSelf(); flash(document.getElementById('selfStatus'), true, 'saved ✓'); }
+  else flash(c.querySelector('.status'), false, 'error: ' + (d.error||''));
+}
+function traitRow(a) {
+  const row = document.createElement('div'); row.className = 'card'; row.style.padding = '8px 10px';
+  const opts = LAYERS.map(l => `<option value="${l}"${a.layer===l?' selected':''}>${l}</option>`).join('');
+  row.innerHTML = `
+    <div class="row" style="align-items:end;gap:8px">
+      <div style="flex:0 0 140px"><label>Trait (key)</label><input data-f="key" value="${escAttr(a.key||'')}" placeholder="e.g. extraversion"></div>
+      <div style="flex:1"><label>Value</label><input data-f="value" value="${escAttr(a.value||'')}" placeholder="how she is on this"></div>
+      <div style="flex:0 0 120px"><label>Layer</label><select data-f="layer">${opts}</select></div>
+      <div style="flex:0 0 70px"><label>Locked</label><input data-f="locked" type="checkbox" ${a.locked?'checked':''} style="width:auto"></div>
+      <input data-f="facet" type="hidden" value="${escAttr(a.facet||'trait')}">
+      <button class="btn" onclick="saveTrait(this)">Save</button>
+      ${a._new ? '' : `<button class="btn danger" onclick="deleteTrait(${a.id})">✕</button>`}
+    </div>
+    <div class="mem-meta">${a._new ? '<i>new trait</i>' : `${escHtml(a.facet||'trait')} · provenance ${escHtml(a.provenance||'—')}${a.confidence!=null?` · confidence ${a.confidence}`:''}`}</div>
+    <span class="status"></span>`;
+  return row;
+}
+async function saveTrait(btn) {
+  const c = btn.closest('.card'), g = f => c.querySelector(`[data-f="${f}"]`);
+  const body = { facet: g('facet').value || 'trait', key: g('key').value.trim(),
+                 value: g('value').value.trim(), layer: g('layer').value,
+                 locked: g('locked').checked };
+  if (!body.key) return flash(c.querySelector('.status'), false, 'needs a trait key');
+  const d = await (await fetch('/api/self/attribute', {method:'POST', body: JSON.stringify(body)})).json();
+  if (d.ok) { newTrait = false; loadSelf(); flash(document.getElementById('selfStatus'), true, 'saved ✓'); }
+  else flash(c.querySelector('.status'), false, 'error: ' + (d.error||''));
+}
+async function deleteTrait(id) {
+  if (!confirm('Delete this trait?')) return;
+  await fetch('/api/self/attribute/delete', {method:'POST', body: JSON.stringify({id})});
+  loadSelf();
+}
+let newTrait = false;
+function addTrait() { newTrait = true; renderSelf(); }
+function selfMemCard(e) {
+  const c = document.createElement('div'); c.className = 'card'; c.dataset.id = e.id; c.style.padding = '8px 10px';
+  c.innerHTML = `
+    <textarea class="prompt" data-f="payload" style="min-height:48px">${escHtml(e.payload||'')}</textarea>
+    <div class="bar">
+      <span class="muted" style="flex:1">p${e.priority!=null?e.priority:1} · ${escHtml(e.source||'—')}</span>
+      <button class="btn" onclick="saveSelfMem(this)">Save</button>
+      <button class="btn danger" onclick="deleteSelfMem('${e.id}')">Delete</button>
+      <span class="status"></span>
+    </div>`;
+  return c;
+}
+async function saveSelfMem(btn) {
+  const c = btn.closest('.card');
+  const e = (selfData.self_memories||[]).find(x => x.id === c.dataset.id) || {};
+  const body = { id: c.dataset.id, payload: c.querySelector('[data-f="payload"]').value,
+                 triggers: e.triggers||[], context_tags: e.context_tags||[],
+                 priority: e.priority||5, category: 'self', source: e.source||'manual' };
+  const d = await (await fetch('/api/memory', {method:'POST', body: JSON.stringify(body)})).json();
+  flash(c.querySelector('.status'), !!d.ok, d.ok ? 'saved ✓' : ('error: '+(d.error||'')));
+}
+async function deleteSelfMem(id) {
+  if (!confirm('Delete this self-memory?')) return;
+  await fetch('/api/memory/delete', {method:'POST', body: JSON.stringify({id})});
+  loadSelf();
+}
+
+// ── Tuning (friendly sliders over config.json) ──────────────────────────────
+const TUNING = [
+  { group: "Speech output (TTS)", items: [
+    { path: ["tts","trim_silence"], label: "Trim silence", type: "bool", def: true,
+      tip: "Remove the silent head/tail Orpheus bakes into each sentence." },
+    { path: ["tts","silence_threshold"], label: "Silence threshold (RMS)", min: 0, max: 0.05, step: 0.002, def: 0.01,
+      tip: "Below this is treated as silence. Lower = trims less (safer for soft endings)." },
+    { path: ["tts","tail_keep_ms"], label: "Keep word-ending (ms)", min: 0, max: 400, step: 20, def: 160,
+      tip: "Trailing audio kept so final consonants aren't clipped. Raise if ends cut off." },
+    { path: ["tts","sentence_gap_ms"], label: "Gap between sentences (ms)", min: 0, max: 400, step: 20, def: 80,
+      tip: "Pause inserted between sentences. Lower for snappier, raise for more breathing room." },
+  ]},
+  { group: "Listening (VAD)", items: [
+    { path: ["vad","onset_frames"], label: "Onset frames (start capturing)", min: 1, max: 6, step: 1, def: 2 },
+    { path: ["vad","barge_in_frames"], label: "Barge-in frames (interrupt the AI)", min: 1, max: 12, step: 1, def: 3,
+      tip: "Sustained voice frames before the AI is cut off. Raise if noise interrupts it." },
+    { path: ["vad","offset_frames"], label: "Offset frames (end of turn)", min: 2, max: 16, step: 1, def: 6 },
+    { path: ["vad","onset_prob"], label: "Onset probability", min: 0, max: 1, step: 0.05, def: 0.6 },
+    { path: ["vad","offset_prob"], label: "Offset probability", min: 0, max: 1, step: 0.05, def: 0.35 },
+  ]},
+  { group: "Transcription (ASR)", items: [
+    { path: ["asr","no_speech_threshold"], label: "No-speech threshold", min: 0, max: 1, step: 0.05, def: 0.6,
+      tip: "Lower = rejects more noise as silence." },
+    { path: ["asr","vad_threshold"], label: "Silero VAD threshold", min: 0, max: 1, step: 0.05, def: 0.5,
+      tip: "Higher = stricter about what counts as speech on the captured clip." },
+    { path: ["asr","min_speech_ms"], label: "Min speech (ms)", min: 0, max: 800, step: 50, def: 250 },
+  ]},
+  { group: "Audio", items: [
+    { path: ["audio","mic_gain"], label: "Mic gain", min: 0.5, max: 8, step: 0.5, def: 4 },
+    { path: ["audio","out_prime"], label: "Output buffer frames", min: 1, max: 6, step: 1, def: 2,
+      tip: "Higher = smoother audio but a touch more latency." },
+  ]},
+  { group: "Memory recall", items: [
+    { path: ["memory","recall_top_k"], label: "Max memories per turn", min: 1, max: 10, step: 1, def: 5 },
+    { path: ["memory","min_score"], label: "Min recall score", min: 0, max: 3, step: 0.1, def: 0.5,
+      tip: "A memory must score at least this to be injected. Lower = recalls more." },
+    { path: ["memory","default_cooldown_s"], label: "Cooldown after use (s)", min: 0, max: 3600, step: 60, def: 600,
+      tip: "A recalled memory goes quiet this long. Set 0 while testing so it always fires." },
+    { path: ["memory","weights","trigger"], label: "Weight: trigger match", min: 0, max: 4, step: 0.1, def: 2 },
+    { path: ["memory","weights","semantic"], label: "Weight: semantic match", min: 0, max: 4, step: 0.1, def: 1.5,
+      tip: "Needs the embed server (serve_embed.sh) running to do anything." },
+  ]},
+];
+function getPath(o, p) { return p.reduce((a, k) => (a == null ? undefined : a[k]), o); }
+function setPath(o, p, v) { let a = o; for (let i = 0; i < p.length - 1; i++) { if (a[p[i]] == null) a[p[i]] = {}; a = a[p[i]]; } a[p[p.length - 1]] = v; }
+async function loadTuning() {
+  const cfg = JSON.parse(await (await fetch('/api/config')).text());
+  const root = document.getElementById('tuning'); root.innerHTML = '';
+  for (const grp of TUNING) {
+    const card = document.createElement('div'); card.className = 'card';
+    card.innerHTML = `<b>${escHtml(grp.group)}</b>`;
+    for (const it of grp.items) {
+      let v = getPath(cfg, it.path); if (v === undefined) v = it.def;
+      const row = document.createElement('div'); row.className = 'tune-row';
+      const dp = it.path.join('.');
+      if (it.type === 'bool') {
+        row.innerHTML = `<label>${escHtml(it.label)}</label>
+          <input type="checkbox" data-path="${dp}" ${v ? 'checked' : ''} style="width:auto;justify-self:start">
+          <span></span>`;
+      } else {
+        row.innerHTML = `<label>${escHtml(it.label)}</label>
+          <input type="range" min="${it.min}" max="${it.max}" step="${it.step}" value="${v}"
+                 oninput="this.nextElementSibling.value=this.value">
+          <input type="number" min="${it.min}" max="${it.max}" step="${it.step}" value="${v}" data-path="${dp}"
+                 oninput="this.previousElementSibling.value=this.value">`;
+      }
+      if (it.tip) { const t = document.createElement('div'); t.className = 'tip'; t.textContent = it.tip; row.appendChild(t); }
+      card.appendChild(row);
+    }
+    root.appendChild(card);
+  }
+}
+async function saveTuning() {
+  const cfg = JSON.parse(await (await fetch('/api/config')).text());
+  for (const el of document.querySelectorAll('#tuning [data-path]')) {
+    setPath(cfg, el.dataset.path.split('.'), el.type === 'checkbox' ? el.checked : parseFloat(el.value));
+  }
+  const d = await (await fetch('/api/config', { method: 'POST', body: JSON.stringify(cfg) })).json();
+  flash(document.getElementById('tstatus'), d.ok, d.ok ? 'saved ✓ (applies next call)' : ('error: ' + (d.error || '')));
+}
+
+// ── Profiles (memory + personalities bundles) ────────────────────────────────
+function fmtBytes(n){ if(!n) return '0 B'; const u=['B','KB','MB','GB']; let i=0; while(n>=1024&&i<u.length-1){n/=1024;i++;} return n.toFixed(i?1:0)+' '+u[i]; }
+async function loadProfiles() {
+  const root = document.getElementById('profiles');
+  let d; try { d = await (await fetch('/api/profiles')).json(); } catch(e){ root.innerHTML='<div class="status err">could not load profiles</div>'; return; }
+  const list = d.profiles || [];
+  if (!list.length) { root.innerHTML = '<div class="muted">No profiles yet.</div>'; return; }
+  root.innerHTML = '';
+  for (const p of list) {
+    const card = document.createElement('div'); card.className = 'card';
+    const mem = p.memories < 0 ? '—' : p.memories;
+    card.innerHTML = `
+      <div class="persona-head">
+        <b>${escHtml(p.name)} ${p.active ? '<span class="pill" style="border-color:#3b82f6;color:#9bbcff">active</span>' : ''}</b>
+        <span class="muted">${mem} ${mem===1?'memory':'memories'} · ${p.personas} ${p.personas===1?'persona':'personas'} · ${fmtBytes(p.size)}</span>
+      </div>
+      <div class="bar">
+        ${p.active ? '<span class="muted">currently in use</span>'
+                   : `<button class="btn" onclick="switchProfile('${escAttr(p.name)}')">Switch to this</button>`}
+        ${p.active ? '' : `<button class="btn danger" onclick="deleteProfile('${escAttr(p.name)}')">Delete</button>`}
+        <span class="status"></span>
+      </div>`;
+    root.appendChild(card);
+  }
+}
+async function switchProfile(name) {
+  if (!confirm(`Switch to profile "${name}"? This restarts the cascade & research worker — any live conversation will drop.`)) return;
+  const s = document.getElementById('prstatus'); s.textContent = 'switching…'; s.className = 'status';
+  const d = await (await fetch('/api/profiles/switch', {method:'POST', body: JSON.stringify({name})})).json();
+  if (d.ok) { flash(s, true, `now on "${d.active}" — services restarting`); loadProfiles(); }
+  else flash(s, false, 'error: ' + (d.error||''));
+}
+async function createProfile() {
+  const name = document.getElementById('newProfile').value.trim();
+  if (!name) return flash(document.getElementById('prstatus'), false, 'type a name first');
+  const d = await (await fetch('/api/profiles/create', {method:'POST', body: JSON.stringify({name})})).json();
+  if (d.ok) { document.getElementById('newProfile').value=''; flash(document.getElementById('prstatus'), true, `created "${name}"`); loadProfiles(); }
+  else flash(document.getElementById('prstatus'), false, 'error: ' + (d.error||''));
+}
+async function duplicateProfile() {
+  const to = document.getElementById('newProfile').value.trim();
+  if (!to) return flash(document.getElementById('prstatus'), false, 'type a name for the snapshot first');
+  const d = await (await fetch('/api/profiles/duplicate', {method:'POST', body: JSON.stringify({to})})).json();
+  if (d.ok) { document.getElementById('newProfile').value=''; flash(document.getElementById('prstatus'), true, `snapshot saved as "${to}"`); loadProfiles(); }
+  else flash(document.getElementById('prstatus'), false, 'error: ' + (d.error||''));
+}
+async function deleteProfile(name) {
+  if (!confirm(`Delete profile "${name}" and all its memories? This cannot be undone.`)) return;
+  const d = await (await fetch('/api/profiles/delete', {method:'POST', body: JSON.stringify({name})})).json();
+  if (d.ok) { flash(document.getElementById('prstatus'), true, `deleted "${name}"`); loadProfiles(); }
+  else flash(document.getElementById('prstatus'), false, 'error: ' + (d.error||''));
+}
+
+// ── Research (Tier-3 toggles + prompts) ──────────────────────────────────────
+async function loadResearch() {
+  const cfg = JSON.parse(await (await fetch('/api/config')).text());
+  const defs = await (await fetch('/api/research_defaults')).json();
+  const r = cfg.research || {}, ing = r.ingest || {}, mem = cfg.memory || {}, idle = r.idle || {};
+  document.getElementById('rEnabled').checked = !!r.enabled;
+  document.getElementById('rIngestEnabled').checked = !!ing.enabled;
+  document.getElementById('rMaxTopics').value = r.max_topics_per_session ?? 3;
+  document.getElementById('rSearxng').value = r.searxng_url || '';
+  document.getElementById('rIdleEnabled').checked = !!idle.enabled;
+  document.getElementById('rIdleAfter').value = idle.idle_after_s ?? 120;
+  document.getElementById('rIdleBatch').value = idle.batch_size ?? 3;
+  document.getElementById('rIdlePause').value = idle.pause_s ?? 120;
+  document.getElementById('rIdleConsolidate').checked = idle.consolidate !== false;
+  // Empty box ⇒ use the built-in default; show that default as placeholder.
+  const fld = (id, val, ph) => { const e = document.getElementById(id);
+    e.value = val || ''; e.placeholder = ph || ''; };
+  fld('rResearchPrompt', r.research_prompt, defs.research_prompt);
+  fld('rSynthPrompt', r.synth_prompt, defs.synth_prompt);
+  fld('rIngestPrompt', ing.prompt, defs.ingest_prompt);
+  fld('rReflectionPrompt', mem.reflection_prompt, defs.reflection_prompt);
+  fld('rIntrospectPrompt', idle.introspect_prompt, defs.introspect_prompt);
+  fld('rConsolidatePrompt', idle.consolidate_prompt, defs.consolidate_prompt);
+  renderIdleTasks(idle.tasks || {});
+  loadDeadendCounts();
+}
+const IDLE_TASKS = [
+  ['reflect', 'Reflect'], ['plans', 'Plans'], ['research_queue', 'Research queue'],
+  ['crawl', 'Crawl mail/files'], ['ingest', 'Tool ingest'], ['calendar_sync', 'Calendar sync'],
+  ['consolidate', 'Consolidate'], ['perspective_audit', 'Perspective audit'],
+  ['synthesis', 'Profile synthesis'], ['reconcile', 'Reconcile'], ['affect', 'Affect'],
+  ['rhythms', 'Rhythms'], ['reembed', 'Re-embed'], ['garden', 'Garden'],
+  ['rss', 'News crawl'], ['news_digest', 'News digest'], ['export', 'Research export'],
+];
+function renderIdleTasks(tasks) {
+  document.getElementById('rIdleTasks').innerHTML = IDLE_TASKS.map(([k, label]) =>
+    `<label style="display:flex;align-items:center;gap:6px;font-weight:400;white-space:nowrap">
+       <input type="checkbox" data-task="${k}" style="width:auto" ${tasks[k] === false ? '' : 'checked'}> ${label}</label>`
+  ).join('');
+}
+function collectIdleTasks() {
+  const t = {};                                    // store only the unticked (false) ones
+  document.querySelectorAll('#rIdleTasks input[data-task]').forEach(cb => {
+    if (!cb.checked) t[cb.dataset.task] = false;
+  });
+  return t;
+}
+async function loadDeadendCounts() {
+  try {
+    const d = await (await fetch('/api/research/deadends')).json();
+    document.getElementById('cntNoSource').textContent = d.no_source ?? 0;
+    document.getElementById('cntNoAnswer').textContent = d.no_answer ?? 0;
+  } catch (e) { /* leave the … placeholders */ }
+}
+async function reopenResearch(which) {
+  const el = document.getElementById('reopenStatus');
+  el.textContent = 'working…'; el.className = 'status';
+  try {
+    const r = await (await fetch('/api/research/reopen', {method: 'POST',
+      headers: {'Content-Type': 'application/json'}, body: JSON.stringify({which})})).json();
+    if (r.error) { el.textContent = r.error; el.className = 'status err'; return; }
+    el.textContent = `put ${r.reopened} question${r.reopened===1?'':'s'} back` +
+      (r.plans_reopened ? ` (${r.plans_reopened} plan${r.plans_reopened===1?'':'s'} re-opened)` : '');
+    el.className = 'status ok';
+    loadDeadendCounts();
+  } catch (e) { el.textContent = String(e); el.className = 'status err'; }
+}
+
+async function reExportResearch() {
+  const el = document.getElementById('reExportStatus');
+  el.textContent = 'queuing…'; el.className = 'status';
+  try {
+    const r = await (await fetch('/api/research/export', {method: 'POST',
+      headers: {'Content-Type': 'application/json'}, body: '{}'})).json();
+    if (r.error) { el.textContent = r.error; el.className = 'status err'; return; }
+    el.textContent = 'queued — the worker will rebuild every drop on its next poll (watch the Live feed)';
+    el.className = 'status ok';
+  } catch (e) { el.textContent = String(e); el.className = 'status err'; }
+}
+async function saveResearch() {
+  const cfg = JSON.parse(await (await fetch('/api/config')).text());
+  cfg.research = cfg.research || {}; cfg.research.ingest = cfg.research.ingest || {};
+  cfg.research.idle = cfg.research.idle || {}; cfg.memory = cfg.memory || {};
+  cfg.research.enabled = document.getElementById('rEnabled').checked;
+  cfg.research.ingest.enabled = document.getElementById('rIngestEnabled').checked;
+  cfg.research.max_topics_per_session = parseInt(document.getElementById('rMaxTopics').value) || 0;
+  cfg.research.searxng_url = document.getElementById('rSearxng').value.trim() || null;
+  const idle = cfg.research.idle;
+  idle.enabled = document.getElementById('rIdleEnabled').checked;
+  idle.idle_after_s = parseInt(document.getElementById('rIdleAfter').value) || 120;
+  idle.batch_size = parseInt(document.getElementById('rIdleBatch').value) || 3;
+  idle.pause_s = parseInt(document.getElementById('rIdlePause').value) || 120;
+  idle.consolidate = document.getElementById('rIdleConsolidate').checked;
+  idle.tasks = collectIdleTasks();
+  const orNull = id => document.getElementById(id).value.trim() || null;   // blank ⇒ default
+  cfg.research.research_prompt = orNull('rResearchPrompt');
+  cfg.research.synth_prompt = orNull('rSynthPrompt');
+  cfg.research.ingest.prompt = orNull('rIngestPrompt');
+  cfg.memory.reflection_prompt = orNull('rReflectionPrompt');
+  idle.introspect_prompt = orNull('rIntrospectPrompt');
+  idle.consolidate_prompt = orNull('rConsolidatePrompt');
+  const d = await (await fetch('/api/config', { method: 'POST', body: JSON.stringify(cfg) })).json();
+  flash(document.getElementById('rstatus'), d.ok, d.ok ? 'saved ✓ (applies on next research pass)' : ('error: ' + (d.error || '')));
+}
+
+// ── Settings: schema-driven form, auto-generated from the merged config ───────
+// GET /api/config returns DEFAULTS ⊕ the user's overrides, so EVERY option — including
+// ones added to the schema after this config.json was written — is present and gets a
+// widget here, with no per-field UI code. Widgets edit the loaded object in place; Save
+// posts it back whole, so it's inherently non-destructive (it contains every key).
+let _cfgObj = null;
+const CFG_SKIP = new Set(['personas_path']);       // owned by the profile system, not edited here
+
+function humanize(k){ return k.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()); }
+function nodeType(v){
+  if (v === null) return 'null';
+  if (Array.isArray(v)) return v.every(x => x === null || typeof x !== 'object') ? 'scalararray' : 'objarray';
+  if (typeof v === 'object') return 'object';
+  if (typeof v === 'boolean') return 'bool';
+  if (typeof v === 'number') return 'number';
+  return 'string';
+}
+async function loadConfig() {
+  _cfgObj = JSON.parse(await (await fetch('/api/config')).text());
+  renderConfigForm();
+  document.getElementById('rawConfig').value = JSON.stringify(_cfgObj, null, 2);
+}
+function renderConfigForm(){
+  const root = document.getElementById('cfgForm'); root.innerHTML = '';
+  for (const key of Object.keys(_cfgObj).sort()){
+    if (CFG_SKIP.has(key)) continue;
+    root.appendChild(renderNode(_cfgObj, key, [key], true));
+  }
+  const q = document.getElementById('cfgSearch').value;
+  if (q) filterConfig(q);
+}
+// Render parent[key]; objects become collapsible groups, everything else a labelled widget.
+function renderNode(parent, key, path, top){
+  const t = nodeType(parent[key]);
+  if (t === 'object'){
+    const d = document.createElement('details');
+    d.className = top ? 'cfg-group' : 'cfg-group cfg-sub';
+    const sum = document.createElement('summary'); sum.textContent = humanize(key); d.appendChild(sum);
+    const body = document.createElement('div'); body.className = 'cfg-body';
+    for (const ck of Object.keys(parent[key]).sort()) body.appendChild(renderNode(parent[key], ck, path.concat(ck), false));
+    d.appendChild(body);
+    return d;
+  }
+  const field = document.createElement('div');
+  field.className = 'cfg-field' + (t === 'bool' ? ' bool' : '');
+  field.dataset.search = path.join('.').toLowerCase();
+  const lab = document.createElement('label'); lab.textContent = humanize(key);
+  const p = document.createElement('div'); p.className = 'cfg-path'; p.textContent = path.join('.'); lab.appendChild(p);
+  const ctl = document.createElement('div'); ctl.className = 'ctl'; ctl.appendChild(widgetFor(parent, key, t));
+  field.appendChild(lab); field.appendChild(ctl);
+  return field;
+}
+function widgetFor(parent, key, t){
+  const v = parent[key];
+  if (t === 'bool'){
+    const i = document.createElement('input'); i.type = 'checkbox'; i.checked = v;
+    i.onchange = () => { parent[key] = i.checked; }; return i;
+  }
+  if (t === 'number'){
+    const i = document.createElement('input'); i.type = 'number'; i.step = 'any'; i.value = v;
+    i.oninput = () => { parent[key] = i.value === '' ? null : Number(i.value); }; return i;
+  }
+  if (t === 'scalararray'){
+    const isNum = v.length > 0 && v.every(x => typeof x === 'number');
+    const i = document.createElement('input'); i.value = v.join(', ');
+    i.placeholder = isNum ? 'comma-separated numbers' : 'comma-separated values';
+    i.oninput = () => { parent[key] = i.value.split(',').map(s => s.trim()).filter(s => s !== '')
+                                        .map(s => isNum ? Number(s) : s); };
+    return i;
+  }
+  if (t === 'objarray'){ return jsonEditor(parent, key); }   // list of objects → localized JSON editor
+  // string or null
+  const isPrompt = /prompt$/.test(key) || (typeof v === 'string' && (v.length > 80 || v.includes('\n')));
+  const el = document.createElement(isPrompt ? 'textarea' : 'input');
+  if (isPrompt) el.className = 'prompt';
+  el.value = v == null ? '' : v;
+  if (v == null) el.placeholder = '(unset — uses the built-in default)';
+  el.oninput = () => {
+    if (el.value === '') parent[key] = (/prompt$/.test(key) || v === null) ? null : '';
+    else parent[key] = el.value;
+  };
+  return el;
+}
+function jsonEditor(parent, key){
+  const wrap = document.createElement('div');
+  const ta = document.createElement('textarea'); ta.className = 'cfg-json';
+  ta.value = JSON.stringify(parent[key], null, 2);
+  const err = document.createElement('div'); err.className = 'cfg-err';
+  ta.oninput = () => {
+    try { parent[key] = JSON.parse(ta.value); ta.classList.remove('err'); ta.dataset.bad = ''; err.textContent = ''; }
+    catch(e){ ta.classList.add('err'); ta.dataset.bad = '1'; err.textContent = 'invalid JSON — not applied'; }
+  };
+  wrap.appendChild(ta); wrap.appendChild(err); return wrap;
+}
+async function saveConfig() {
+  const s = document.getElementById('cstatus');
+  if (document.querySelector('#cfgForm textarea.cfg-json[data-bad="1"]')){
+    flash(s, false, 'fix the highlighted JSON field first'); return;
+  }
+  const d = await (await fetch('/api/config', { method:'POST', body: JSON.stringify(_cfgObj, null, 2) })).json();
+  if (d.ok) document.getElementById('rawConfig').value = JSON.stringify(_cfgObj, null, 2);
+  flash(s, d.ok, d.ok ? 'saved ✓' : ('error: '+(d.error||'')));
+}
+function applyRaw() {
+  const s = document.getElementById('rawstatus');
+  try { _cfgObj = JSON.parse(document.getElementById('rawConfig').value); }
+  catch(e){ flash(s, false, 'invalid JSON: '+e.message); return; }
+  renderConfigForm(); flash(s, true, 'applied to form ✓ — review, then Save settings');
+}
+function filterConfig(q){
+  q = (q || '').trim().toLowerCase();
+  for (const f of document.querySelectorAll('#cfgForm .cfg-field'))
+    f.classList.toggle('cfg-hide', !!q && !f.dataset.search.includes(q));
+  for (const g of document.querySelectorAll('#cfgForm .cfg-group')){
+    const anyVisible = g.querySelector('.cfg-field:not(.cfg-hide)');
+    g.classList.toggle('cfg-hide', !anyVisible);
+    if (q && anyVisible) g.open = true;
+  }
+}
+
+// Point the "Open text chat" link at the cascade server (served from its port).
+async function setChatLink() {
+  try {
+    const cfg = JSON.parse(await (await fetch('/api/config')).text());
+    const port = (cfg.server || {}).port || 8998;
+    const proto = (cfg.server || {}).ssl_dir ? 'https' : 'http';
+    document.getElementById('chatLink').href = `${proto}://${location.hostname}:${port}/chat`;
+  } catch (e) {}
+}
+
+// initial load
+loadPersonas(); loadConfig(); setChatLink();
+</script>
+</body>
+</html>

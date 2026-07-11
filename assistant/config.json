@@ -1,0 +1,13 @@
+{
+  "instance_name": "vinkona",
+  "hf_repo": "nvidia/personaplex-7b-v1",
+  "lm_model_file": "$HOME/vinkona/Models/personaplex-7b-v1-raw/model.safetensors",
+  "text_tokenizer_file": "$HOME/vinkona/Models/personaplex-7b-v1-raw/tokenizer_spm_32k_3.model",
+  "log_dir": "$HOME/vinkona/logs",
+  "mimi_model_file": "$HOME/vinkona/Models/personaplex-7b-v1-raw/tokenizer-e351c8d8-checkpoint125.safetensors",
+  "mimi_num_codebooks": 8,
+  "static_dir": "$HOME/vinkona/dist/dist",
+  "addr": "0.0.0.0",
+  "port": 8998,
+  "cert_dir": "$HOME/vinkona/certs"
+}

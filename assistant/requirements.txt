@@ -1,0 +1,42 @@
+--extra-index-url https://download.pytorch.org/whl/cu124
+
+# NOTE: these are loose ranges for a fresh install.  For a REPRODUCIBLE deploy, capture the
+# working set on the live box with `pip freeze > requirements.lock` and install from that —
+# the torch/moshi stack in particular is sensitive to exact versions and your CUDA build.
+
+# Core PyTorch (CUDA 12.4 — adjust cu124 to match your driver, e.g. cu128)
+torch
+
+# NVIDIA PersonaPlex engine — install from source: pip install personaplex_src/moshi/.
+# DO NOT pip install moshi from PyPI — it conflicts with moshi-personaplex.
+# Version pins match moshi-personaplex 0.1.0 requirements.
+rustymimi
+sphn>=0.1.4,<0.2
+sentencepiece
+bitsandbytes
+
+# WebRTC + audio pipeline
+aiortc
+av
+
+# Speech: ASR (faster-whisper) + resampling (soxr), and soundfile for TTS audio I/O
+faster-whisper
+soxr
+soundfile
+
+# HTTP server + async client (cascade WS/web, llm_bridge, research worker, knowledge-host)
+aiohttp
+fastapi
+uvicorn[standard]
+pydantic<3                    # v3 will break (pydantic has a history of major-version breaks)
+
+# Utilities
+numpy<3                       # cap the next major; 1.x/2.x both fine
+huggingface_hub
+safetensors>=0.4.0,<0.5
+sympy            # in-process `calculate` tool (exact/precise math); tool is offered only if present
+# Time-sense (Phase 1, the semantic clock) — both optional; the deterministic core
+# (part-of-day/weekend/season) works without them, these just add light + holidays.
+astral           # sunrise/sunset → "it's dark out" / "the sun's setting"
+holidays         # names today's public holiday for a configured country (awareness.holidays_country)
+python-dateutil  # Phase 3 recurrence next_expected (rrule); falls back to last+period if absent

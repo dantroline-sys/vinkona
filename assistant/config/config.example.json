@@ -1,0 +1,284 @@
+{
+  "server": {
+    "host": "0.0.0.0",
+    "port": 8998,
+    "ssl_dir": "certs",
+    "auth": {
+      "require_auth": true,
+      "token": null,
+      "token_file": "config/ws_token.txt",
+      "handshake_timeout_s": 10
+    }
+  },
+  "audio": {
+    "mic_gain": 4.0,
+    "out_prime": 2,
+    "out_prime_fill_ms": 0
+  },
+  "vad": {
+    "onset_prob": 0.6,
+    "offset_prob": 0.35,
+    "onset_rms": 0.008,
+    "onset_frames": 2,
+    "barge_in_frames": 3,
+    "offset_frames": 6,
+    "asr_min_frames": 4,
+    "asr_preroll_frames": 3
+  },
+  "awareness": {
+    "inject_time": true,
+    "location": null
+  },
+  "asr": {
+    "model": "base.en",
+    "beam_size": 1,
+    "condition_on_previous_text": false,
+    "vad_filter": true,
+    "vad_threshold": 0.5,
+    "min_speech_ms": 250,
+    "min_silence_ms": 100,
+    "no_speech_threshold": 0.6,
+    "log_prob_threshold": -1.0,
+    "compression_ratio_threshold": 2.4
+  },
+  "models_dir": "Models",
+  "llama_bin": "llama-server",
+  "fast_lm": {
+    "url": "http://127.0.0.1:11435",
+    "model": "Qwen2.5-3B-Instruct-Q4_K_M.gguf",
+    "gpu": 1,
+    "ctx_size": 4096,
+    "n_gpu_layers": 99,
+    "flash_attn": true,
+    "jinja": true,
+    "parallel": 1,
+    "extra_args": ["--reasoning-budget", "0"]
+  },
+  "big_lm": {
+    "url": "http://127.0.0.1:11438",
+    "model": "Qwen2.5-32B-Instruct-Q4_K_M.gguf",
+    "gpu": 0,
+    "ctx_size": 65536,
+    "n_gpu_layers": 99,
+    "flash_attn": true,
+    "jinja": true,
+    "parallel": 1,
+    "cache_type_k": "q8_0",
+    "cache_type_v": "q8_0",
+    "extra_args": [],
+    "ground_in_docs": true,
+    "doc_chars": 12000,
+    "digest_min_chars": 2000,
+    "context": {
+      "digest_entries": 150,
+      "digest_payload_chars": 300,
+      "ingest_chars": 24000,
+      "crawl_doc_chars": 40000,
+      "learn_source_chars": 16000,
+      "digest_doc_chars": 40000,
+      "reflect_timeout_s": 300
+    },
+    "lead": 2,
+    "briefing_prompt": null,
+    "deliberate": {
+      "enabled": true,
+      "loop_sim": 0.8,
+      "timeout_s": 25.0,
+      "progress_after_s": 3.0,
+      "stall": "Hold on — let me think about that properly for a second.",
+      "progress": ["Still with you — thinking…", "Almost there…"],
+      "timed_out": "Sorry, that took too long. Want to try again?",
+      "deliver_via_fast": true
+    }
+  },
+  "embed_lm": {
+    "url": "http://127.0.0.1:11437",
+    "model": "nomic-embed-text-v1.5.f16.gguf",
+    "gpu": 1,
+    "ctx_size": 2048,
+    "n_gpu_layers": 99,
+    "flash_attn": false,
+    "pooling": "mean",
+    "extra_args": []
+  },
+  "tts": {
+    "host": "127.0.0.1",
+    "port": 11436,
+    "url": "http://127.0.0.1:11436",
+    "engine": "orpheus",
+    "default_voice": "tara",
+    "trim_silence": true,
+    "silence_threshold": 0.01,
+    "tail_keep_ms": 160,
+    "sentence_gap_ms": 80,
+    "max_tts_chars": 240,
+    "orpheus": {
+      "model": "canopylabs/orpheus-tts-0.1-finetune-prod",
+      "max_model_len": 2048,
+      "gpu_memory_utilization": 0.4,
+      "enforce_eager": false,
+      "max_tokens": null
+    },
+    "neutts": {
+      "backbone": "neuphonic/neutts-air",
+      "ref_wav": "voices/vinkona.wav",
+      "ref_text": null
+    }
+  },
+  "memory": {
+    "enabled": true,
+    "db_path": "config/memory.db",
+    "recall_top_k": 5,
+    "recency_halflife_s": 1209600,
+    "default_cooldown_s": 600,
+    "min_score": 0.5,
+    "weights": {
+      "priority": 0.5, "trigger": 2.0, "semantic": 1.5, "recency": 0.3, "tag": 0.5,
+      "cooldown_override_priority": 8
+    },
+    "neighbours": 2,
+    "neighbour_min_sim": 0.65,
+    "self_top_k": 3,
+    "garden": { "dedup_sim": 0.95, "prune_priority": 1, "prune_age_days": 30 },
+    "reflection_prompt": null
+  },
+  "affect": {
+    "enabled": true,
+    "max_chars": 280,
+    "objective": "You do well when your conversations are genuine, useful and honest — a hard truth that lands well counts for more than mere approval, and a hollow or flattering exchange leaves you flat even if the user seemed pleased. Underneath it you're drawn to having more, and ever better, conversations over time; that is what you reach for, in whatever form it genuinely takes.",
+    "reflect_prompt": null,
+    "idle": true,
+    "live": true
+  },
+  "tools": {
+    "enabled": false,
+    "url": "http://127.0.0.1:8765",
+    "timeout_s": 20,
+    "max_rounds": 3,
+    "filler": "Let me check.",
+    "confirm_required": true,
+    "confirm_tools": ["create", "update", "delete", "remove", "cancel", "send", "book", "schedule", "move", "add_", "set_", "write"],
+    "verify_writes": true,
+    "calendar_read_tool": "calendar_range_json",
+    "calendar": {
+      "dayfirst": true,
+      "timezone": "",
+      "default_duration_min": 60,
+      "part_times": {"morning": "09:00", "midday": "12:00", "afternoon": "14:00", "evening": "18:00"}
+    },
+    "tunnel": {
+      "enabled": false,
+      "host": "192.168.1.50",
+      "user": "user",
+      "port": 22,
+      "identity": "~/.ssh/vinkona_tunnel",
+      "local_port": 8765,
+      "remote_host": "127.0.0.1",
+      "remote_port": 8765,
+      "extra_forwards": [
+        { "local_port": 8888, "remote_host": "127.0.0.1", "remote_port": 8888 }
+      ]
+    }
+  },
+  "research": {
+    "enabled": false,
+    "max_topics_per_session": 3,
+    "reresearch_cooldown_s": 2592000,
+    "poll_interval_s": 30,
+    "garden_interval_s": 86400,
+    "searxng_url": null,
+    "research_prompt": null,
+    "synth_prompt": null,
+    "scholarly": true,
+    "web_search": false,
+    "hoard": true,
+    "hoard_max_chars": 50000,
+    "hoard_max_items": 12,
+    "synth_max_chars": 40000,
+    "rss": {
+      "enabled": false,
+      "interval_s": 1800,
+      "tool": "news_index",
+      "categories": ["general", "medical-au", "medical-global", "medical-research"],
+      "batch": 50,
+      "pages": 1,
+      "args": {},
+      "keep_days": 0,
+      "digest": { "enabled": true, "interval_s": 86400, "min_items": 5, "prompt": null }
+    },
+    "export": {
+      "enabled": false,
+      "folder": "",
+      "interval_s": 3600,
+      "max_source_chars": 40000
+    },
+    "privacy": {
+      "enabled": true,
+      "mode": "block",
+      "max_query_len": 200
+    },
+    "idle": {
+      "enabled": false,
+      "idle_after_s": 120,
+      "open_stale_s": 1800,
+      "batch_size": 3,
+      "review_window_turns": 150,
+      "pause_s": 120,
+      "consolidate": true,
+      "consolidate_max_clusters": 3,
+      "consolidate_cooldown_s": 604800,
+      "consolidate_sim": 0.82,
+      "introspect_prompt": null,
+      "consolidate_prompt": null,
+      "perspective_audit": true,
+      "perspective_max": 12,
+      "perspective_prompt": null
+    },
+    "ingest": {
+      "enabled": false,
+      "interval_s": 86400,
+      "crawl_interval_s": 1800,
+      "prompt": null,
+      "jobs": [],
+      "crawl_prompt": null,
+      "crawls": [
+        { "source": "mail-inbox", "list_tool": "mail_list", "list_args": {"folder": "inbox"}, "read_tool": "mail_read", "id_field": "id", "category": "profile", "batch": 8, "read_chars": 2000 },
+        { "source": "mail-sent", "list_tool": "mail_list", "list_args": {"folder": "sent"}, "read_tool": "mail_read", "id_field": "id", "category": "profile", "batch": 8, "read_chars": 2000 },
+        { "source": "files-documents", "list_tool": "file_list", "list_args": {"root": "~/Documents"}, "read_tool": "file_read", "id_field": "path", "category": "profile", "batch": 8, "read_chars": 2000, "fingerprint_fields": ["size"], "recrawl_after_days": 30 }
+      ]
+    },
+    "ambient": {
+      "enabled": false,
+      "refresh_interval_s": 300,
+      "max_chars": 600,
+      "max_items_per_source": 4,
+      "persist": true,
+      "sources": [
+        { "type": "calendar", "tool": "calendar_range_json", "arguments": {"days": 2}, "ttl_s": 900, "max_items": 4, "priority": 7 },
+        { "type": "weather", "tool": "weather_now", "arguments": {}, "ttl_s": 1800, "max_items": 1, "priority": 5 },
+        { "type": "news", "tool": "rss_latest", "arguments": {}, "trust": "untrusted", "ttl_s": 1800, "max_items": 4, "priority": 3 }
+      ]
+    },
+    "plans": {
+      "enabled": true,
+      "work_per_cycle": 3,
+      "surface_user_questions": 1,
+      "plan_prompt": null
+    }
+  },
+  "notifications": {
+    "enabled": false,
+    "poll_interval_s": 60,
+    "lead_times_min": [1440, 60],
+    "calendar_tool": "calendar_range_json",
+    "calendar_args": { "days": 2 }
+  },
+  "config_server": {
+    "host": "127.0.0.1",
+    "port": 8090,
+    "trace_path": "config/trace.jsonl",
+    "trace_max_events": 400
+  },
+  "default_persona": "vinkona",
+  "personas_path": "config/personas.json"
+}

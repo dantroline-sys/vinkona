@@ -1,0 +1,40 @@
+# Python byte-compile artifacts (regenerated on import; never belong in git)
+__pycache__/
+*.pyc
+*.pyo
+
+# Python virtualenvs — large, machine-specific (absolute paths baked in), rebuilt by the
+# install scripts.  Never commit them.  vinkona_env is the core stack (cascade/ASR/memory/
+# research/config); the TTS engines need conflicting torch/vLLM versions so they're separate.
+# (personaplex_env retained for the one-time rename migration — see rename_env.sh.)
+vinkona_env/
+personaplex_env/
+neutts_env/
+orpheus_env/
+
+# Live config + personas are USER DATA (edited via the web UI), not source.
+# The schema/defaults live in config.py DEFAULTS; templates ship as *.example.json.
+config/config.json
+config/personas.json
+
+# Runtime memory store (chat logs + learned entries) — local data, not source.
+config/memory.db
+config/memory.db-*
+
+# Profiles: per-profile memory.db + personas.json, and the active-profile pointer.
+# All user data (snapshots / forks of the assistant's memory & personalities).
+config/profiles/
+config/active_profile
+
+# Live LM-activity feed written by the cascade, read by the config UI — runtime only.
+config/trace.jsonl
+
+# Pre-shared WS access token — a generated secret, per-install, never source.
+config/ws_token.txt
+
+# GGUF weights live here (often symlinked elsewhere) — never commit the models.
+Models/*
+!Models/.gitkeep
+
+# Per-service stdout logs + restart-request control files (runtime, written by vinkona.sh).
+logs/
