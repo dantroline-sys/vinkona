@@ -65,19 +65,20 @@ detect_torch_index() {   # -> wheel index URL, or "" for PyPI default
 # ── steps ────────────────────────────────────────────────────────────────────
 
 step_core() {
-    say "core: virtualenv vinkona_env"
+    local py="${PYTHON:-python3}"
+    say "core: virtualenv vinkona_env (interpreter: $py — override with PYTHON=python3.13 if a dep lacks wheels for yours)"
     if [ ! -f vinkona_env/bin/activate ]; then
         rm -rf vinkona_env
-        python3 -m venv vinkona_env || die "venv creation failed — install python3-venv / python3-virtualenv first"
+        "$py" -m venv vinkona_env || die "venv creation failed — install python3-venv / python3-virtualenv first"
     fi
-    say "core: python dependencies (requirements.txt — includes torch, first run is a big download)"
+    say "core: python dependencies (requirements.txt — cascade only, no torch; TTS venvs and the legacy PersonaPlex stack carry their own)"
     ./vinkona_env/bin/pip install --upgrade pip -q
     local torch_idx; torch_idx="$(detect_torch_index)"
     if [ -n "$torch_idx" ]; then
-        say "core: driver CUDA $(driver_cuda || true)${TORCH_CUDA:+ (TORCH_CUDA override)} → torch wheels: $torch_idx"
+        # No torch in core requirements — the extra index is a no-op unless a
+        # transitive dep pulls torch, in which case it gets the right build.
         ./vinkona_env/bin/pip install -r requirements.txt --extra-index-url "$torch_idx"
     else
-        warn "no NVIDIA driver detected (nvidia-smi) — installing PyPI's default torch build; force one with TORCH_CUDA=cuXXX or TORCH_CUDA=cpu"
         ./vinkona_env/bin/pip install -r requirements.txt
     fi
     say "core: librnnoise (built and installed in-tree)"

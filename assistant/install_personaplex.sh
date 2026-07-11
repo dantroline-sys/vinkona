@@ -223,8 +223,6 @@ install_python() {
     torch_tag=$(cuda_to_torch_tag "$cuda_ver")
     info "CUDA $cuda_ver → PyTorch wheel: $torch_tag"
 
-    sed -i "s|whl/cu[0-9]*|whl/${torch_tag}|g" "$SCRIPT_DIR/requirements.txt"
-
     info "Installing PyTorch (CUDA build) ..."
     pip install --quiet torch --index-url "https://download.pytorch.org/whl/${torch_tag}"
 
@@ -239,8 +237,10 @@ if not avail:
     sys.exit(1)
 PYCHECK
 
-    info "Installing remaining Python dependencies ..."
-    pip install --quiet -r "$SCRIPT_DIR/requirements.txt"
+    info "Installing remaining Python dependencies (core + legacy PersonaPlex stack) ..."
+    pip install --quiet -r "$SCRIPT_DIR/requirements.txt" \
+                        -r "$SCRIPT_DIR/requirements-personaplex.txt" \
+                        --extra-index-url "https://download.pytorch.org/whl/${torch_tag}"
 
     success "Python environment ready."
     download_model

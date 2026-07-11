@@ -179,5 +179,9 @@ and the root `config.json`. It works (with heavy patches: KV-cache user-audio
 injection into slots 9–16, a text-logits hook to speak LLM tokens, 12.5 fps
 output pacing), but PersonaPlex fights forced text tokens, which is why the
 cascade replaced it. Weights: `nvidia/personaplex-7b-v1` into
-`Models/personaplex-7b-v1-raw/`. If you migrated from that era,
-`rename_env.sh` renames the old `personaplex_env` venv in place.
+`Models/personaplex-7b-v1-raw/`. Its Python stack lives in
+`requirements-personaplex.txt` (installed by `install_personaplex.sh`, never
+by the core installer) — note it needs Python ≤ 3.13; the pinned
+moshi-era packages (sphn/rustymimi) don't build on newer interpreters. If you
+migrated from that era, `rename_env.sh` renames the old `personaplex_env`
+venv in place.
