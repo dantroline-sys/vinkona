@@ -219,19 +219,26 @@ step_llama() {
         if [ -n "$nvcc" ]; then
             cuda_flag="-DGGML_CUDA=ON"
         else
-            warn "no nvcc available — refusing to silently build a CPU-only llama-server for a GPU machine."
-            warn "Your options:"
-            warn "  1. Install the CUDA toolkit, then re-run this task"
-            warn "     (Fedora: dnf install cuda-toolkit from NVIDIA's cuda repo — https://developer.nvidia.com/cuda-downloads;"
-            warn "      Ubuntu/distrobox: apt install nvidia-cuda-toolkit)"
-            warn "  2. Run this task INSIDE the CUDA distrobox (its image ships nvcc) — the LM services must then run there too"
-            warn "  3. Already have a llama-server binary on this machine? Put it on PATH, symlink it into ./bin/, or set LLAMA_SERVER=/path"
+            echo ""
+            echo "You have an NVIDIA GPU, but the CUDA compiler (nvcc) isn't installed —"
+            echo "it's needed once, to build GPU support into llama-server. I don't want"
+            echo "to quietly build a CPU-only version for a machine with a perfectly good"
+            echo "GPU, so here are your options:"
+            echo ""
+            echo "  1. Install the CUDA toolkit, then re-run this task:"
+            echo "         Fedora:  from NVIDIA's cuda repo — https://developer.nvidia.com/cuda-downloads"
+            echo "         Ubuntu / distrobox:  sudo apt install nvidia-cuda-toolkit"
+            echo "  2. Run this task inside the CUDA distrobox (its image ships nvcc) —"
+            echo "     the LM services then need to run there too."
+            echo "  3. Already have a llama-server binary somewhere on this machine?"
+            echo "     Symlink it into ./bin/ or set LLAMA_SERVER=/path — no build needed."
+            echo ""
             if [ -t 0 ] || [ "${VINKONA_ASSUME_TTY:-}" = 1 ]; then
-                printf "Build CPU-ONLY anyway (slow for chat-size models)? [y/N]: "
+                printf "Or build CPU-only anyway? It works, just slowly for chat-size models. [y/N]: "
                 local a; read -r a
-                case "$a" in y*|Y*) ;; *) die "aborted — GPU build needs nvcc (see options above)" ;; esac
+                case "$a" in y*|Y*) ;; *) echo "No problem — sort out nvcc with one of the options above and re-run this task."; exit 1 ;; esac
             else
-                die "aborted — GPU build needs nvcc (see options above)"
+                die "non-interactive shell — GPU build needs nvcc; see the options above"
             fi
         fi
     fi
@@ -253,22 +260,34 @@ step_llama() {
         if [ -n "$ccbin" ]; then
             ok "compatible host compiler: $ccbin"
         elif _nvcc_probe "$nvcc" -allow-unsupported-compiler; then
-            warn "no CUDA-compatible host compiler found (checked g++-15..g++-12)."
-            warn "  1. Install a compat gcc, then re-run this task"
-            warn "     (Fedora: sudo dnf install gcc14-c++   Ubuntu: sudo apt install g++-14 — then it's picked up automatically)"
-            warn "  2. Or force the build with nvcc's -allow-unsupported-compiler (works in practice for llama.cpp; NVIDIA says 'at your own risk')"
+            echo ""
+            echo "Your C compiler is a little too new for this CUDA toolkit — nvcc only"
+            echo "accepts gcc up to a certain version, and your distro has already moved"
+            echo "past it. Nothing is broken; there are just two ways forward:"
+            echo ""
+            echo "  1. The tidy fix — install an older 'compat' compiler alongside your"
+            echo "     normal one (they coexist happily):"
+            echo "         Fedora:  sudo dnf install gcc14-c++"
+            echo "         Ubuntu:  sudo apt install g++-14"
+            echo "     then re-run this task; it will be found and used automatically."
+            echo ""
+            echo "  2. The quick fix — tell nvcc to accept your compiler anyway"
+            echo "     (-allow-unsupported-compiler). In practice this builds llama.cpp"
+            echo "     just fine; NVIDIA simply won't promise it. If it does go wrong,"
+            echo "     you'll get a loud build error, not a broken install."
+            echo ""
             if [ "${VINKONA_NVCC_ALLOW_UNSUPPORTED:-}" = 1 ]; then
                 cuda_extra="-allow-unsupported-compiler"
             elif [ -t 0 ] || [ "${VINKONA_ASSUME_TTY:-}" = 1 ]; then
-                printf "Force with -allow-unsupported-compiler? [Y/n]: "
+                printf "Go with the quick fix now? [Y/n]: "
                 local a; read -r a
-                case "$a" in n*|N*) die "aborted — install a compat gcc (option 1) and re-run" ;; esac
+                case "$a" in n*|N*) echo "No problem — install the compat gcc (option 1) and re-run this task."; exit 1 ;; esac
                 cuda_extra="-allow-unsupported-compiler"
             else
-                die "aborted — install a compat gcc (option 1), or set VINKONA_NVCC_ALLOW_UNSUPPORTED=1 to force"
+                die "non-interactive shell — install a compat gcc (option 1), or set VINKONA_NVCC_ALLOW_UNSUPPORTED=1 to take the quick fix"
             fi
         else
-            die "nvcc can't compile even with -allow-unsupported-compiler — install a compat gcc (Fedora: gcc14-c++, Ubuntu: g++-14) and re-run"
+            die "nvcc couldn't compile a test file even with -allow-unsupported-compiler, so this needs the real fix: install a compat gcc (Fedora: sudo dnf install gcc14-c++, Ubuntu: sudo apt install g++-14) and re-run this task"
         fi
     fi
 
