@@ -35,6 +35,33 @@ die()  { echo -e "${RED}error:${RESET} $*" >&2; exit 1; }
 
 usage() { sed -n '2,/^set /p' "$0" | sed -n 's/^#\{1,\} \{0,1\}//p'; exit "${1:-0}"; }
 
+# ── CUDA detection: pick the torch wheel stream from the installed driver ────
+# nvidia-smi's header reports the MAX CUDA version the driver supports; torch
+# wheels only need driver >= their build, so we take the newest known stream
+# that the driver covers. Override with TORCH_CUDA=cuXXX (e.g. cu126) or
+# TORCH_CUDA=cpu; no driver at all -> empty (PyPI's default torch build).
+_TORCH_STREAMS="132 130 128 126 124 121 118"    # newest first; extend as PyTorch adds streams
+
+driver_cuda() {   # -> e.g. "13.2", or "" if no usable driver
+    # The || true guard matters: under set -e -o pipefail, a missing/failing
+    # nvidia-smi would otherwise silently abort the whole script.
+    { nvidia-smi 2>/dev/null || true; } | sed -n 's/.*CUDA Version: *\([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' | head -1
+}
+
+detect_torch_index() {   # -> wheel index URL, or "" for PyPI default
+    case "${TORCH_CUDA:-}" in
+        cpu)   echo "https://download.pytorch.org/whl/cpu"; return ;;
+        cu*)   echo "https://download.pytorch.org/whl/${TORCH_CUDA}"; return ;;
+    esac
+    local ver n s
+    ver="$(driver_cuda)"
+    [ -n "$ver" ] || return 0
+    n=$(( ${ver%%.*} * 10 + ${ver#*.} ))        # "13.2" -> 132
+    for s in $_TORCH_STREAMS; do
+        if [ "$n" -ge "$s" ]; then echo "https://download.pytorch.org/whl/cu$s"; return; fi
+    done
+}
+
 # ── steps ────────────────────────────────────────────────────────────────────
 
 step_core() {
@@ -45,7 +72,14 @@ step_core() {
     fi
     say "core: python dependencies (requirements.txt — includes torch, first run is a big download)"
     ./vinkona_env/bin/pip install --upgrade pip -q
-    ./vinkona_env/bin/pip install -r requirements.txt
+    local torch_idx; torch_idx="$(detect_torch_index)"
+    if [ -n "$torch_idx" ]; then
+        say "core: driver CUDA $(driver_cuda || true)${TORCH_CUDA:+ (TORCH_CUDA override)} → torch wheels: $torch_idx"
+        ./vinkona_env/bin/pip install -r requirements.txt --extra-index-url "$torch_idx"
+    else
+        warn "no NVIDIA driver detected (nvidia-smi) — installing PyPI's default torch build; force one with TORCH_CUDA=cuXXX or TORCH_CUDA=cpu"
+        ./vinkona_env/bin/pip install -r requirements.txt
+    fi
     say "core: librnnoise (built and installed in-tree)"
     bash install_rnnoise.sh
     say "core: seeding live config (never overwrites an existing one)"
@@ -92,6 +126,9 @@ step_llama() {
 
 step_status() {
     echo "Vinkona assistant @ $SCRIPT_DIR"
+    local cuda idx
+    cuda="$(driver_cuda)"; idx="$(detect_torch_index)"
+    echo "  gpu       driver CUDA: ${cuda:-none detected} → torch wheels: ${idx:-PyPI default} (override: TORCH_CUDA=cuXXX|cpu)"
     local d
     for d in vinkona_env orpheus_env neutts_env personaplex_env; do
         [ -d "$d" ] && echo "  venv      $d  ($(du -sh "$d" 2>/dev/null | cut -f1))"

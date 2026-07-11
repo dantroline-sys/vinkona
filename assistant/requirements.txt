@@ -1,10 +1,12 @@
---extra-index-url https://download.pytorch.org/whl/cu124
-
 # NOTE: these are loose ranges for a fresh install.  For a REPRODUCIBLE deploy, capture the
 # working set on the live box with `pip freeze > requirements.lock` and install from that —
 # the torch/moshi stack in particular is sensitive to exact versions and your CUDA build.
 
-# Core PyTorch (CUDA 12.4 — adjust cu124 to match your driver, e.g. cu128)
+# Core PyTorch.  ./install.sh core detects your NVIDIA driver's CUDA version
+# (nvidia-smi) and passes the matching wheel index (--extra-index-url
+# https://download.pytorch.org/whl/cuXXX) on the pip command line — override
+# with TORCH_CUDA=cuXXX or TORCH_CUDA=cpu.  Installing by hand? Add that flag
+# yourself, or accept PyPI's default build.
 torch
 
 # NVIDIA PersonaPlex engine — install from source: pip install personaplex_src/moshi/.
