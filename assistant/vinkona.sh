@@ -78,13 +78,18 @@ reap_box() {                               # pattern -> thorough kill INSIDE the
   # SIGTERM, wait for processes (incl. detached vLLM workers) to exit and release the
   # GPU, then SIGKILL any stragglers.  Run for box services so a restart can't collide
   # with an orphan still holding VRAM.
+  #
+  # The pattern travels as an ENV VAR, not interpolated into the script text:
+  # otherwise the reaper shell's own command line contains the pattern, pkill -f
+  # matches it, and the reaper kills itself mid-job (bash then vomits the whole
+  # multi-line command as a 'Terminated' notice).
   local pat="$1"
-  distrobox enter "$BOX" -- bash -lc "
-    pkill -TERM -f '$pat' 2>/dev/null
-    for i in 1 2 3 4 5 6 7 8; do pgrep -f '$pat' >/dev/null 2>&1 || break; sleep 1; done
-    pkill -KILL -f '$pat' 2>/dev/null
+  distrobox enter "$BOX" -- env VK_REAP_PAT="$pat" bash -lc '
+    pkill -TERM -f "$VK_REAP_PAT" 2>/dev/null
+    for i in 1 2 3 4 5 6 7 8; do pgrep -f "$VK_REAP_PAT" >/dev/null 2>&1 || break; sleep 1; done
+    pkill -KILL -f "$VK_REAP_PAT" 2>/dev/null
     true
-  " 2>/dev/null
+  ' 2>/dev/null
 }
 
 pane_cmd() {                               # name where command... -> the shell line for the pane
@@ -129,6 +134,14 @@ start() {
     echo "session '$SESSION' is already running — use './vinkona.sh restart' or 'attach'."; exit 0
   fi
   mkdir -p "$LOGS/control"
+  # Wake the container ONCE, alone, before the box windows launch: firing four
+  # simultaneous `distrobox enter` calls at a stopped container races its cold
+  # boot, and whichever service loses (often the cascade) dies on first start.
+  if printf '%s\n' "${SERVICES[@]}" | grep -q '|box|'; then
+    echo "waking the container ($BOX) ..."
+    distrobox enter "$BOX" -- true 2>/dev/null \
+      || echo "warning: couldn't enter container '$BOX' — box services will fail (create it, or VINKONA_BOX=name ./vinkona.sh start)"
+  fi
   local first=1 s name where cmd killpat
   for s in "${SERVICES[@]}"; do
     IFS='|' read -r name where cmd killpat <<<"$s"

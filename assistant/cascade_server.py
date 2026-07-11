@@ -28,6 +28,7 @@ import importlib.util
 import json
 import re
 import ssl
+import sys
 import time
 import types
 import uuid
@@ -1495,9 +1496,16 @@ def main():
     ssl_ctx = None
     ssl_dir = cfg["server"].get("ssl_dir")
     if ssl_dir:
+        cert, key = Path(ssl_dir) / "cert.pem", Path(ssl_dir) / "key.pem"
+        if not (cert.exists() and key.exists()):
+            _log(f"TLS is enabled (server.ssl_dir = {ssl_dir!r}) but {cert} / {key} don't exist yet.")
+            _log("Easiest fix: re-run './install.sh core' — it generates a self-signed pair. Or by hand:")
+            _log(f"  mkdir -p {ssl_dir} && openssl req -x509 -newkey rsa:4096 "
+                 f"-keyout {key} -out {cert} -days 3650 -nodes -subj /CN=vinkona")
+            _log('(Or set server.ssl_dir to "" for plain ws:// — LAN only; the access token still gates connections.)')
+            sys.exit(1)
         ssl_ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-        ssl_ctx.load_cert_chain(certfile=str(Path(ssl_dir) / "cert.pem"),
-                                keyfile=str(Path(ssl_dir) / "key.pem"))
+        ssl_ctx.load_cert_chain(certfile=str(cert), keyfile=str(key))
     host, port = cfg["server"]["host"], cfg["server"]["port"]
     _log(f"cascade server on {'https' if ssl_ctx else 'http'}://{host}:{port}  tts={cfg['tts']['url']}")
     web.run_app(app, host=host, port=port, ssl_context=ssl_ctx, print=None)

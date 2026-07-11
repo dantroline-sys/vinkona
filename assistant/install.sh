@@ -87,6 +87,13 @@ step_core() {
     mkdir -p config
     [ -f config/config.json ]   || cp config/config.example.json   config/config.json
     [ -f config/personas.json ] || cp config/personas.example.json config/personas.json
+    if [ ! -f certs/cert.pem ]; then
+        say "core: generating a self-signed TLS certificate for the cascade (certs/)"
+        mkdir -p certs
+        openssl req -x509 -newkey rsa:4096 -keyout certs/key.pem -out certs/cert.pem \
+                -days 3650 -nodes -subj "/CN=vinkona" >/dev/null 2>&1 \
+            || warn "openssl not found — the cascade needs certs/ for TLS (see README), or set server.ssl_dir to \"\" for plain ws://"
+    fi
     ok "core installed — ASR models download into var/cache on first use"
 }
 
