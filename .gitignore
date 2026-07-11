@@ -1,0 +1,19 @@
+# Editor / OS noise
+.DS_Store
+._*
+*.swp
+.idea/
+.vscode/
+
+# Python
+__pycache__/
+*.py[co]
+.venv/
+venv/
+*_env/
+
+# Databases and runtime state are user data, never source.
+*.db
+*.db-wal
+*.db-shm
+logs/
