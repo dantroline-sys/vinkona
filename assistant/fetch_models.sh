@@ -7,22 +7,28 @@
 # or symlink individual files into Models/.  Override the target dir with
 #     MODELS_DIR=/path ./fetch_models.sh
 #
-# Needs: pip install -U "huggingface_hub[cli]"   (and `git lfs` is NOT required).
+# Uses vinkona_env's huggingface-cli (installed by ./install.sh core), falling
+# back to a system-wide one.  `git lfs` is NOT required.
 set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/env.sh"          # in-tree caches/tmp/PATH — see env.sh
 DIR="${MODELS_DIR:-$SCRIPT_DIR/Models}"
 mkdir -p "$DIR"
 
-if ! command -v huggingface-cli >/dev/null 2>&1; then
-  echo "huggingface-cli not found. Install with: pip install -U 'huggingface_hub[cli]'" >&2
+HF_CLI="$SCRIPT_DIR/vinkona_env/bin/huggingface-cli"
+if [ ! -x "$HF_CLI" ]; then
+  HF_CLI="$(command -v huggingface-cli || true)"
+fi
+if [ -z "$HF_CLI" ]; then
+  echo "huggingface-cli not found — run './install.sh core' first (it installs" >&2
+  echo "huggingface_hub into vinkona_env), or: pip install -U 'huggingface_hub[cli]'" >&2
   exit 1
 fi
 
 # repo  filename  (one per line)
 grab() {  # repo file
   echo "→ $2"
-  huggingface-cli download "$1" "$2" --local-dir "$DIR" --local-dir-use-symlinks False >/dev/null
+  "$HF_CLI" download "$1" "$2" --local-dir "$DIR" --local-dir-use-symlinks False >/dev/null
 }
 
 echo "Fetching GGUFs into $DIR ..."
