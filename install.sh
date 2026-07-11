@@ -104,7 +104,7 @@ case "$cmd" in
             checklist
             if all_done; then
                 echo ""
-                say "everything is installed — start the stack with:  cd assistant && ./vinkona.sh start"
+                say "everything is installed — start the stack with:  ./vinkona.sh start"
                 break
             fi
             echo ""

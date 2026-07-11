@@ -116,8 +116,11 @@ reference example of writing a host.
 
 ```bash
 ./install.sh        # interactive checklist — pick off tasks until everything is green
-./install.sh all    # or just run every missing piece in order
-./install.sh status # see where you stand;  ./install.sh uninstall  to undo
+./vinkona.sh start  # then start the system (asks once what THIS machine runs:
+                    #   everything / assistant only / knowledge host only —
+                    #   so the knowledge host can live on a separate device)
+./vinkona.sh status # what's up;  stop / restart / attach / services also available
+./install.sh status # installer state;  ./install.sh uninstall  to undo
 ```
 
 The top-level installer drives one installer per component (each also usable
