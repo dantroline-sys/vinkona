@@ -24,12 +24,19 @@ from pathlib import Path
 
 log = logging.getLogger("knowledgehost.ops")
 
-# verb -> {option: type}.  type ∈ int | bool | choice:<a,b>.  The flag is --<option-with-dashes>.
+# verb -> {option: type}.  type ∈ int | float | bool | str | path | choice:<a,b>.
+# The flag is --<option-with-dashes>.
 COMMANDS: dict = {
     "ingest":     {"force": "bool", "wikipedia": "bool", "distill": "bool", "limit": "int"},
     "ingest-library": {"force": "bool"},   # index the search-only document library (library_sources)
     "rebuild-fts": {},                     # reindex FTS with the configured tokenizer (no re-parse)
     "distill":    {"limit": "int", "watch": "bool", "interval": "int", "bundle": "str"},
+    # External-dataset bulk imports (KB-only; path defaults to <name>_path in config —
+    # the option only overrides it).  Long-running; stream their progress to the log.
+    "import-conceptnet": {"path": "path", "min_weight": "float", "all": "bool"},
+    "import-atomic":     {"path": "path", "limit": "int"},
+    "import-glucose":    {"path": "path", "limit": "int"},
+    "import-causenet":   {"path": "path", "limit": "int"},
     "link":       {"limit": "int", "fast": "bool", "top_k": "int"},
     "refine":     {"limit": "int", "force": "bool"},
     "adjudicate": {"limit": "int", "batch": "int", "fast": "bool",
@@ -72,6 +79,18 @@ def _argv(command: str, args: dict) -> list:
             # it to identifier-like tokens so it can never look like a flag or path.
             if sv and not all(ch.isalnum() or ch in "._-" for ch in sv):
                 raise ValueError(f"{command}: {key} must be alphanumeric (._- allowed)")
+            if sv:
+                out += [flag, sv]
+        elif typ == "float":
+            out += [flag, str(float(val))]             # float() rejects non-numeric
+        elif typ == "path":
+            sv = str(val).strip()
+            # A filesystem path (list-form argv, no shell) — slashes/spaces are fine,
+            # but it must never be mistakable for a flag, and no control characters.
+            if sv.startswith("-"):
+                raise ValueError(f"{command}: {key} must not start with '-'")
+            if any(ord(ch) < 32 for ch in sv):
+                raise ValueError(f"{command}: {key} contains control characters")
             if sv:
                 out += [flag, sv]
     return out

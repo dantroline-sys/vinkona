@@ -142,6 +142,23 @@ function renderHelp(k) {
       <div style="opacity:.85;font-size:13px;margin:8px 0;max-width:860px">${esc((HELP.help || {}).import || '')}</div>
       <table><tr><th>format</th><th>files</th><th>status</th><th>enable / notes</th></tr>${rows}</table></details>`;
   }
+  if (k === 'ops' && (HELP.datasets || []).length) {
+    const rows = HELP.datasets.map(d => {
+      const st = d.present ? '<span class="fmt-ok">✓ file present</span>'
+        : d.path ? '<span class="fmt-no">✗ file not found</span>'
+        : `<span style="opacity:.6">path not set — <code>${esc(d.config_key)}</code> in Settings</span>`;
+      return `<tr><td>${esc(d.name)}</td><td><code>${esc(d.verb)}</code></td>
+        <td>${st}</td><td style="opacity:.6;word-break:break-all">${esc(d.path || '')}</td>
+        <td style="opacity:.75">${esc(d.note)}</td></tr>`;
+    }).join('');
+    h += `<details id="dsbox"><summary style="cursor:pointer;opacity:.6;font-size:13px">🧩 External datasets — bulk commonsense/causal imports (click to expand)</summary>
+      <div style="opacity:.85;font-size:13px;margin:8px 0;max-width:860px">Each imports as its own
+      low-trust source under the epistemic firewall (they can never override your distilled or
+      empirical knowledge). Set the file path in Settings (or pass <code>path</code> as an arg),
+      then run the verb below — progress streams into the job log. Run <code>embed-nodes</code>
+      afterwards to backfill vectors for dense search.</div>
+      <table><tr><th>dataset</th><th>run</th><th>status</th><th>path</th><th>what it is</th></tr>${rows}</table></details>`;
+  }
   box.innerHTML = h;
 }
 
@@ -473,6 +490,9 @@ function renderOpOptions(cmd) {
     const id = 'op_' + opt;
     if (t === 'bool') return `<label class="op" style="font-size:13px"><input type="checkbox" id="${id}"> ${opt}</label>`;
     if (t === 'int') return `<label class="op" style="font-size:13px">${opt} <input type="number" id="${id}" style="width:64px"></label>`;
+    if (t === 'float') return `<label class="op" style="font-size:13px">${opt} <input type="number" step="any" id="${id}" style="width:76px"></label>`;
+    if (t === 'str') return `<label class="op" style="font-size:13px">${opt} <input id="${id}" style="width:120px"></label>`;
+    if (t === 'path') return `<label class="op" style="font-size:13px">${opt} <input id="${id}" style="width:260px" placeholder="(defaults to the path in Settings)"></label>`;
     if (t.startsWith('choice:')) return `<label class="op" style="font-size:13px">${opt} <select id="${id}">`
       + t.split(':')[1].split(',').map(v => `<option>${v}</option>`).join('') + `</select></label>`;
     return '';
@@ -485,7 +505,7 @@ function gatherArgs() {
     const el = $('#op_' + opt); if (!el) continue;
     if (t === 'bool') { if (el.checked) args[opt] = true; }
     else if (t === 'int') { if (el.value !== '') args[opt] = parseInt(el.value, 10); }
-    else args[opt] = el.value;
+    else if (el.value !== '') args[opt] = el.value;   // blank text/float/path = omit
   }
   return { command: cmd, args };
 }

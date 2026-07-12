@@ -63,15 +63,40 @@ def _import_formats() -> list:
     ]
 
 
-def _help_payload() -> dict:
+def _external_datasets(cfg: dict) -> list:
+    """The bulk-importable external datasets: each with its ops verb, the config
+    key holding its file path, and a LIVE does-the-file-exist probe — so the Ops
+    tab can show what's ready to import versus what still needs downloading."""
+    from pathlib import Path
+    sets = [
+        ("ConceptNet 5.7", "import-conceptnet", "conceptnet_path",
+         "commonsense triples, assertions.csv (~10 GB) — regime=conventional, low trust"),
+        ("ATOMIC v4", "import-atomic", "atomic_path",
+         "social if-then commonsense, v4_atomic_all_agg.csv — same epistemics as ConceptNet"),
+        ("GLUCOSE", "import-glucose", "glucose_path",
+         "general causal rules (variable-slot), training CSV — commonsense backbone"),
+        ("CauseNet-precision", "import-causenet", "causenet_path",
+         "grounded cause→effect graph (JSONL) — has_reference=1, corroboration counts"),
+    ]
+    out = []
+    for name, verb, key, note in sets:
+        p = str(cfg.get(key) or "").strip()
+        present = bool(p) and Path(p).expanduser().exists()
+        out.append({"name": name, "verb": verb, "config_key": key,
+                    "path": p or None, "present": present, "note": note})
+    return out
+
+
+def _help_payload(cfg: dict) -> dict:
     """Tab help (help.json, read per request so edits show on refresh) + the
-    live import-format probes above."""
+    live import-format probes and external-dataset probes above."""
     from pathlib import Path
     try:
         tabs = json.loads((Path(__file__).parent / "help.json").read_text())
     except Exception:
         tabs = {}
-    return {"help": tabs, "formats": _import_formats()}
+    return {"help": tabs, "formats": _import_formats(),
+            "datasets": _external_datasets(cfg)}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -213,8 +238,8 @@ class Handler(BaseHTTPRequestHandler):
             if res.get("ok"):
                 return self._send_json({"ok": True, **json.loads(res["result"])})
             return self._send_json(res)
-        if path == "/help":                        # viewer: tab help + import-format probes
-            return self._send(json.dumps(_help_payload()).encode())
+        if path == "/help":                        # viewer: tab help + import/dataset probes
+            return self._send(json.dumps(_help_payload(self.cfg)).encode())
         if path == "/tools":
             return self._send_json(self.server.tools.catalogue())
         # ── control panel (auth-gated when a token is set) ──
