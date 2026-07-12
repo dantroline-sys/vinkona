@@ -14,7 +14,8 @@ def extract(path: str, cfg: dict):
         import ebooklib
         from ebooklib import epub
     except Exception as e:
-        raise MissingDependency(f"ebooklib required for EPUB: {e}")
+        raise MissingDependency(f"ebooklib required for EPUB — "
+                                f"run ./install.sh --epub to add it ({e})")
 
     book = epub.read_epub(path)
     title = ""

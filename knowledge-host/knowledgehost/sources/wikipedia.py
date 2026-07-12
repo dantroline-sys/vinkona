@@ -109,7 +109,8 @@ def iter_articles(zim_path: str):
     try:
         from libzim.reader import Archive
     except Exception as e:
-        raise MissingDependency(f"libzim required for Wikipedia ZIM: {e}")
+        raise MissingDependency(f"libzim required for Wikipedia ZIM — "
+                                f"run ./install.sh --wikipedia to add it ({e})")
 
     archive = Archive(zim_path)
     count = archive.all_entry_count

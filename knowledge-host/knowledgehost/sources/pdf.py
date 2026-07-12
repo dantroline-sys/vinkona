@@ -25,7 +25,8 @@ def _fitz():
     try:
         import fitz  # PyMuPDF
     except Exception as e:
-        raise MissingDependency(f"PyMuPDF (fitz) required for PDFs: {e}")
+        raise MissingDependency(f"PyMuPDF (fitz) required for PDFs — "
+                                f"run ./install.sh --pdf to add it ({e})")
     # Malformed-but-recoverable PDFs make MuPDF spew "syntax error: …" lines straight to
     # stderr (from C, bypassing logging) — a firehose on a big crawl.  Silence it ONCE,
     # process-wide; we drain the accumulated warnings per-file into our own debug log

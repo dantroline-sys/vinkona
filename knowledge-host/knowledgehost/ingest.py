@@ -98,27 +98,47 @@ def ingest_file(store, embedder, cfg, path: str, *, force=False, collection=None
 
     prev = store.manifest.get(path)
     version = int(store.manifest.meta_get("version", "1"))
-    if prev and not force and abs(prev["mtime"] - st.st_mtime) < 1e-6:
-        return 0                                   # unchanged by mtime — cheap skip
-    chash = _content_hash(path)
-    if prev and not force and prev["content_hash"] == chash:
-        store.manifest.set(path, chash, st.st_mtime, version, "ok")
-        return 0                                   # mtime moved but bytes identical
+    # A file skipped for a missing parser dependency is RETRIED every run — the
+    # dependency may have been installed since (./install.sh --pdf) and the file
+    # itself hasn't changed, so the unchanged-skips would otherwise bury it
+    # forever.  Retrying is free while the dep is still absent (the extractor
+    # raises on import, before the file is even opened), so the content hash is
+    # deferred until something actually parses.
+    retry_dep = bool(prev) and prev["status"] == "missing_dep" and not force
+    chash = None
+    if not retry_dep:
+        if prev and not force and abs(prev["mtime"] - st.st_mtime) < 1e-6:
+            return 0                               # unchanged by mtime — cheap skip
+        chash = _content_hash(path)
+        if prev and not force and prev["content_hash"] == chash:
+            store.manifest.set(path, chash, st.st_mtime, version, "ok")
+            return 0                               # mtime moved but bytes identical
 
     if vinkona:
+        if chash is None:
+            chash = _content_hash(path)
         return _ingest_research_doc(store, embedder, cfg, path, version, chash, st)
 
     try:
         title, blocks = fn(path, cfg)
     except MissingDependency as e:
+        if retry_dep:
+            return 0            # still missing — the manifest row already says so
         log.warning("skip %s — %s", os.path.basename(path), e)
         store.manifest.set(path, chash, st.st_mtime, version, "missing_dep")
         return 0
     except Exception as e:
         log.warning("failed to parse %s: %s", os.path.basename(path), e)
+        if chash is None:
+            chash = _content_hash(path)
         store.manifest.set(path, chash, st.st_mtime, version, "error")
         return 0
 
+    if retry_dep:
+        log.info("previously-skipped %s parses now (dependency installed)",
+                 os.path.basename(path))
+    if chash is None:
+        chash = _content_hash(path)
     store.delete_by_path(path)                     # re-ingest cleanly if changed
     source_type = collection or {".pdf": "pdf", ".epub": "epub", ".html": "html",
                                  ".htm": "html"}.get(ext, "text")
@@ -239,10 +259,15 @@ def crawl_library(store, embedder, cfg, *, force=False) -> dict:
                 except OSError:
                     continue
                 prev = store.manifest.get(path)
-                if prev and not force and abs(prev["mtime"] - st.st_mtime) < 1e-6:
+                # missing_dep rows re-parse every run — the dependency may have
+                # been installed since (see ingest_file for the reasoning).
+                retry_dep = bool(prev) and prev["status"] == "missing_dep"
+                if prev and not force and not retry_dep \
+                        and abs(prev["mtime"] - st.st_mtime) < 1e-6:
                     continue                               # unchanged by mtime — cheap skip
                 coll = collection_for(cfg, root, path, default=base_coll)
-                prev_chash = None if force else (prev["content_hash"] if prev else None)
+                prev_chash = None if (force or retry_dep) \
+                    else (prev["content_hash"] if prev else None)
                 jobs.append((path, coll, prev_chash))
 
     docs = chunks = 0
