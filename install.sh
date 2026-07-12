@@ -45,11 +45,33 @@ _venv_has() {  # venv-dir module-dir -> 0 if installed
     compgen -G "$1/lib*/python3.*/site-packages/$2" >/dev/null 2>&1
 }
 
+# The orpheus_gguf voice backbone: either an Orpheus-named GGUF sits in Models/,
+# or the user picked/kept a differently-named one — then config tts_lm.model is
+# the truth, so check that its file exists.
+_orpheus_gguf_present() {
+    [ -n "$(find -L assistant/Models -maxdepth 2 -iname '*orpheus*.gguf' -print -quit 2>/dev/null)" ] \
+        && return 0
+    python3 - 2>/dev/null <<'PY'
+import json, sys
+from pathlib import Path
+try:
+    cfg = json.load(open("assistant/config/config.json"))
+except Exception:
+    sys.exit(1)
+m = (cfg.get("tts_lm") or {}).get("model")
+if not m:
+    sys.exit(1)
+p = Path(m)
+if not p.is_absolute():
+    p = Path("assistant") / (cfg.get("models_dir") or "Models") / m
+sys.exit(0 if p.exists() else 1)
+PY
+}
+
 installed() {
     case "$1" in
         assistant-core) _venv_has assistant/vinkona_env faster_whisper ;;
-        tts)            { _venv_has assistant/vinkona_env onnxruntime \
-                          && [ -n "$(find -L assistant/Models -maxdepth 2 -iname '*orpheus*.gguf' -print -quit 2>/dev/null)" ]; } \
+        tts)            { _venv_has assistant/vinkona_env onnxruntime && _orpheus_gguf_present; } \
                         || _venv_has assistant/orpheus_env numpy || _venv_has assistant/neutts_env numpy ;;
         models)         [ -n "$(find -L assistant/Models -name '*.gguf' -print -quit 2>/dev/null)" ] ;;
         llama)          [ -x assistant/bin/llama-server ] || command -v llama-server >/dev/null 2>&1 ;;

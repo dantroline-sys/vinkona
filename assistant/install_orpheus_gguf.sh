@@ -9,8 +9,9 @@
 #
 # What this does:
 #   1. pip install onnxruntime into vinkona_env (+ import verify)
-#   2. fetch an Orpheus GGUF into Models/ (skipped if one is already there;
-#      pick a different quant with ORPHEUS_GGUF_QUANT=F16|Q8_0|Q4_K_M ...)
+#   2. get an Orpheus GGUF into Models/ — your choice: download the default
+#      (pick a quant with ORPHEUS_GGUF_QUANT=F16|Q8_0|Q4_K_M ...), select a
+#      .gguf you already have in Models/, or skip the download entirely
 #   3. fetch the SNAC decoder ONNX into Models/
 #   4. point config tts_lm.model + tts.orpheus_gguf.snac_path at them
 #   5. decode a real SNAC window as a smoke test
@@ -44,12 +45,60 @@ HF_CLI="$SCRIPT_DIR/vinkona_env/bin/huggingface-cli"
 echo "== Orpheus GGUF =="
 mkdir -p Models
 existing="$(find -L Models -maxdepth 2 -iname '*orpheus*.gguf' -print -quit 2>/dev/null)"
-if [ -n "$existing" ]; then
-    GGUF_FILE="$(basename "$existing")"
-    echo "found $existing — using it (delete it and re-run to download $GGUF_QUANT instead)"
-else
+tty=0; { [ -t 0 ] || [ "${VINKONA_ASSUME_TTY:-}" = 1 ]; } && tty=1
+
+_download_gguf() {
     echo "downloading $GGUF_REPO :: $GGUF_FILE (~3.4 GB for Q8_0) ..."
     "$HF_CLI" download "$GGUF_REPO" "$GGUF_FILE" --local-dir Models --local-dir-use-symlinks False >/dev/null
+}
+
+if [ "$tty" -ne 1 ]; then
+    # Non-interactive: deterministic — an Orpheus-named GGUF already in Models/
+    # wins, otherwise download the default.
+    if [ -n "$existing" ]; then
+        GGUF_FILE="$(basename "$existing")"
+        echo "found $existing — using it"
+    else
+        _download_gguf
+    fi
+else
+    echo "The tts_lm tier needs the Orpheus 3B GGUF (the TTS voice backbone)."
+    [ -n "$existing" ] && echo "Found one already in Models/: $(basename "$existing")"
+    echo "  1) download $GGUF_REPO :: $GGUF_FILE"
+    echo "  2) use a .gguf already in Models/ (pick from a list — symlinks welcome)"
+    echo "  s) skip — keep whatever config tts_lm.model already points at"
+    def=1; [ -n "$existing" ] && def=2
+    printf "choice [%s]: " "$def"
+    read -r c; c="${c:-$def}"
+    case "$c" in
+        1) _download_gguf ;;
+        2)  files=()
+            while IFS= read -r f; do [ -n "$f" ] && files+=("$f"); done \
+                <<<"$(find -L Models -maxdepth 2 -name '*.gguf' 2>/dev/null | sort)"
+            if [ "${#files[@]}" -eq 0 ]; then
+                echo "no .gguf files in Models/ — copy/symlink one in and re-run, or pick the download option."
+                exit 1
+            fi
+            i=1; for f in "${files[@]}"; do echo "    $i) $(basename "$f")"; i=$((i+1)); done
+            def=""
+            if [ -n "$existing" ]; then
+                i=1; for f in "${files[@]}"; do [ "$f" = "$existing" ] && def="$i"; i=$((i+1)); done
+            fi
+            printf "which one%s: " "${def:+ [$def]}"
+            read -r n; n="${n:-$def}"
+            case "$n" in *[!0-9]*|"") echo "not a number — aborting, nothing changed."; exit 1 ;; esac
+            { [ "$n" -ge 1 ] && [ "$n" -le "${#files[@]}" ]; } \
+                || { echo "out of range — aborting, nothing changed."; exit 1; }
+            GGUF_FILE="$(basename "${files[$((n-1))]}")"
+            case "$GGUF_FILE" in
+                *[Oo]rpheus*) ;;
+                *) echo "note: '$GGUF_FILE' doesn't look like an Orpheus model — a plain chat GGUF"
+                   echo "      produces no audio tokens, so the voice would come out silent." ;;
+            esac ;;
+        s|S) GGUF_FILE=""
+             echo "skipped — config tts_lm.model stays as it is." ;;
+        *) echo "unknown choice: $c"; exit 1 ;;
+    esac
 fi
 
 echo "== SNAC vocoder decoder (ONNX, ~50 MB) =="
@@ -67,14 +116,29 @@ mkdir -p config
 [ -f config/config.json ] || cp config/config.example.json config/config.json
 ./vinkona_env/bin/python - "$GGUF_FILE" "$SNAC_OUT" <<'PY'
 import json, sys
+from pathlib import Path
 gguf, snac = sys.argv[1], sys.argv[2]
 path = "config/config.json"
 cfg = json.load(open(path))
-cfg.setdefault("tts_lm", {})["model"] = gguf
+if gguf:
+    cfg.setdefault("tts_lm", {})["model"] = gguf
+    print(f"  config: tts_lm.model = {gguf}")
 cfg.setdefault("tts", {}).setdefault("orpheus_gguf", {})["snac_path"] = snac
 json.dump(cfg, open(path, "w"), indent=2)
-print(f"  config: tts_lm.model = {gguf}")
 print(f"  config: tts.orpheus_gguf.snac_path = {snac}")
+# Whether just set or kept from before (the skip option), the model the tts_lm
+# server will try to load should actually exist — say so now, not at startup.
+m = (cfg.get("tts_lm") or {}).get("model")
+if m:
+    p = Path(m)
+    if not p.is_absolute():
+        p = Path(cfg.get("models_dir") or "Models") / m
+    if not p.exists():
+        print(f"  warning: config tts_lm.model = {m} but {p} does not exist —")
+        print(f"           the tts_lm server won't start until it does (re-run this task to fix)")
+else:
+    print("  warning: config tts_lm.model is not set — the tts_lm server won't start")
+    print("           until it is (re-run this task and pick or download a GGUF)")
 PY
 
 echo "== Verifying (decoding a real SNAC window on the CPU) =="
