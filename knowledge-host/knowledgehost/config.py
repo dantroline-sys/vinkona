@@ -148,31 +148,39 @@ DEFAULTS = {
     #   TOML:  [library_collections]\n  fiction = "fiction"\n  papers = "science"
     "library_collections": {},
     "library_dense": False,               # lexical-first; True also embeds (costly at GB scale)
-    # ── ConceptNet bulk import (commonsense, regime=conventional, ungrounded) ──
-    # Path to the ConceptNet 5.7 `assertions.csv` dump (10 GB, streamed).  Imported as
-    # a single low-trust source with has_reference=0 on every entry.  By default the
-    # noisy lexical/etymological relations (RelatedTo/FormOf/DerivedFrom/HasContext/
-    # Etymologically*) are skipped — set conceptnet_include_lexical=true to keep them.
-    "conceptnet_path": "",
+    # ── Bulk dataset imports (external/ drop folder) ────────────────────────
+    # Paths default to the canonical filenames under external/ (download links
+    # in external/README.md) — drop each dump there, or point these elsewhere.
+    # Thresholds/trust below are deliberately the neutral, obvious values: the
+    # TUNED values that make a graph good are yours, and belong in config.toml
+    # (user data, never in the repo).  `unimport --dataset <name>` undoes an
+    # import cleanly, so thresholds can be iterated without rebuilding the KB.
+    #
+    # ConceptNet (commonsense, regime=conventional, ungrounded): the 5.7
+    # `assertions.csv` dump (10 GB, streamed), one low-trust source with
+    # has_reference=0.  Noisy lexical/etymological relations (RelatedTo/FormOf/
+    # DerivedFrom/HasContext/Etymologically*) are skipped by default — set
+    # conceptnet_include_lexical=true to keep them.
+    "conceptnet_path": "external/assertions.csv",
     "conceptnet_trust": 0.2,        # source trust_weight (low, discountable prior)
     "conceptnet_min_weight": 1.0,   # drop assertions below this ConceptNet weight
     "conceptnet_include_lexical": False,
     # ── ATOMIC if-then commonsense import (same regime/trust as ConceptNet) ──
     # Use the aggregated dump `v4_atomic_all_agg.csv` (one row per event).  min_count is
     # the annotator-agreement floor for an inference (1 = keep all non-"none").
-    "atomic_path": "",
+    "atomic_path": "external/v4_atomic_all_agg.csv",
     "atomic_trust": 0.2,
     "atomic_min_count": 1,
     # ── GLUCOSE general causal-rule import (same regime/trust as the above) ──
     # Imports the GENERAL (variable-slot) rules only; min_count is the agreement floor.
-    "glucose_path": "",
+    "glucose_path": "external/GLUCOSE_training_data_final.csv",
     "glucose_trust": 0.2,
     "glucose_min_count": 1,
     # ── CauseNet causal-graph import (grounded; has_reference=1) ──
     # The precision JSONL (cause→effect mined from Wikipedia/ClueWeb).  regime is
     # conventional (firewall-safe) by default; set causenet_regime="empirical" to let it
     # corroborate the empirical tier.  Source count rides along as corroboration.
-    "causenet_path": "",
+    "causenet_path": "external/causenet-precision.jsonl",
     "causenet_trust": 0.4,
     "causenet_regime": "conventional",
     # ── reconcile imported nodes against your existing ones (node identity §9.4) ──

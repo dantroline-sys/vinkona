@@ -147,17 +147,21 @@ function renderHelp(k) {
       const st = d.present ? '<span class="fmt-ok">✓ file present</span>'
         : d.path ? '<span class="fmt-no">✗ file not found</span>'
         : `<span style="opacity:.6">path not set — <code>${esc(d.config_key)}</code> in Settings</span>`;
+      const inkb = d.imported === true ? '<span class="fmt-ok">✓ imported</span>'
+        : d.imported === false ? '<span style="opacity:.5">—</span>'
+        : '<span style="opacity:.4">?</span>';
       return `<tr><td>${esc(d.name)}</td><td><code>${esc(d.verb)}</code></td>
-        <td>${st}</td><td style="opacity:.6;word-break:break-all">${esc(d.path || '')}</td>
+        <td>${st}</td><td>${inkb}</td><td style="opacity:.6;word-break:break-all">${esc(d.path || '')}</td>
         <td style="opacity:.75">${esc(d.note)}</td></tr>`;
     }).join('');
     h += `<details id="dsbox"><summary style="cursor:pointer;opacity:.6;font-size:13px">🧩 External datasets — bulk commonsense/causal imports (click to expand)</summary>
       <div style="opacity:.85;font-size:13px;margin:8px 0;max-width:860px">Each imports as its own
       low-trust source under the epistemic firewall (they can never override your distilled or
-      empirical knowledge). Set the file path in Settings (or pass <code>path</code> as an arg),
-      then run the verb below — progress streams into the job log. Run <code>embed-nodes</code>
-      afterwards to backfill vectors for dense search.</div>
-      <table><tr><th>dataset</th><th>run</th><th>status</th><th>path</th><th>what it is</th></tr>${rows}</table></details>`;
+      empirical knowledge). Drop the file into <code>external/</code> (the default path), run the
+      verb below, then <code>embed-nodes</code> to backfill vectors. To retune thresholds, run
+      <code>unimport</code> with the dataset name — it removes exactly what that import
+      contributed (shared/fused nodes survive) so you can re-import with new settings.</div>
+      <table><tr><th>dataset</th><th>run</th><th>file</th><th>in KB</th><th>path</th><th>what it is</th></tr>${rows}</table></details>`;
   }
   box.innerHTML = h;
 }

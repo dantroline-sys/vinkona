@@ -64,11 +64,13 @@ def _import_formats() -> list:
     ]
 
 
-def _external_datasets(cfg: dict) -> list:
+def _external_datasets(cfg: dict, kb=None) -> list:
     """The bulk-importable external datasets: each with its ops verb, the config
-    key holding its file path, and a LIVE does-the-file-exist probe — so the Ops
-    tab can show what's ready to import versus what still needs downloading."""
+    key holding its file path, a LIVE does-the-file-exist probe, and (when a KB
+    handle is available) whether it is currently IMPORTED — so the Ops tab shows
+    ready-to-import / needs-download / already-in-the-graph at a glance."""
     from pathlib import Path
+    from .unimport import DATASETS
     sets = [
         ("ConceptNet 5.7", "import-conceptnet", "conceptnet_path",
          "commonsense triples, assertions.csv (~10 GB) — regime=conventional, low trust"),
@@ -83,12 +85,22 @@ def _external_datasets(cfg: dict) -> list:
     for name, verb, key, note in sets:
         p = str(cfg.get(key) or "").strip()
         present = bool(p) and Path(p).expanduser().exists()
-        out.append({"name": name, "verb": verb, "config_key": key,
-                    "path": p or None, "present": present, "note": note})
+        dataset = verb.replace("import-", "")
+        imported = None
+        if kb is not None:
+            try:
+                imported = bool(kb.db.execute(
+                    "SELECT 1 FROM source_registry WHERE doc_id=?",
+                    (DATASETS[dataset],)).fetchall())
+            except Exception:
+                imported = None
+        out.append({"name": name, "verb": verb, "dataset": dataset, "config_key": key,
+                    "path": p or None, "present": present, "imported": imported,
+                    "note": note})
     return out
 
 
-def _help_payload(cfg: dict) -> dict:
+def _help_payload(cfg: dict, kb=None) -> dict:
     """Tab help (help.json, read per request so edits show on refresh) + the
     live import-format probes and external-dataset probes above."""
     from pathlib import Path
@@ -97,7 +109,7 @@ def _help_payload(cfg: dict) -> dict:
     except Exception:
         tabs = {}
     return {"help": tabs, "formats": _import_formats(),
-            "datasets": _external_datasets(cfg)}
+            "datasets": _external_datasets(cfg, kb)}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -240,7 +252,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send_json({"ok": True, **json.loads(res["result"])})
             return self._send_json(res)
         if path == "/help":                        # viewer: tab help + import/dataset probes
-            return self._send(json.dumps(_help_payload(self.cfg)).encode())
+            return self._send(json.dumps(
+                _help_payload(self.cfg, getattr(self.server, "kb", None))).encode())
         if path == "/tools":
             return self._send_json(self.server.tools.catalogue())
         # ── control panel (auth-gated when a token is set) ──

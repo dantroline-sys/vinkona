@@ -327,6 +327,29 @@ def _run_import_conceptnet(cfg, log, *, path=None, min_weight=None,
     return 0
 
 
+def _run_unimport(cfg, log, *, dataset=None) -> int:
+    """Provenance-aware undo of one bulk dataset import — the tuning loop's
+    middle step (import -> inspect -> UNIMPORT -> adjust thresholds -> re-import)."""
+    from . import unimport as un
+    if not dataset or dataset not in un.DATASETS:
+        log.error("unimport needs --dataset {%s}", ",".join(un.DATASETS))
+        return 1
+    doc_id = un.DATASETS[dataset]
+    kb = KB(cfg)
+    try:
+        row = kb.db.execute("SELECT 1 FROM source_registry WHERE doc_id=?", (doc_id,)).fetchall()
+        if not row:
+            log.info("%s (%s) is not imported — nothing to do.", dataset, doc_id)
+            return 0
+        stats = un.unimport(kb, doc_id)
+        log.info("unimport %s: %s", dataset, stats)
+        log.info("kb: %s", kb.counts(fresh=True))
+        log.info("note: run build-ann to refresh the dense node index.")
+    finally:
+        kb.close()
+    return 0
+
+
 def _run_import_atomic(cfg, log, *, path=None, limit=None) -> int:
     """Stream the ATOMIC if-then graph into the KB (regime=conventional, low trust,
     has_reference=0).  Idempotent — re-run to add only what is new."""
@@ -669,7 +692,7 @@ def main(argv=None):
     ap.add_argument("command", nargs="?", default="serve",
                     choices=["serve", "ingest", "distill", "adjudicate", "reconcile",
                              "link", "refine", "import-conceptnet", "import-atomic",
-                             "import-glucose", "import-causenet", "embed-nodes", "build-ann",
+                             "import-glucose", "import-causenet", "unimport", "embed-nodes", "build-ann",
                              "optimize", "stats", "reset", "bump-version",
                              "bundles", "split", "source", "scenario", "eval", "facetize",
                              "ingest-library", "rebuild-fts"])
@@ -704,6 +727,8 @@ def main(argv=None):
                     help="import-conceptnet: drop assertions below this weight")
     ap.add_argument("--all", action="store_true",
                     help="import-conceptnet: also import the lexical/etymological bulk")
+    ap.add_argument("--dataset", choices=["conceptnet", "atomic", "glucose", "causenet"],
+                    help="unimport: which bulk import to remove (provenance-aware undo)")
     ap.add_argument("--anchors", choices=["corpus", "all"], default="corpus",
                     help="reconcile: anchor on your distilled corpus (default) or every node")
     ap.add_argument("--top-k", type=int, dest="top_k",
@@ -762,6 +787,9 @@ def main(argv=None):
 
     if args.command == "import-causenet":     # KB-only; no raw store / embed endpoint
         return _run_import_causenet(cfg, log, path=args.path, limit=args.limit)
+
+    if args.command == "unimport":            # KB-only; provenance-aware undo of a bulk import
+        return _run_unimport(cfg, log, dataset=args.dataset)
 
     if args.command == "reconcile":           # KB-only; vectorised, no LM/embed endpoint
         return _run_reconcile(cfg, log, anchors=args.anchors, limit=args.limit,

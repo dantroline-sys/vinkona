@@ -37,6 +37,9 @@ COMMANDS: dict = {
     "import-atomic":     {"path": "path", "limit": "int"},
     "import-glucose":    {"path": "path", "limit": "int"},
     "import-causenet":   {"path": "path", "limit": "int"},
+    # provenance-aware undo of one bulk import (the threshold-tuning loop:
+    # import → inspect → unimport → adjust → re-import)
+    "unimport":          {"dataset": "choice:conceptnet,atomic,glucose,causenet"},
     "link":       {"limit": "int", "fast": "bool", "top_k": "int"},
     "refine":     {"limit": "int", "force": "bool"},
     "adjudicate": {"limit": "int", "batch": "int", "fast": "bool",
