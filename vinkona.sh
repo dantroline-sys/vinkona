@@ -105,6 +105,24 @@ kb_stop() {
     else
         say "knowledge host: not running"
     fi
+    # Janitor pass.  The serve process shuts its job runner down on
+    # SIGTERM/SIGHUP now, but anything SIGKILLed mid-run — or an ops job from
+    # before that fix — survives the tmux session, because jobs run in their
+    # own session (deliberately, so the server can group-kill them) and so
+    # never see the pty's HUP.  Reap whatever is left: TERM, wait, then KILL.
+    # ('[-]m' is the self-match guard — this pkill's own cmdline contains the
+    # pattern text, and the bracket keeps the regex from matching itself.)
+    if pgrep -f '[-]m knowledgehost' >/dev/null 2>&1; then
+        say "knowledge host: reaping leftover worker processes"
+        pkill -TERM -f '[-]m knowledgehost' 2>/dev/null
+        local i
+        for i in 1 2 3 4 5 6; do
+            pgrep -f '[-]m knowledgehost' >/dev/null 2>&1 || break
+            sleep 1
+        done
+        pkill -KILL -f '[-]m knowledgehost' 2>/dev/null
+        true
+    fi
 }
 
 kb_status() {

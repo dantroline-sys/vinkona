@@ -15,6 +15,7 @@ from __future__ import annotations
 import hmac
 import json
 import logging
+import signal
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -475,10 +476,24 @@ def serve(cfg, store, tools, kb=None):
             log.info("autopilot: enabled — running maintenance verbs on a priority basis")
     except Exception as e:                              # pragma: no cover
         log.warning("autopilot failed to start (%s) — maintenance stays manual", e)
+    # SIGTERM (service managers) and SIGHUP (tmux killing the pane's pty) must
+    # run the same janitor as Ctrl-C.  Python's default action for both is
+    # immediate death with NO unwinding — no finally, no atexit — and the ops
+    # job runs in its OWN session (so killpg can manage its whole tree), which
+    # also means the pty's HUP never reaches it.  Without this, stopping the
+    # stack mid-job orphaned the job and its process-pool workers at 100% CPU.
+    # Raising SystemExit turns the signal into a normal unwind through the
+    # finally below, where ops.shutdown() kills the job's process group.
+    def _die(signum, _frame):
+        raise SystemExit(128 + signum)
+    signal.signal(signal.SIGTERM, _die)
+    signal.signal(signal.SIGHUP, _die)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
         log.info("shutting down")
+    except SystemExit as e:
+        log.info("shutting down (signal %s)", e.code)
     finally:
         try:
             httpd.autopilot.stop()                 # stop the priority driver before its job runner
