@@ -8,11 +8,12 @@
 #
 # Usage:
 #   ./install.sh                   # core: vinkona_env + cascade/ASR/memory deps + rnnoise
+#   ./install.sh tts orpheus_gguf  # Orpheus on llama.cpp (no venv: GGUF + SNAC ONNX — lightest)
 #   ./install.sh tts orpheus       # Orpheus TTS in its own venv (vLLM; needs CUDA)
 #   ./install.sh tts neutts        # NeuTTS in its own venv
 #   ./install.sh models            # download the default GGUFs into Models/
 #   ./install.sh llama             # build llama.cpp's llama-server into ./bin
-#   ./install.sh all               # core + tts orpheus + models (+ llama if absent)
+#   ./install.sh all               # core + tts orpheus_gguf + models (+ llama if absent)
 #   ./install.sh status            # what's installed and how big it is
 #   ./install.sh uninstall         # remove everything generated (venvs, var/, bin/)
 #                 --with-models    #   also delete downloaded weights in Models/
@@ -100,9 +101,10 @@ step_core() {
 step_tts() {
     local engine="${1:-orpheus}"
     case "$engine" in
-        orpheus) bash install_orpheus.sh ;;
-        neutts)  bash install_tts.sh ;;
-        *) die "unknown TTS engine: $engine (orpheus|neutts)" ;;
+        orpheus_gguf) bash install_orpheus_gguf.sh ;;
+        orpheus)      bash install_orpheus.sh ;;
+        neutts)       bash install_tts.sh ;;
+        *) die "unknown TTS engine: $engine (orpheus_gguf|orpheus|neutts)" ;;
     esac
 }
 
@@ -381,10 +383,10 @@ step_uninstall() {
 cmd="${1:-core}"
 case "$cmd" in
     core)       step_core ;;
-    tts)        shift; step_tts "${1:-orpheus}" ;;
+    tts)        shift; step_tts "${1:-orpheus_gguf}" ;;
     models)     step_models ;;
     llama)      shift || true; step_llama "${1:-}" ;;
-    all)        step_core; step_tts orpheus; step_models
+    all)        step_core; step_tts orpheus_gguf; step_models
                 { command -v llama-server >/dev/null 2>&1 || [ -x bin/llama-server ]; } || step_llama ;;
     status)     step_status ;;
     uninstall)  shift || true; step_uninstall "$@" ;;

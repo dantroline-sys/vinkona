@@ -1,13 +1,18 @@
 #!/usr/bin/env python
 """
-TTS HTTP service — wraps one TTS engine (NeuTTS or Orpheus) in its own venv and
-exposes synthesis over HTTP, so the main server (a different venv) can call it
-like the Ollama LLM instances.  Stdlib-only HTTP (no extra deps beyond the engine
-+ soundfile), engine loaded once at startup so vLLM warmup is paid a single time.
+TTS HTTP service — wraps one TTS engine (Orpheus on llama.cpp, Orpheus on vLLM,
+or NeuTTS) in the right venv and exposes synthesis over HTTP, so the main server
+(a different venv) can call it like the Ollama LLM instances.  Stdlib-only HTTP
+(no extra deps beyond the engine + soundfile), engine loaded once at startup so
+any warmup is paid a single time.
 
 Run INSIDE the engine's venv:
 
-  # Orpheus (orpheus_env) — preset voices + inline <laugh>/<sigh> tags
+  # Orpheus on llama.cpp (vinkona_env) — same voices/tags, no vLLM; needs the
+  # tts_lm llama-server running (serve_tts_lm.sh)
+  python tts_server.py --engine orpheus_gguf
+
+  # Orpheus on vLLM (orpheus_env) — preset voices + inline <laugh>/<sigh> tags
   CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=1 \
       python tts_server.py --engine orpheus --voice tara --port 11436
 
@@ -58,6 +63,20 @@ def build_engine(engine: str, cfg: dict, device: str):
                              gpu_memory_utilization=orp["gpu_memory_utilization"],
                              enforce_eager=orp["enforce_eager"],
                              max_tokens=orp.get("max_tokens"))
+    if engine == "orpheus_gguf":
+        from tts_orpheus_gguf import OrpheusGGUFEngine
+        og = tts["orpheus_gguf"]
+        lm_url = og.get("lm_url") or (cfg.get("tts_lm") or {}).get("url") \
+            or "http://127.0.0.1:11439"
+        return OrpheusGGUFEngine(lm_url=lm_url,
+                                 default_voice=tts["default_voice"],
+                                 snac_path=og.get("snac_path"),
+                                 snac_repo=og["snac_repo"],
+                                 snac_file=og["snac_file"],
+                                 temperature=og["temperature"],
+                                 top_p=og["top_p"],
+                                 repeat_penalty=og["repeat_penalty"],
+                                 max_tokens=og["max_tokens"])
     raise SystemExit(f"unknown engine {engine}")
 
 
@@ -159,7 +178,7 @@ def main():
     import importlib.util
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="config/config.json")
-    ap.add_argument("--engine", choices=["neutts", "orpheus"], default=None,
+    ap.add_argument("--engine", choices=["neutts", "orpheus", "orpheus_gguf"], default=None,
                     help="override config tts.engine (also selects which venv's deps to load)")
     ap.add_argument("--device", default="cuda")
     args = ap.parse_args()

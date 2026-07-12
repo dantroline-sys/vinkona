@@ -183,7 +183,8 @@ def profile_stats(name: str) -> dict:
             "active": name == active_profile()}
 
 # Tiers that llm_server.py can launch (config key → human label).
-LM_TIERS = {"fast_lm": "fast", "big_lm": "big", "big_lm2": "big2", "embed_lm": "embed"}
+LM_TIERS = {"fast_lm": "fast", "big_lm": "big", "big_lm2": "big2", "embed_lm": "embed",
+            "tts_lm": "tts-lm"}
 
 # Canonical schema + defaults.  config.json may override any subset.
 DEFAULTS: dict = {
@@ -379,6 +380,20 @@ DEFAULTS: dict = {
         "pooling": "mean",                   # nomic uses mean pooling
         "extra_args": [],
     },
+    # Orpheus TTS backbone as a plain llama-server (the "orpheus_gguf" engine).
+    # The 3B GGUF generates <custom_token_N> audio tokens; tts_orpheus_gguf.py
+    # streams them from here and vocodes with SNAC on the CPU.  Launched by
+    # serve_tts_lm.sh only when tts.engine is "orpheus_gguf" (vinkona.sh checks).
+    "tts_lm": {
+        "url": "http://127.0.0.1:11439",
+        "model": "orpheus-3b-0.1-ft-Q8_0.gguf",  # Q8 is effectively lossless; Q4 dulls the emotion tags
+        "gpu": 1,                            # 4090, live path (with fast LM + embed)
+        "ctx_size": 4096,                    # prompt + ~40 s of audio tokens fits easily
+        "n_gpu_layers": 99,
+        "flash_attn": True,
+        "parallel": 1,                       # one utterance at a time (tts_server serializes)
+        "extra_args": [],
+    },
     "tts": {
         "host": "127.0.0.1",
         "port": 11436,
@@ -401,6 +416,25 @@ DEFAULTS: dict = {
             "gpu_memory_utilization": 0.4,
             "enforce_eager": False,
             "max_tokens": None,              # per-call audio-token cap (null → ~max_model_len-256)
+        },
+        # Same Orpheus voices WITHOUT vLLM: the backbone runs on the tts_lm
+        # llama-server tier above, SNAC vocodes on CPU (onnxruntime).  Needs no
+        # extra venv — ./install.sh tts orpheus_gguf sets it up.  Enable with
+        # tts.engine = "orpheus_gguf".
+        "orpheus_gguf": {
+            "lm_url": None,                  # null → tts_lm.url
+            # Official sampling; the repetition penalty is load-bearing (Orpheus
+            # drones/loops without it — keep it ≥ 1.1).
+            "temperature": 0.6,
+            "top_p": 0.8,
+            "repeat_penalty": 1.3,
+            "max_tokens": 3500,              # audio-token cap ≈ 40 s; the cascade chunks
+                                             # sentences at max_tts_chars long before this
+            # SNAC vocoder decoder (ONNX).  A local file wins; null → downloaded
+            # once from the HF hub into the in-tree cache (var/).
+            "snac_path": None,               # e.g. "Models/snac_24khz_decoder.onnx"
+            "snac_repo": "onnx-community/snac_24khz-ONNX",
+            "snac_file": "onnx/decoder_model.onnx",
         },
         "neutts": {
             "backbone": "neuphonic/neutts-air",

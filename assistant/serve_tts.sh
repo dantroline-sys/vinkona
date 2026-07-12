@@ -1,7 +1,9 @@
 #!/bin/bash
-# Start the TTS service in the correct isolated venv for the chosen engine.
+# Start the TTS service in the correct venv for the chosen engine.
 #
-#   ./serve_tts.sh orpheus      # uses orpheus_env
+#   ./serve_tts.sh orpheus_gguf # uses vinkona_env (llama.cpp backbone — needs
+#                               #   the tts_lm llama-server, see serve_tts_lm.sh)
+#   ./serve_tts.sh orpheus      # uses orpheus_env (vLLM)
 #   ./serve_tts.sh neutts       # uses neutts_env
 #
 # All settings (port, voice, model, gpu mem, refs) come from config/config.json;
@@ -22,9 +24,11 @@ export CUDA_DEVICE_ORDER=PCI_BUS_ID
 export CUDA_VISIBLE_DEVICES
 
 case "$ENGINE" in
+  orpheus_gguf) source "$SCRIPT_DIR/vinkona_env/bin/activate" ;;   # no engine venv: the
+                                # backbone is the tts_lm llama-server, SNAC runs on CPU
   orpheus) source "$SCRIPT_DIR/orpheus_env/bin/activate" ;;
   neutts)  source "$SCRIPT_DIR/neutts_env/bin/activate" ;;
-  *) echo "usage: $0 {orpheus|neutts}"; exit 1 ;;
+  *) echo "usage: $0 {orpheus_gguf|orpheus|neutts}"; exit 1 ;;
 esac
 
 cd "$SCRIPT_DIR"

@@ -2,11 +2,11 @@
 """
 LM launcher — start one llama.cpp `llama-server` for a config tier.
 
-Each language-model tier (fast_lm / big_lm / embed_lm) in config/config.json says
-which GGUF to load, which GPU to pin it to, and the llama.cpp knobs.  This turns a
-tier block into a `llama-server` command, pins it to the chosen GPU, and execs it.
+Each language-model tier (fast_lm / big_lm / embed_lm / tts_lm) in config/config.json
+says which GGUF to load, which GPU to pin it to, and the llama.cpp knobs.  This turns
+a tier block into a `llama-server` command, pins it to the chosen GPU, and execs it.
 
-  python llm_server.py --tier fast_lm     # or big_lm / embed_lm
+  python llm_server.py --tier fast_lm     # or big_lm / embed_lm / tts_lm
   python llm_server.py --tier big_lm --dry-run    # print the command, don't run
 
 GPU pinning uses CUDA_DEVICE_ORDER=PCI_BUS_ID so the `gpu` index matches the other
@@ -92,7 +92,7 @@ def build_command(cfg: dict, tier: str) -> tuple[list[str], dict, Path]:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--tier", required=True, help="fast_lm | big_lm | embed_lm")
+    ap.add_argument("--tier", required=True, help="fast_lm | big_lm | embed_lm | tts_lm")
     ap.add_argument("--config", default="config/config.json")
     ap.add_argument("--dry-run", action="store_true", help="print the command and exit")
     args = ap.parse_args()

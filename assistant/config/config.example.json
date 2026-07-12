@@ -101,6 +101,16 @@
     "pooling": "mean",
     "extra_args": []
   },
+  "tts_lm": {
+    "url": "http://127.0.0.1:11439",
+    "model": "orpheus-3b-0.1-ft-Q8_0.gguf",
+    "gpu": 1,
+    "ctx_size": 4096,
+    "n_gpu_layers": 99,
+    "flash_attn": true,
+    "parallel": 1,
+    "extra_args": []
+  },
   "tts": {
     "host": "127.0.0.1",
     "port": 11436,
@@ -118,6 +128,16 @@
       "gpu_memory_utilization": 0.4,
       "enforce_eager": false,
       "max_tokens": null
+    },
+    "orpheus_gguf": {
+      "lm_url": null,
+      "temperature": 0.6,
+      "top_p": 0.8,
+      "repeat_penalty": 1.3,
+      "max_tokens": 3500,
+      "snac_path": null,
+      "snac_repo": "onnx-community/snac_24khz-ONNX",
+      "snac_file": "onnx/decoder_model.onnx"
     },
     "neutts": {
       "backbone": "neuphonic/neutts-air",

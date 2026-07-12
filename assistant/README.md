@@ -23,11 +23,11 @@ overview is in the [top-level README](../README.md).
                                                                    │                   │
                                             ┌──────────────────────▼───┐   ┌───────────▼──────────┐
                                             │ llm_bridge.py            │   │ tts_server.py :11436 │
-                                            │ • fast LM: streamed      │   │ Orpheus (vLLM) or    │
-                                            │   real-time replies      │   │ NeuTTS — 24 kHz PCM  │
-                                            │ • big LM: background     │   └──────────────────────┘
-                                            │   briefing, reflection,  │
-                                            │   deep reasoning         │
+                                            │ • fast LM: streamed      │   │ Orpheus (llama.cpp   │
+                                            │   real-time replies      │   │ :11439 + SNAC, or    │
+                                            │ • big LM: background     │   │ vLLM) or NeuTTS —    │
+                                            │   briefing, reflection,  │   │ 24 kHz PCM           │
+                                            │   deep reasoning         │   └──────────────────────┘
                                             └───┬──────────────┬───────┘
                                                 │              │
                                    ┌────────────▼──┐  ┌────────▼───────────┐
@@ -70,7 +70,7 @@ sub-150 ms-TTFT fast LM, sentence-by-sentence TTS, and barge-in via VAD.
 
 | Area | Files | Docs |
 |---|---|---|
-| Voice cascade | `cascade_server.py`, `asr.py`, `rnnoise_frontend.py`, `llm_bridge.py`, `tts_server.py`, `tts_orpheus.py`, `tts_neutts.py` | — |
+| Voice cascade | `cascade_server.py`, `asr.py`, `rnnoise_frontend.py`, `llm_bridge.py`, `tts_server.py`, `tts_orpheus_gguf.py`, `tts_orpheus.py`, `tts_neutts.py` | — |
 | LM serving (llama.cpp) | `llm_server.py`, `serve_fast_lm.sh`, `serve_big_lm.sh`, `serve_embed.sh` | [`ENVIRONMENTS.md`](ENVIRONMENTS.md) |
 | Memory & people | `memory.py`, `people.py`, `news_store.py`, `calendar_sync.py`, `calendar_resolve.py` | [`MEMORY_CONSOLIDATION.md`](MEMORY_CONSOLIDATION.md) |
 | Conscious reasoning | `user_model.py`, `research_reflection.py`, `retrieval_confidence.py` | [`CONSCIOUS_REASONING.md`](CONSCIOUS_REASONING.md), [`USER_MODEL_INTEGRATION.md`](USER_MODEL_INTEGRATION.md) |
@@ -87,17 +87,25 @@ sub-150 ms-TTFT fast LM, sentence-by-sentence TTS, and barge-in via VAD.
 
 ```bash
 ./install.sh               # core: vinkona_env + cascade/ASR/memory deps + rnnoise (in-tree)
-./install.sh tts orpheus   # the TTS engine, in its own venv (or: tts neutts)
+./install.sh tts           # TTS: orpheus_gguf (llama.cpp + SNAC — default, no extra venv)
+                           #   or: tts orpheus (vLLM venv) | tts neutts (own venv)
 ./install.sh models        # download the default GGUFs into Models/
 ./install.sh llama         # build llama.cpp's llama-server into ./bin (if not on PATH)
 # or all four at once:  ./install.sh all
 # later:                ./install.sh status | uninstall [--with-models] [--purge]
 ```
 
-Each step is also a standalone script (`install_orpheus.sh`,
+Each step is also a standalone script (`install_orpheus_gguf.sh`,
 `install_rnnoise.sh`, `fetch_models.sh`, …) — `install.sh` orchestrates them.
-Separate venvs are used because the TTS engines need conflicting torch/vLLM
-versions — see [`ENVIRONMENTS.md`](ENVIRONMENTS.md).
+
+**TTS engines.** The default `orpheus_gguf` runs the Orpheus 3B backbone as a
+GGUF on a plain llama-server (the `tts_lm` tier, port 11439) and vocodes with
+SNAC via onnxruntime on the CPU — same voices and `<laugh>`/`<sigh>` tags, no
+vLLM, no separate venv, no Python-version pin, and it's the path that can port
+to macOS (Metal). The `orpheus` (vLLM) and `neutts` engines remain available;
+they need their own venvs because their torch/vLLM pins conflict — see
+[`ENVIRONMENTS.md`](ENVIRONMENTS.md). Switch engines with `tts.engine` in the
+config UI; `vinkona.sh` starts the right services for whichever is set.
 
 **Filesystem guarantee:** everything the assistant writes stays inside this
 folder — live config, personas and memory in `config/`, weights in `Models/`,

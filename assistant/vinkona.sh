@@ -52,6 +52,16 @@ read_mode() {
 WATCH_SPECS="${VINKONA_WATCH:-embed:11437:6000}"
 WATCH_INTERVAL="${VINKONA_WATCH_INTERVAL:-20}"
 
+tts_engine() {                             # config tts.engine (default orpheus on any failure)
+  python3 - "$DIR/config/config.json" <<'PY' 2>/dev/null || echo orpheus
+import json, sys
+try:
+    print(json.load(open(sys.argv[1])).get("tts", {}).get("engine") or "orpheus")
+except Exception:
+    print("orpheus")
+PY
+}
+
 set_services() {                           # populate SERVICES for the current mode
   if [ "$(read_mode)" = knowledge ]; then
     SERVICES=(
@@ -66,7 +76,22 @@ set_services() {                           # populate SERVICES for the current m
       "big_lm|host|./serve_big_lm.sh|"
       "embed|host|./serve_embed.sh|"
       "tunnel|host|./serve_tunnel.sh|"
-      "tts|box|./serve_tts.sh orpheus|tts_server\.py|VLLM::|EngineCore"
+    )
+    # The TTS service set depends on the configured engine: orpheus_gguf adds a
+    # host-side llama-server for the Orpheus GGUF (and has no vLLM orphans to
+    # reap); classic orpheus is the vLLM path with its detached EngineCore.
+    case "$(tts_engine)" in
+      orpheus_gguf)
+        SERVICES+=(
+          "tts_lm|host|./serve_tts_lm.sh|"
+          "tts|box|./serve_tts.sh orpheus_gguf|tts_server\.py"
+        ) ;;
+      neutts)
+        SERVICES+=( "tts|box|./serve_tts.sh neutts|tts_server\.py" ) ;;
+      *)
+        SERVICES+=( "tts|box|./serve_tts.sh orpheus|tts_server\.py|VLLM::|EngineCore" ) ;;
+    esac
+    SERVICES+=(
       "cascade|box|./serve_cascade.sh|cascade_server.py"
       "config|box|./serve_config.sh|config_server.py"
       "research|box|./serve_research.sh|research_worker.py"
@@ -141,7 +166,7 @@ start() {
     # start, or a hand-made 'vinkona' session) doesn't — replace it rather
     # than refusing to start against a session full of dead bash panes.
     if tmux list-windows -t "$SESSION" -F '#W' 2>/dev/null \
-         | grep -qxE 'fast_lm|big_lm|big_lm2|embed|tunnel|tts|cascade|config|research|monitor|watchdog'; then
+         | grep -qxE 'fast_lm|big_lm|big_lm2|embed|tunnel|tts|tts_lm|cascade|config|research|monitor|watchdog'; then
       echo "session '$SESSION' is already running — use './vinkona.sh restart' or 'attach'."; exit 0
     fi
     echo "found a stale '$SESSION' tmux session with no service windows — replacing it"
@@ -202,6 +227,7 @@ svc_check() {   # service name -> one-line state
     big_lm)   _http "http://127.0.0.1:11438/health" ;;
     big_lm2)  _http "http://127.0.0.1:11440/health" ;;
     embed)    _http "http://127.0.0.1:11437/health" ;;
+    tts_lm)   _http "http://127.0.0.1:11439/health" ;;
     tts)      _port 11436 ;;
     cascade)  _port 8998 ;;
     config)   _port 8090 ;;
