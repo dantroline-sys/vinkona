@@ -22,6 +22,11 @@
 # Set your distrobox container name if it isn't "vinkona-cuda":  VINKONA_BOX=name ./vinkona.sh start
 set -u
 SESSION="vinkona"
+# tmux resolves -t by PREFIX when nothing matches exactly, so a bare
+# "-t vinkona" can silently target the knowledge host's "vinkona-kb" session —
+# which is exactly what happened: first starts declared it a stale corpse and
+# killed it. Every tmux target here is written "=$SESSION" ('=' = exact match
+# only); keep it that way for any new tmux calls.
 BOX="${VINKONA_BOX:-vinkona-cuda}"
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOGS="$DIR/logs"
@@ -136,8 +141,8 @@ pane_cmd() {                               # name where command... -> the shell 
 
 launch_window() {                          # name where command...
   local name="$1" where="$2"; shift 2
-  tmux new-window -t "$SESSION" -n "$name"
-  tmux send-keys -t "$SESSION:$name" "$(pane_cmd "$name" "$where" "$@")" C-m
+  tmux new-window -t "=$SESSION" -n "$name"
+  tmux send-keys -t "=$SESSION:=$name" "$(pane_cmd "$name" "$where" "$@")" C-m
 }
 
 restart_one() {
@@ -146,7 +151,7 @@ restart_one() {
     IFS='|' read -r name where cmd killpat <<<"$s"
     [ "$name" = "$target" ] || continue
     echo "restarting $name"
-    tmux kill-window -t "$SESSION:$name" 2>/dev/null
+    tmux kill-window -t "=$SESSION:=$name" 2>/dev/null
     if [ "$where" = "box" ] && [ -n "$killpat" ]; then
       reap_box "$killpat"                  # reap orphans (incl. vLLM EngineCore) + free VRAM
     fi
@@ -161,16 +166,16 @@ restart_one() {
 
 start() {
   command -v tmux >/dev/null || { echo "tmux is not installed (host)."; exit 1; }
-  if tmux has-session -t "$SESSION" 2>/dev/null; then
+  if tmux has-session -t "=$SESSION" 2>/dev/null; then
     # A live stack has windows named after services; a corpse (interrupted
     # start, or a hand-made 'vinkona' session) doesn't — replace it rather
     # than refusing to start against a session full of dead bash panes.
-    if tmux list-windows -t "$SESSION" -F '#W' 2>/dev/null \
+    if tmux list-windows -t "=$SESSION" -F '#W' 2>/dev/null \
          | grep -qxE 'fast_lm|big_lm|big_lm2|embed|tunnel|tts|tts_lm|cascade|config|research|monitor|watchdog'; then
       echo "session '$SESSION' is already running — use './vinkona.sh restart' or 'attach'."; exit 0
     fi
     echo "found a stale '$SESSION' tmux session with no service windows — replacing it"
-    tmux kill-session -t "$SESSION" 2>/dev/null
+    tmux kill-session -t "=$SESSION" 2>/dev/null
   fi
   mkdir -p "$LOGS/control"
   # Wake the container ONCE, alone, before the box windows launch: firing four
@@ -186,7 +191,7 @@ start() {
     IFS='|' read -r name where cmd killpat <<<"$s"
     if [ "$first" = 1 ]; then
       tmux new-session -d -s "$SESSION" -n "$name"
-      tmux send-keys -t "$SESSION:$name" "$(pane_cmd "$name" "$where" $cmd)" C-m
+      tmux send-keys -t "=$SESSION:=$name" "$(pane_cmd "$name" "$where" $cmd)" C-m
       first=0
     else
       # shellcheck disable=SC2086
@@ -195,13 +200,13 @@ start() {
     [ "$where" = "host" ] && sleep 1       # let the LM servers start loading first
   done
   # control window: processes restart requests from the web UI (host-side, has tmux)
-  tmux new-window -t "$SESSION" -n "monitor"
-  tmux send-keys -t "$SESSION:monitor" "$(printf 'cd %q && VINKONA_BOX=%q ./vinkona.sh _monitor' "$DIR" "$BOX")" C-m
+  tmux new-window -t "=$SESSION" -n "monitor"
+  tmux send-keys -t "=$SESSION:=monitor" "$(printf 'cd %q && VINKONA_BOX=%q ./vinkona.sh _monitor' "$DIR" "$BOX")" C-m
   # watchdog window: revive / pre-empt-OOM the embed LM (and any VINKONA_WATCH entry)
   local extra="monitor"
   if [ "${VINKONA_WATCHDOG:-1}" != 0 ]; then
-    tmux new-window -t "$SESSION" -n "watchdog"
-    tmux send-keys -t "$SESSION:watchdog" "$(printf 'cd %q && VINKONA_WATCH=%q VINKONA_WATCH_INTERVAL=%q ./vinkona.sh _watchdog' "$DIR" "$WATCH_SPECS" "$WATCH_INTERVAL")" C-m
+    tmux new-window -t "=$SESSION" -n "watchdog"
+    tmux send-keys -t "=$SESSION:=watchdog" "$(printf 'cd %q && VINKONA_WATCH=%q VINKONA_WATCH_INTERVAL=%q ./vinkona.sh _watchdog' "$DIR" "$WATCH_SPECS" "$WATCH_INTERVAL")" C-m
     extra="monitor + watchdog"
   fi
   echo "started '$SESSION' (${#SERVICES[@]} services + $extra).  Attach: ./vinkona.sh attach"
@@ -240,7 +245,7 @@ svc_check() {   # service name -> one-line state
 }
 
 status() {
-  if ! tmux has-session -t "$SESSION" 2>/dev/null; then
+  if ! tmux has-session -t "=$SESSION" 2>/dev/null; then
     echo "session '$SESSION' not running"; return 1
   fi
   echo "session '$SESSION' up (mode: $(read_mode))"
@@ -252,7 +257,7 @@ status() {
 }
 
 stop() {
-  tmux kill-session -t "$SESSION" 2>/dev/null && echo "killed tmux session '$SESSION'"
+  tmux kill-session -t "=$SESSION" 2>/dev/null && echo "killed tmux session '$SESSION'"
   pkill -f 'llm_server\.py|llama-server|serve_tunnel\.sh|8765:127\.0\.0\.1:8765' 2>/dev/null
   # Reap the box services + vLLM's detached EngineCore/Worker so no GPU memory leaks.
   reap_box 'tts_server\.py|cascade_server\.py|config_server\.py|research_worker\.py|VLLM::|EngineCore'
@@ -304,8 +309,8 @@ watchdog() {                               # internal: pre-empt the embed leak /
       IFS=':' read -r name port cap <<<"$spec"
       pids="$(pgrep -f -- "--port $port" 2>/dev/null)"
       if [ -z "$pids" ]; then              # the LM is down — revive it, but only if the stack
-        tmux has-session -t "$SESSION" 2>/dev/null || continue          # is actually up and
-        tmux list-windows -t "$SESSION" -F '#W' 2>/dev/null | grep -qx "$name" || continue  # owns it
+        tmux has-session -t "=$SESSION" 2>/dev/null || continue          # is actually up and
+        tmux list-windows -t "=$SESSION" -F '#W' 2>/dev/null | grep -qx "$name" || continue  # owns it
         request_restart "$name" "not running"
         continue
       fi
@@ -330,7 +335,7 @@ case "${1:-}" in
               printf '%s\n' "$2" > "$MODE_FILE"; set_services; stop; sleep 2; start   # mode switch
             elif [ -n "${2:-}" ]; then set_services; restart_one "$2"                 # one service
             else set_services; stop; sleep 2; start; fi ;;
-  attach)   tmux attach -t "$SESSION" ;;
+  attach)   tmux attach -t "=$SESSION" ;;
   status)   set_services; status ;;
   mode)     read_mode ;;
   plan)     set_services; for s in "${SERVICES[@]}"; do IFS='|' read -r n w c k <<<"$s"

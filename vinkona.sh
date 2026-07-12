@@ -27,6 +27,8 @@ source assistant/env.sh          # vk_require_tools; cache pinning is harmless h
 
 CONF="$ROOT/.vinkona-services"
 KB_SESSION="vinkona-kb"
+# tmux -t prefix-matches when there's no exact hit ("vinkona" would match
+# "vinkona-kb"!) — always target sessions as "=$name" (exact match only).
 CYAN='\033[0;36m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RESET='\033[0m'
 say()  { echo -e "${CYAN}==>${RESET} $*"; }
 warn() { echo -e "${YELLOW}warning:${RESET} $*" >&2; }
@@ -84,7 +86,7 @@ kb_port() {
 
 kb_start() {
     vk_require_tools tmux || exit 1
-    if tmux has-session -t "$KB_SESSION" 2>/dev/null; then
+    if tmux has-session -t "=$KB_SESSION" 2>/dev/null; then
         say "knowledge host: already running (tmux session $KB_SESSION)"
         return 0
     fi
@@ -98,7 +100,7 @@ kb_start() {
 }
 
 kb_stop() {
-    if tmux kill-session -t "$KB_SESSION" 2>/dev/null; then
+    if tmux kill-session -t "=$KB_SESSION" 2>/dev/null; then
         say "knowledge host: stopped"
     else
         say "knowledge host: not running"
@@ -106,7 +108,7 @@ kb_stop() {
 }
 
 kb_status() {
-    if tmux has-session -t "$KB_SESSION" 2>/dev/null; then
+    if tmux has-session -t "=$KB_SESSION" 2>/dev/null; then
         local port; port="$(kb_port)"
         local health=""
         command -v curl >/dev/null 2>&1 && health="$(curl -s -m 2 "localhost:$port/health" 2>/dev/null || true)"
@@ -152,11 +154,11 @@ case "$cmd" in
         ;;
     attach)
         resolve_services
-        if runs_assistant && tmux has-session -t vinkona 2>/dev/null; then
+        if runs_assistant && tmux has-session -t =vinkona 2>/dev/null; then
             (cd assistant && ./vinkona.sh attach)
-        elif tmux has-session -t "$KB_SESSION" 2>/dev/null; then
+        elif tmux has-session -t "=$KB_SESSION" 2>/dev/null; then
             runs_assistant && say "the assistant session isn't running (./vinkona.sh start) — attaching the knowledge host instead"
-            exec tmux attach -t "$KB_SESSION"
+            exec tmux attach -t "=$KB_SESSION"
         else
             echo "nothing is running — './vinkona.sh start' first"
             exit 1
