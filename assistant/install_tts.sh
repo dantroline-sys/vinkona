@@ -36,6 +36,9 @@ source "$ENV_DIR/bin/activate"
 pip install --upgrade pip
 pip install neutts soundfile
 
+echo "== Verifying the install (a failed pip must never look like a green tick) =="
+"$ENV_DIR/bin/python" -c "import numpy, soundfile; print('neutts_env sanity: numpy + soundfile present')"
+
 echo ""
 echo "Done — NeuTTS is isolated in neutts_env (vinkona_env untouched)."
 echo ""

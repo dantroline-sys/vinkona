@@ -37,13 +37,21 @@ desc() {
     esac
 }
 
+# A venv only counts as installed if its packages actually landed — a failed pip
+# leaves bin/activate behind and a bare "does the venv exist" check then shows a
+# green ✓ over an empty env (the ModuleNotFoundError trap). Probe site-packages
+# on disk (no exec — works even for a venv built inside the container).
+_venv_has() {  # venv-dir module-dir -> 0 if installed
+    compgen -G "$1/lib*/python3.*/site-packages/$2" >/dev/null 2>&1
+}
+
 installed() {
     case "$1" in
-        assistant-core) [ -f assistant/vinkona_env/bin/activate ] ;;
-        tts)            [ -f assistant/orpheus_env/bin/activate ] || [ -f assistant/neutts_env/bin/activate ] ;;
+        assistant-core) _venv_has assistant/vinkona_env faster_whisper ;;
+        tts)            _venv_has assistant/orpheus_env numpy || _venv_has assistant/neutts_env numpy ;;
         models)         [ -n "$(find -L assistant/Models -name '*.gguf' -print -quit 2>/dev/null)" ] ;;
         llama)          [ -x assistant/bin/llama-server ] || command -v llama-server >/dev/null 2>&1 ;;
-        knowledge-host) [ -f knowledge-host/.venv/bin/activate ] ;;
+        knowledge-host) [ -f knowledge-host/.venv/bin/activate ] ;;   # installer smoke-tests itself
     esac
 }
 
@@ -51,7 +59,18 @@ run_task() {
     local t="$1"; shift || true
     case "$t" in
         assistant-core) (cd assistant && ./install.sh core) ;;
-        tts)            (cd assistant && ./install.sh tts "${1:-orpheus}") ;;
+        tts)
+            # vLLM/TTS runs INSIDE the distrobox at serve time, so install it there
+            # when the container exists — the venv must be built with the container's
+            # python (also neatly sidesteps a too-new host interpreter).
+            local box="${VINKONA_BOX:-vinkona-cuda}"
+            if command -v distrobox >/dev/null 2>&1 && distrobox list 2>/dev/null | grep -qw "$box"; then
+                say "installing TTS inside the container ($box) — where it runs"
+                (cd assistant && distrobox enter "$box" -- ./install.sh tts "${1:-orpheus}")
+            else
+                say "no container '$box' found — installing TTS on this system (set VINKONA_BOX=name if yours differs)"
+                (cd assistant && ./install.sh tts "${1:-orpheus}")
+            fi ;;
         models)         (cd assistant && ./install.sh models) ;;
         llama)          (cd assistant && ./install.sh llama) ;;
         knowledge-host) (cd knowledge-host && ./install.sh "$@") ;;

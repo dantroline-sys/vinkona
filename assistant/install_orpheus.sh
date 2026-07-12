@@ -56,6 +56,14 @@ source "$ENV_DIR/bin/activate"
 pip install --upgrade pip
 pip install orpheus-speech soundfile
 
+echo "== Verifying the install (a failed pip must never look like a green tick) =="
+"$ENV_DIR/bin/python" - <<'PY'
+import importlib.util as u
+import numpy, soundfile                      # the canary imports tts_server needs at boot
+assert u.find_spec("vllm"), "vllm is not installed in orpheus_env"
+print("orpheus_env sanity: numpy + soundfile + vllm present")
+PY
+
 echo ""
 echo "Done — Orpheus is isolated in orpheus_env."
 echo ""

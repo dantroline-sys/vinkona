@@ -691,9 +691,6 @@ def main(argv=None):
                     help="distill --watch: seconds to wait between passes (default 30)")
     ap.add_argument("--limit", type=int,
                     help="ingest/distill/adjudicate: cap items processed (testing)")
-    ap.add_argument("--bundle",
-                    help="distill: only chunks from this provenance bundle (e.g. 'vinkona') — "
-                         "distil Vinkona's research drops ahead of a big uncurated corpus")
     ap.add_argument("--batch", type=int, default=8,
                     help="adjudicate: merge-candidate pairs per big-LM call (default 8)")
     ap.add_argument("--no-auto", action="store_true",
@@ -714,7 +711,10 @@ def main(argv=None):
     ap.add_argument("--vacuum", action="store_true",
                     help="optimize: VACUUM after migrating to reclaim disk space")
     ap.add_argument("--title", help="source: new display title for the source (rename)")
-    ap.add_argument("--bundle", help="source: assign the source to this bundle group")
+    ap.add_argument("--bundle",
+                    help="source: assign the source to this bundle group | "
+                         "distill: only chunks from this provenance bundle (e.g. 'vinkona' — "
+                         "distil Vinkona's research drops ahead of the big corpus)")
     ap.add_argument("--out", help="split: output directory for bundle files")
     ap.add_argument("--license", help="source: SPDX licence id (e.g. CC-BY-NC-4.0, proprietary)")
     ap.add_argument("--license-holder", dest="license_holder",
