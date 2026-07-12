@@ -38,7 +38,12 @@ import sqlite3
 from pathlib import Path
 
 CHECKER_VERSION = "1.0.0"
-_ALGO = "VINKONA-CONF-01/1.0"
+# 1.1 erratum (§9): the hash also covers the scope-STRUCTURAL tables
+# (conflict_is_a, administers, member_of, acts_via) — they all affect what
+# fires, so changing them must change ruleset_version.  At 1.0 only
+# edges/overrides/mechanisms were hashed; the is_a walk already made that a
+# gap, and DMAP-01's scope linkage widened it.
+_ALGO = "VINKONA-CONF-01/1.1"
 
 RELATION_TYPES = ("contraindicated", "requires", "mutually_exclusive", "antagonizes")
 SEVERITIES = ("advisory", "caution", "severe", "prohibitive")
@@ -256,7 +261,11 @@ class Checker:
             self.nodes = frozenset(
                 r["node_id"] for r in conn.execute("SELECT node_id FROM conflict_node"))
 
-            for r in conn.execute("SELECT child,parent,status FROM conflict_is_a"):
+            # Full rows are kept for the §9/1.1 ruleset hash below; the graphs are
+            # built from the same fetch so hash and behaviour can never diverge.
+            isa_rows = [dict(r) for r in conn.execute(
+                "SELECT child,parent,status FROM conflict_is_a")]
+            for r in isa_rows:
                 for end in (r["child"], r["parent"]):
                     if end not in self.nodes:
                         raise ConfError("E_UNKNOWN_NODE", f"is_a endpoint not in registry: {end}")
@@ -266,17 +275,23 @@ class Checker:
                 self.is_a[child].sort()
 
             # §4 scope-linkage (all endpoints must resolve — a mis-linked veto is invisible harm)
-            for r in conn.execute("SELECT action,substance FROM administers"):
+            adm_rows = [dict(r) for r in conn.execute(
+                "SELECT action,substance FROM administers")]
+            for r in adm_rows:
                 for end in (r["action"], r["substance"]):
                     if end not in self.nodes:
                         raise ConfError("E_UNKNOWN_NODE", f"administers endpoint not in registry: {end}")
                 self.administers.setdefault(r["action"], []).append(r["substance"])
-            for r in conn.execute("SELECT child,grouper,grouper_type FROM member_of"):
+            mem_rows = [dict(r) for r in conn.execute(
+                "SELECT child,grouper,grouper_type FROM member_of")]
+            for r in mem_rows:
                 for end in (r["child"], r["grouper"]):
                     if end not in self.nodes:
                         raise ConfError("E_UNKNOWN_NODE", f"member_of endpoint not in registry: {end}")
                 self.groupers.setdefault(r["child"], []).append((r["grouper"], r["grouper_type"]))
-            for r in conn.execute("SELECT substance,mechanism FROM acts_via"):
+            via_rows = [dict(r) for r in conn.execute(
+                "SELECT substance,mechanism,role FROM acts_via")]
+            for r in via_rows:
                 for end in (r["substance"], r["mechanism"]):
                     if end not in self.nodes:
                         raise ConfError("E_UNKNOWN_NODE", f"acts_via endpoint not in registry: {end}")
@@ -327,12 +342,19 @@ class Checker:
             for k in self.overrides:
                 self.overrides[k].sort(key=lambda o: o["override_id"])
 
-            # §9: sha256 over the canonical dump of ALL edge/override/mechanism rows
-            # (deprecated/proposed included — any change ⇒ new version) + the algo string.
+            # §9 (1.1): sha256 over the canonical dump of ALL rows of every table
+            # that affects what fires — edges, overrides, mechanisms, and the
+            # scope-structural tables (is_a, administers, member_of, acts_via).
+            # Deprecated/proposed rows included: any change ⇒ new version.  List
+            # order is fixed by the spec; each list is sorted; algo string last.
             h = hashlib.sha256()
             for chunk in (sorted(_row_dump(e) for e in edge_rows),
                           sorted(_row_dump(o) for o in ov_rows),
-                          sorted(_row_dump(m) for m in mech_rows)):
+                          sorted(_row_dump(m) for m in mech_rows),
+                          sorted(_row_dump(r) for r in isa_rows),
+                          sorted(_row_dump(r) for r in adm_rows),
+                          sorted(_row_dump(r) for r in mem_rows),
+                          sorted(_row_dump(r) for r in via_rows)):
                 for line in chunk:
                     h.update(line.encode("utf-8"))
                     h.update(b"\n")

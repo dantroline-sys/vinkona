@@ -23,7 +23,7 @@ CAVEAT = ("no_known_conflicts means only that no ratified conflict rule fired fo
           "assumptions; it is NOT a safety determination. Unrepresented interactions, "
           "absent state, and unresolved quantities are not excluded.")
 
-RS = "31c8a9dab2dfd7b4b82938ef269cbc754d9c5c23c358ac1862a987e927d0dc19"  # spec's value; substituted
+RS = "707a8e38853f0fca0f687b91485893879da5d82a50db39514121df1dd2ea7f17"  # spec's value; substituted
 
 EXPECTED_CLIN = '{"checker_version":"1.0.0","ruleset_version":"' + RS + '","card_id":"card:clin.bronchospasm_mgmt","clearance":"conflicts_found","findings":[{"action":"act:administer_adrenaline","edge_id":"E1","relation_type":"contraindicated","disposition":"fire","reason":"triggered","severity":"severe","recommended_disposition":"warn_strong","mechanism":{"mechanism_id":"mech:unopposed_alpha","label":"Unopposed alpha-adrenergic effect","explanation":"Non-selective beta-blockade removes beta-2 vasodilation, leaving alpha-mediated vasoconstriction unopposed; risk of severe hypertension with reflex bradycardia.","conditionality_class":"acute_competition"},"rationale":"Sympathomimetic pressor response is altered by non-selective beta-blockade."},{"action":"act:administer_adrenaline","edge_id":"E4","relation_type":"contraindicated","disposition":"flag_for_human","reason":"indeterminate","severity":"caution","recommended_disposition":"human_review","mechanism":null,"rationale":"High-dose adrenaline caution in bronchospasm; dose-conditional."},{"action":"act:administer_adrenaline","edge_id":"E5","relation_type":"antagonizes","disposition":"flag_for_human","reason":"unratified_rule","severity":"caution","recommended_disposition":"human_review","mechanism":null,"rationale":"Possible exaggerated pressor response with MAOIs (proposed, unreviewed)."}],"checked":{"actions":["act:administer_adrenaline","act:administer_hydrocortisone"],"edges_consulted":["E1","E4","E5","E8"],"overrides_applied":[{"action":"act:administer_adrenaline","edge_id":"E8","override_id":"O3","justification":"Adrenaline age-caution handled by dedicated dosing guidance; generic advisory suppressed."}]},"coverage":{"caveat":"' + CAVEAT + '","not_evaluated":[{"edge_id":"E4","reason":"indeterminate_condition"},{"edge_id":"E5","reason":"unratified_rule"}]}}'
 
@@ -156,6 +156,39 @@ def main():
         b = canonical_json(Checker.load(db).check(clin_card, clin_state))
         assert a == b, "determinism across runs/loads"
         print("PASS determinism (repeat check + fresh load byte-identical)")
+
+        # ── §9 (1.1 erratum): the scope-STRUCTURAL tables are hashed too ──────
+        # is_a / administers / member_of / acts_via all change what fires, so
+        # any row change must move ruleset_version — including a PROPOSED is_a
+        # row that changes no behaviour (the audit trail must move even when
+        # firing doesn't).  Reverting must restore the version exactly.
+        base = checker.ruleset_version
+        for table, ins, undo in [
+            ("conflict_is_a (proposed)",
+             "INSERT INTO conflict_is_a(child,parent,status) VALUES("
+             "'act:administer_adrenaline','act:administer_steroid','proposed')",
+             "DELETE FROM conflict_is_a WHERE parent='act:administer_steroid' "
+             "AND child='act:administer_adrenaline'"),
+            ("administers",
+             "INSERT INTO administers(action,substance) VALUES("
+             "'act:administer_adrenaline','act:administer_sympathomimetic')",
+             "DELETE FROM administers"),
+            ("member_of",
+             "INSERT INTO member_of(child,grouper,grouper_type) VALUES("
+             "'act:administer_adrenaline','act:administer_sympathomimetic','ATC')",
+             "DELETE FROM member_of"),
+            ("acts_via",
+             "INSERT INTO acts_via(substance,mechanism,role) VALUES("
+             "'act:administer_adrenaline','act:administer_sympathomimetic','moa')",
+             "DELETE FROM acts_via"),
+        ]:
+            conn = sqlite3.connect(db); conn.execute(ins); conn.commit(); conn.close()
+            moved = Checker.load(db).ruleset_version
+            assert moved != base, f"{table}: row change did not move ruleset_version (the 1.0 audit gap)"
+            conn = sqlite3.connect(db); conn.execute(undo); conn.commit(); conn.close()
+            restored = Checker.load(db).ruleset_version
+            assert restored == base, f"{table}: revert did not restore ruleset_version"
+        print("PASS §9/1.1 scope-structural rows move ruleset_version (revert restores it)")
 
         # ── §10 error contract ──
         for bad_card, bad_state, code in [
