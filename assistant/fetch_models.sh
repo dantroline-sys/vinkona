@@ -1,5 +1,5 @@
 #!/bin/bash
-# Download the default GGUF weights into Models/ via huggingface-cli.
+# Download the default GGUF weights into Models/.
 #
 # The filenames here match config/config.json (fast_lm / big_lm / embed_lm .model).
 # If you keep weights elsewhere, skip this and symlink instead:
@@ -7,28 +7,19 @@
 # or symlink individual files into Models/.  Override the target dir with
 #     MODELS_DIR=/path ./fetch_models.sh
 #
-# Uses vinkona_env's huggingface-cli (installed by ./install.sh core), falling
-# back to a system-wide one.  `git lfs` is NOT required.
+# Downloads via vinkona_env's huggingface_hub python API (vk_hf_download in
+# env.sh — the hub CLI's huggingface-cli->hf rename made the CLI unreliable
+# to shell out to).  `git lfs` is NOT required.
 set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/env.sh"          # in-tree caches/tmp/PATH — see env.sh
 DIR="${MODELS_DIR:-$SCRIPT_DIR/Models}"
 mkdir -p "$DIR"
 
-HF_CLI="$SCRIPT_DIR/vinkona_env/bin/huggingface-cli"
-if [ ! -x "$HF_CLI" ]; then
-  HF_CLI="$(command -v huggingface-cli || true)"
-fi
-if [ -z "$HF_CLI" ]; then
-  echo "huggingface-cli not found — run './install.sh core' first (it installs" >&2
-  echo "huggingface_hub into vinkona_env), or: pip install -U 'huggingface_hub[cli]'" >&2
-  exit 1
-fi
-
 # repo  filename  (one per line)
 grab() {  # repo file
   echo "→ $2"
-  "$HF_CLI" download "$1" "$2" --local-dir "$DIR" --local-dir-use-symlinks False >/dev/null
+  vk_hf_download "$1" "$2" "$DIR"
 }
 
 echo "Fetching GGUFs into $DIR ..."

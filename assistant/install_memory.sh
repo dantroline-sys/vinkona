@@ -17,10 +17,9 @@ EMBED="nomic-embed-text-v1.5.f16.gguf"      # must match config embed_lm.model
 if [ -e "$DIR/$EMBED" ]; then
   echo "Embedding model present: $DIR/$EMBED"
 else
-  echo "Embedding model missing. Fetch it with:"
-  echo "  pip install -U 'huggingface_hub[cli]'"
-  echo "  huggingface-cli download nomic-ai/nomic-embed-text-v1.5-GGUF $EMBED --local-dir '$DIR' --local-dir-use-symlinks False"
-  echo "(or run ./fetch_models.sh to get all three models)"
+  echo "Embedding model missing. Run ./fetch_models.sh to get all three models,"
+  echo "or fetch just this one (vk_hf_download comes from env.sh):"
+  echo "  source env.sh && vk_hf_download nomic-ai/nomic-embed-text-v1.5-GGUF $EMBED '$DIR'"
   exit 1
 fi
 

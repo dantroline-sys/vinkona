@@ -106,3 +106,26 @@ vk_require_tools() {
     echo "Non-interactive shell — run:  sudo $mgr ${pkgs[*]}   then re-run this script."
     return 1
 }
+
+# ── vk_hf_download: fetch one file from the HuggingFace hub ──────────────────
+# Usage: vk_hf_download <repo> <file> <dest-dir>
+# Deliberately uses the PYTHON API (hf_hub_download), never the CLI: the hub's
+# command-line tool was renamed huggingface-cli -> hf and the old name now
+# hard-fails, which broke installs mid-flight. The python function has kept the
+# same signature throughout, so this works on any huggingface_hub version.
+# Subpaths in <file> are preserved under <dest-dir>; progress shows on stderr.
+vk_hf_download() {
+    local py="$VINKONA_ROOT/vinkona_env/bin/python"
+    [ -x "$py" ] || py=python3
+    "$py" - "$1" "$2" "$3" <<'PY'
+import sys
+try:
+    from huggingface_hub import hf_hub_download
+except ImportError:
+    sys.exit("huggingface_hub is not installed — run './install.sh core' first "
+             "(it goes into vinkona_env), or: pip install huggingface_hub")
+repo, filename, dest = sys.argv[1:4]
+path = hf_hub_download(repo_id=repo, filename=filename, local_dir=dest)
+print(f"  -> {path}")
+PY
+}

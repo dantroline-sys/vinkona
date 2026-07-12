@@ -37,11 +37,6 @@ echo "== onnxruntime into vinkona_env (SNAC vocoder, CPU) =="
 ./vinkona_env/bin/python -c "import onnxruntime" \
     || { echo "ERROR: onnxruntime did not import after install."; exit 1; }
 
-# huggingface-cli comes with vinkona_env's huggingface_hub (same as fetch_models.sh).
-HF_CLI="$SCRIPT_DIR/vinkona_env/bin/huggingface-cli"
-[ -x "$HF_CLI" ] || HF_CLI="$(command -v huggingface-cli || true)"
-[ -n "$HF_CLI" ] || { echo "ERROR: huggingface-cli not found — run './install.sh core' first."; exit 1; }
-
 echo "== Orpheus GGUF =="
 mkdir -p Models
 existing="$(find -L Models -maxdepth 2 -iname '*orpheus*.gguf' -print -quit 2>/dev/null)"
@@ -49,7 +44,7 @@ tty=0; { [ -t 0 ] || [ "${VINKONA_ASSUME_TTY:-}" = 1 ]; } && tty=1
 
 _download_gguf() {
     echo "downloading $GGUF_REPO :: $GGUF_FILE (~3.4 GB for Q8_0) ..."
-    "$HF_CLI" download "$GGUF_REPO" "$GGUF_FILE" --local-dir Models --local-dir-use-symlinks False >/dev/null
+    vk_hf_download "$GGUF_REPO" "$GGUF_FILE" Models    # python API — see env.sh
 }
 
 if [ "$tty" -ne 1 ]; then
@@ -106,7 +101,7 @@ if [ -f "$SNAC_OUT" ]; then
     echo "found $SNAC_OUT — keeping it"
 else
     tmp="Models/.snac_dl"
-    "$HF_CLI" download "$SNAC_REPO" "$SNAC_FILE" --local-dir "$tmp" --local-dir-use-symlinks False >/dev/null
+    vk_hf_download "$SNAC_REPO" "$SNAC_FILE" "$tmp"
     mv "$tmp/$SNAC_FILE" "$SNAC_OUT"
     rm -rf "$tmp"
 fi
