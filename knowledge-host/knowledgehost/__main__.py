@@ -298,7 +298,7 @@ def _run_adjudicate(cfg, log, *, limit=None, batch=8, watch=False, interval=30,
 
 
 def _run_import_conceptnet(cfg, log, *, path=None, min_weight=None,
-                           include_lexical=False, limit=None) -> int:
+                           include_lexical=False, exclude=None, limit=None) -> int:
     """Stream the ConceptNet dump into the KB (regime=conventional, low trust,
     has_reference=0).  Resumable/idempotent — re-run to add only what is new."""
     from . import conceptnet as cn
@@ -317,6 +317,7 @@ def _run_import_conceptnet(cfg, log, *, path=None, min_weight=None,
             min_weight=cfg["conceptnet_min_weight"] if min_weight is None else min_weight,
             trust=cfg["conceptnet_trust"],
             include_lexical=include_lexical or cfg["conceptnet_include_lexical"],
+            exclude=(exclude if exclude is not None else cfg["conceptnet_exclude"]),
             limit=limit)
         log.info("conceptnet import: %s", stats)
         log.info("kb: %s", kb.counts())
@@ -350,7 +351,7 @@ def _run_unimport(cfg, log, *, dataset=None) -> int:
     return 0
 
 
-def _run_import_atomic(cfg, log, *, path=None, limit=None) -> int:
+def _run_import_atomic(cfg, log, *, path=None, min_count=None, limit=None) -> int:
     """Stream the ATOMIC if-then graph into the KB (regime=conventional, low trust,
     has_reference=0).  Idempotent — re-run to add only what is new."""
     from . import atomic as at
@@ -366,7 +367,8 @@ def _run_import_atomic(cfg, log, *, path=None, limit=None) -> int:
     kb = KB(cfg)
     try:
         stats = at.import_atomic(kb, src, trust=cfg["atomic_trust"],
-                                 min_count=cfg["atomic_min_count"], limit=limit)
+                                 min_count=cfg["atomic_min_count"] if min_count is None else min_count,
+                                 limit=limit)
         log.info("atomic import: %s", stats)
         log.info("kb: %s", kb.counts())
     except KeyboardInterrupt:
@@ -376,7 +378,7 @@ def _run_import_atomic(cfg, log, *, path=None, limit=None) -> int:
     return 0
 
 
-def _run_import_glucose(cfg, log, *, path=None, limit=None) -> int:
+def _run_import_glucose(cfg, log, *, path=None, min_count=None, limit=None) -> int:
     """Stream GLUCOSE general causal rules into the KB (regime=conventional, low trust,
     has_reference=0).  Idempotent — re-run to add only what is new."""
     from . import glucose as gl
@@ -391,7 +393,8 @@ def _run_import_glucose(cfg, log, *, path=None, limit=None) -> int:
     kb = KB(cfg)
     try:
         stats = gl.import_glucose(kb, src, trust=cfg["glucose_trust"],
-                                  min_count=cfg["glucose_min_count"], limit=limit)
+                                  min_count=cfg["glucose_min_count"] if min_count is None else min_count,
+                                  limit=limit)
         log.info("glucose import: %s", stats)
         log.info("kb: %s", kb.counts())
     except KeyboardInterrupt:
@@ -401,7 +404,7 @@ def _run_import_glucose(cfg, log, *, path=None, limit=None) -> int:
     return 0
 
 
-def _run_import_causenet(cfg, log, *, path=None, limit=None) -> int:
+def _run_import_causenet(cfg, log, *, path=None, min_sources=None, limit=None) -> int:
     """Stream CauseNet-precision into the KB (causal edges, grounded, has_reference=1).
     Idempotent — re-run to add only what is new."""
     from . import causenet as cnet
@@ -416,7 +419,10 @@ def _run_import_causenet(cfg, log, *, path=None, limit=None) -> int:
     kb = KB(cfg)
     try:
         stats = cnet.import_causenet(kb, src, trust=cfg["causenet_trust"],
-                                     regime=cfg["causenet_regime"], limit=limit)
+                                     regime=cfg["causenet_regime"],
+                                     min_sources=cfg["causenet_min_sources"] if min_sources is None
+                                     else min_sources,
+                                     limit=limit)
         log.info("causenet import: %s", stats)
         log.info("kb: %s", kb.counts())
     except KeyboardInterrupt:
@@ -729,6 +735,13 @@ def main(argv=None):
                     help="import-conceptnet: also import the lexical/etymological bulk")
     ap.add_argument("--dataset", choices=["conceptnet", "atomic", "glucose", "causenet"],
                     help="unimport: which bulk import to remove (provenance-aware undo)")
+    ap.add_argument("--exclude",
+                    help="import-conceptnet: comma-separated relation names to ALWAYS skip "
+                         "(e.g. FormOf,DerivedFrom,EtymologicallyRelatedTo — see conceptnet._REL)")
+    ap.add_argument("--min-count", type=int, dest="min_count",
+                    help="import-atomic/glucose: annotator/worker agreement floor (overrides config)")
+    ap.add_argument("--min-sources", type=int, dest="min_sources",
+                    help="import-causenet: DISTINCT supporting sources required (overrides config)")
     ap.add_argument("--anchors", choices=["corpus", "all"], default="corpus",
                     help="reconcile: anchor on your distilled corpus (default) or every node")
     ap.add_argument("--top-k", type=int, dest="top_k",
@@ -775,18 +788,24 @@ def main(argv=None):
         return _cmd_reset(cfg, args, log)
 
     if args.command == "import-conceptnet":   # KB-only; no raw store / embed endpoint
-        return _run_import_conceptnet(cfg, log, path=args.path,
-                                      min_weight=args.min_weight,
-                                      include_lexical=args.all, limit=args.limit)
+        return _run_import_conceptnet(
+            cfg, log, path=args.path, min_weight=args.min_weight,
+            include_lexical=args.all,
+            exclude=([s.strip() for s in args.exclude.split(",") if s.strip()]
+                     if args.exclude is not None else None),
+            limit=args.limit)
 
     if args.command == "import-atomic":       # KB-only; no raw store / embed endpoint
-        return _run_import_atomic(cfg, log, path=args.path, limit=args.limit)
+        return _run_import_atomic(cfg, log, path=args.path,
+                                  min_count=args.min_count, limit=args.limit)
 
     if args.command == "import-glucose":      # KB-only; no raw store / embed endpoint
-        return _run_import_glucose(cfg, log, path=args.path, limit=args.limit)
+        return _run_import_glucose(cfg, log, path=args.path,
+                                   min_count=args.min_count, limit=args.limit)
 
     if args.command == "import-causenet":     # KB-only; no raw store / embed endpoint
-        return _run_import_causenet(cfg, log, path=args.path, limit=args.limit)
+        return _run_import_causenet(cfg, log, path=args.path,
+                                    min_sources=args.min_sources, limit=args.limit)
 
     if args.command == "unimport":            # KB-only; provenance-aware undo of a bulk import
         return _run_unimport(cfg, log, dataset=args.dataset)

@@ -126,17 +126,28 @@ def _support_json(trust: float, doc_id: str = DOC_ID) -> str:
 
 def import_conceptnet(kb: KB, path: str, *, min_weight: float = 1.0,
                       trust: float = 0.2, include_lexical: bool = False,
+                      exclude=None,
                       limit: int | None = None, log_every: int = 1_000_000) -> dict:
     """Stream `path` (the assertions.csv dump) into the KB.  Returns a stats dict.
 
     Idempotent: nodes (hash of label) and edges (edge_hash) are INSERT OR IGNORE, so a
     re-run adds only what is new.  English↔English only; relations not in `_REL` (and,
-    unless `include_lexical`, those in `_LEXICAL`) are skipped."""
+    unless `include_lexical`, those in `_LEXICAL`) are skipped.
+
+    `exclude` (relation names, e.g. ["FormOf","DerivedFrom"]) is ALWAYS skipped,
+    whatever `include_lexical` says — which relations matter is the user's call,
+    per relation, not an all-or-nothing lexical toggle.  Names are `_REL` keys."""
     kb.register_source(DOC_ID, DOC_TITLE, source_type="conceptnet",
                        trust_weight=trust, regime="conventional")
     support = _support_json(trust)
     now = time.time()
     skip = set() if include_lexical else set(_LEXICAL)
+    user_skip = {str(r).strip() for r in (exclude or []) if str(r).strip()}
+    unknown = user_skip - set(_REL)
+    if unknown:                     # a typo here would silently exclude nothing
+        log.warning("conceptnet: exclude names not in the relation table (typo?): %s",
+                    ", ".join(sorted(unknown)))
+    skip |= user_skip
 
     node_seen: set = set()
     nbuf: list = []          # (id, label, support)

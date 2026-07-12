@@ -33,10 +33,11 @@ COMMANDS: dict = {
     "distill":    {"limit": "int", "watch": "bool", "interval": "int", "bundle": "str"},
     # External-dataset bulk imports (KB-only; path defaults to <name>_path in config —
     # the option only overrides it).  Long-running; stream their progress to the log.
-    "import-conceptnet": {"path": "path", "min_weight": "float", "all": "bool"},
-    "import-atomic":     {"path": "path", "limit": "int"},
-    "import-glucose":    {"path": "path", "limit": "int"},
-    "import-causenet":   {"path": "path", "limit": "int"},
+    "import-conceptnet": {"path": "path", "min_weight": "float", "all": "bool",
+                          "exclude": "list"},
+    "import-atomic":     {"path": "path", "min_count": "int", "limit": "int"},
+    "import-glucose":    {"path": "path", "min_count": "int", "limit": "int"},
+    "import-causenet":   {"path": "path", "min_sources": "int", "limit": "int"},
     # provenance-aware undo of one bulk import (the threshold-tuning loop:
     # import → inspect → unimport → adjust → re-import)
     "unimport":          {"dataset": "choice:conceptnet,atomic,glucose,causenet"},
@@ -86,6 +87,14 @@ def _argv(command: str, args: dict) -> list:
                 out += [flag, sv]
         elif typ == "float":
             out += [flag, str(float(val))]             # float() rejects non-numeric
+        elif typ == "list":
+            # comma-separated identifier tokens, passed as ONE CLI value
+            toks = [t.strip() for t in str(val).split(",") if t.strip()]
+            for t in toks:
+                if not all(ch.isalnum() or ch in "._-" for ch in t):
+                    raise ValueError(f"{command}: {key} items must be alphanumeric (._- allowed)")
+            if toks:
+                out += [flag, ",".join(toks)]
         elif typ == "path":
             sv = str(val).strip()
             # A filesystem path (list-form argv, no shell) — slashes/spaces are fine,

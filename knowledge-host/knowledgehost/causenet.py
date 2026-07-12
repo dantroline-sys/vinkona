@@ -55,11 +55,31 @@ def _representative(sources):
     return sent, page
 
 
+def _distinct_sources(sources) -> int:
+    """How many DISTINCT places attest this relation — raw len(sources) counts the
+    same sentence scraped repeatedly, which inflates corroboration.  Distinct =
+    unique (type, page-or-document-or-sentence) across the source list."""
+    keys = set()
+    for s in sources:
+        if not isinstance(s, dict):
+            continue
+        p = s.get("payload") or {}
+        keys.add((str(s.get("type", "")),
+                  p.get("wikipedia_page_title") or p.get("clueweb12_page_id")
+                  or (p.get("sentence") or "").strip()))
+    return len(keys)
+
+
 def import_causenet(kb: KB, path: str, *, trust: float = 0.4,
-                    regime: str = "conventional", limit: int | None = None,
+                    regime: str = "conventional", min_sources: int = 1,
+                    limit: int | None = None,
                     log_every: int = 25_000) -> dict:
     """Stream causenet-precision.jsonl into the KB.  Returns a stats dict.  Idempotent
-    (INSERT OR IGNORE on the shared node/edge hashes)."""
+    (INSERT OR IGNORE on the shared node/edge hashes).
+
+    `min_sources` is the corroboration floor: a relation attested by fewer DISTINCT
+    sources (see _distinct_sources) is skipped.  1 keeps everything; raising it
+    trades recall for a graph where every causal claim was seen in more places."""
     kb.register_source(DOC_ID, DOC_TITLE, source_type="causenet",
                        trust_weight=trust, regime=regime)
     # constant support for the concept NODES (grounded source, no per-edge count).
@@ -93,7 +113,8 @@ def import_causenet(kb: KB, path: str, *, trust: float = 0.4,
             kb.db.executemany(EDGE_SQL, ebuf); ebuf.clear()
         kb.db.commit()
 
-    st = {"records": 0, "imported": 0, "nodes": 0, "skip_empty": 0, "skip_parse": 0}
+    st = {"records": 0, "imported": 0, "nodes": 0, "skip_empty": 0, "skip_parse": 0,
+          "skip_sources": 0}
     t0 = time.time()
     with open(path, encoding="utf-8") as fh:
         for line in fh:
@@ -115,7 +136,10 @@ def import_causenet(kb: KB, path: str, *, trust: float = 0.4,
                 st["skip_empty"] += 1
                 continue
             sources = rec.get("sources") or []
-            n = len(sources)
+            n = _distinct_sources(sources)
+            if n < min_sources:
+                st["skip_sources"] += 1
+                continue
             sent, page = _representative(sources)
             sid = _hash("node", cause, "concept")
             did = _hash("node", effect, "concept")

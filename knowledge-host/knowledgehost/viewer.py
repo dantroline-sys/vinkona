@@ -496,6 +496,7 @@ function renderOpOptions(cmd) {
     if (t === 'int') return `<label class="op" style="font-size:13px">${opt} <input type="number" id="${id}" style="width:64px"></label>`;
     if (t === 'float') return `<label class="op" style="font-size:13px">${opt} <input type="number" step="any" id="${id}" style="width:76px"></label>`;
     if (t === 'str') return `<label class="op" style="font-size:13px">${opt} <input id="${id}" style="width:120px"></label>`;
+    if (t === 'list') return `<label class="op" style="font-size:13px">${opt} <input id="${id}" style="width:220px" placeholder="comma-separated"></label>`;
     if (t === 'path') return `<label class="op" style="font-size:13px">${opt} <input id="${id}" style="width:260px" placeholder="(defaults to the path in Settings)"></label>`;
     if (t.startsWith('choice:')) return `<label class="op" style="font-size:13px">${opt} <select id="${id}">`
       + t.split(':')[1].split(',').map(v => `<option>${v}</option>`).join('') + `</select></label>`;

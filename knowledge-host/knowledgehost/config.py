@@ -165,6 +165,10 @@ DEFAULTS = {
     "conceptnet_trust": 0.2,        # source trust_weight (low, discountable prior)
     "conceptnet_min_weight": 1.0,   # drop assertions below this ConceptNet weight
     "conceptnet_include_lexical": False,
+    # Relation names to ALWAYS skip, whatever include_lexical says — pick what you
+    # care about per relation (e.g. ["FormOf","DerivedFrom","EtymologicallyRelatedTo"]).
+    # Valid names are the _REL keys in conceptnet.py; typos are warned about.
+    "conceptnet_exclude": [],
     # ── ATOMIC if-then commonsense import (same regime/trust as ConceptNet) ──
     # Use the aggregated dump `v4_atomic_all_agg.csv` (one row per event).  min_count is
     # the annotator-agreement floor for an inference (1 = keep all non-"none").
@@ -183,6 +187,9 @@ DEFAULTS = {
     "causenet_path": "external/causenet-precision.jsonl",
     "causenet_trust": 0.4,
     "causenet_regime": "conventional",
+    # Corroboration floor: DISTINCT supporting sources (unique page/document/sentence,
+    # not the raw scrape count) a relation needs before it imports.  1 keeps all.
+    "causenet_min_sources": 1,
     # ── reconcile imported nodes against your existing ones (node identity §9.4) ──
     # For each anchor (a node you already had) queue its top-K nearest neighbours as
     # node_merge_candidates for `adjudicate` to judge.  min_sim=0 => use node_sim_low.
