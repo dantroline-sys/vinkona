@@ -190,6 +190,14 @@ class Handler(BaseHTTPRequestHandler):
                 "working": self.cfg.get("kb_path"),
                 "modular": B.is_modular(self.cfg),
                 "encrypted_bundles": self.cfg.get("encrypted_bundles") or []})
+        if path == "/ops/autopilot":                # Prioritizer tab: the plan + live state
+            if not self._authed():
+                return self._send_json({"ok": False, "error": "unauthorized"}, 401)
+            from . import autopilot as A
+            ap = getattr(self.server, "autopilot", None)
+            return self._send_json({"ok": True, "plan": A.load_plan(self.cfg),
+                                    "state": ap.status() if ap else {"enabled": False},
+                                    "commands": OPS_COMMANDS})
         if path in ("/ops/status", "/ops/log", "/config"):
             if not self._authed():
                 return self._send_json({"ok": False, "error": "unauthorized"}, 401)
@@ -219,7 +227,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         path = urlparse(self.path).path
         if path not in ("/call", "/ops/run", "/ops/stop", "/ops/reload", "/config",
-                        "/library/config", "/source", "/scenario"):
+                        "/ops/autopilot", "/library/config", "/source", "/scenario"):
             return self._send_json({"ok": False, "error": "not found"}, 404)
         if not self._authed():
             return self._send_json({"ok": False, "error": "unauthorized"}, 401)
@@ -247,6 +255,16 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send_json({"ok": True, "counts": kb.reload()})
             except Exception as e:                     # pragma: no cover - defensive
                 return self._send_json({"ok": False, "error": f"{type(e).__name__}: {e}"}, 500)
+        if path == "/ops/autopilot":                   # Prioritizer tab: save the plan
+            from . import autopilot as A
+            try:
+                saved = A.save_plan(self.cfg, req.get("plan") or {})
+            except (ValueError, OSError) as e:
+                return self._send_json({"ok": False, "error": str(e)}, 400)
+            ap = getattr(self.server, "autopilot", None)
+            if ap is not None:                         # apply enable/disable live
+                ap.start() if saved["enabled"] else None
+            return self._send_json({"ok": True, "plan": saved})
         if path == "/config":                          # persist scalar settings to config.toml
             from .config import update_config_file
             cp = self.cfg.get("_config_path")
@@ -311,6 +329,9 @@ class KnowledgeHostServer(ThreadingHTTPServer):
         self.tools = tools
         self.kb = kb
         self.ops = OpsRunner(cfg)                   # single-slot maintenance-job runner
+        from . import autopilot as _A
+        from . import lm_lease as _L
+        self.autopilot = _A.Autopilot(cfg, self.ops, lease_mod=_L)   # priority-driven verb runner
         self._swap_lock = __import__("threading").Lock()
         super().__init__((cfg["host"], cfg["port"]), Handler)
 
@@ -376,11 +397,23 @@ def serve(cfg, store, tools, kb=None):
              store.has_vectors())
     if cfg.get("auth_token"):
         log.info("auth: Bearer token required on /call")
+    # Autopilot: start the thread; it no-ops until the saved plan is enabled (Prioritizer tab).
+    try:
+        httpd.autopilot.start()
+        from . import autopilot as _A
+        if _A.load_plan(cfg).get("enabled"):
+            log.info("autopilot: enabled — running maintenance verbs on a priority basis")
+    except Exception as e:                              # pragma: no cover
+        log.warning("autopilot failed to start (%s) — maintenance stays manual", e)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
         log.info("shutting down")
     finally:
+        try:
+            httpd.autopilot.stop()                 # stop the priority driver before its job runner
+        except Exception:                          # pragma: no cover
+            pass
         httpd.ops.shutdown()                       # don't leave a job orphaned past the server
         httpd.shutdown()
         store.close()

@@ -29,7 +29,7 @@ COMMANDS: dict = {
     "ingest":     {"force": "bool", "wikipedia": "bool", "distill": "bool", "limit": "int"},
     "ingest-library": {"force": "bool"},   # index the search-only document library (library_sources)
     "rebuild-fts": {},                     # reindex FTS with the configured tokenizer (no re-parse)
-    "distill":    {"limit": "int", "watch": "bool", "interval": "int"},
+    "distill":    {"limit": "int", "watch": "bool", "interval": "int", "bundle": "str"},
     "link":       {"limit": "int", "fast": "bool", "top_k": "int"},
     "refine":     {"limit": "int", "force": "bool"},
     "adjudicate": {"limit": "int", "batch": "int", "fast": "bool",
@@ -66,6 +66,14 @@ def _argv(command: str, args: dict) -> list:
             if sv not in allowed:
                 raise ValueError(f"{command}: {key} must be one of {allowed}")
             out += [flag, sv]
+        elif typ == "str":
+            sv = str(val).strip()
+            # Constrained charset: it becomes a CLI value (list form, no shell), but keep
+            # it to identifier-like tokens so it can never look like a flag or path.
+            if sv and not all(ch.isalnum() or ch in "._-" for ch in sv):
+                raise ValueError(f"{command}: {key} must be alphanumeric (._- allowed)")
+            if sv:
+                out += [flag, sv]
     return out
 
 

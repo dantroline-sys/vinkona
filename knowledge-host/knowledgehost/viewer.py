@@ -103,7 +103,8 @@ const badge = t => `<span class="badge">${esc(t)}</span>`;
 const TABS = [
   ['ask', 'Ask'], ['search', 'Search'], ['raw', 'Raw'], ['nodes', 'Concepts'], ['edges', 'Relations'],
   ['cards', 'Cards'], ['sources', 'Sources'], ['adjudication', 'Adjudication'], ['gaps', 'Gaps'],
-  ['bundles', 'Bundles'], ['library', 'Library'], ['ops', 'Operations'], ['settings', 'Settings'],
+  ['bundles', 'Bundles'], ['library', 'Library'], ['ops', 'Operations'],
+  ['autopilot', 'Prioritizer'], ['settings', 'Settings'],
 ];
 let active = 'ask';
 
@@ -121,6 +122,7 @@ function go(k) {
   else if (k === 'search') { $('#results').className = 'empty'; $('#results').textContent = 'Type a query above.'; $('#q') && $('#q').focus(); }
   else if (k === 'ops') { loadOps(); opsTimer = setInterval(() => { if (active === 'ops') pollOps(); }, 2500); }
   else if (k === 'settings') { loadSettings(); }
+  else if (k === 'autopilot') { loadAutopilot(); }
   else if (k === 'bundles') { loadBundles(); }
   else if (k === 'library') { loadLibrary(); }
   else load(k);
@@ -158,6 +160,11 @@ function renderBar(k) {
       + ` <select id="scensel" title="scenario"></select>`
       + ` <button class="toolbtn" onclick="applyScenario()" title="reassemble + hot-swap the live session">Apply scenario</button>`
       + ` <button class="toolbtn" onclick="loadBundles()">Refresh</button>`;
+  } else if (k === 'autopilot') {
+    $('#bar').innerHTML = tokInput()
+      + ` <button class="toolbtn" onclick="addAutopilotStep()">+ Add step</button>`
+      + ` <button class="toolbtn" onclick="saveAutopilot()">Save plan</button>`
+      + ` <button class="toolbtn" onclick="loadAutopilot()">Refresh</button>`;
   } else if (k === 'settings') {
     $('#bar').innerHTML = tokInput()
       + ` <button class="toolbtn" onclick="saveSettings()">Save</button>`
@@ -628,6 +635,78 @@ async function applyScenario() {
     ? "✓ now serving '" + esc(r.scenario) + "' — " + (r.counts ? JSON.stringify(r.counts) : '')
     : '✗ ' + esc(r.error || 'failed')}</div>`;
   if (r.ok) { loadBundles(); refreshStats(); }
+}
+
+// ── Prioritizer: the autopilot plan (ordered auto-run of maintenance verbs) ──
+let APLAN = null, APSPEC = {};
+async function loadAutopilot() {
+  $('#banner').innerHTML = ''; $('#results').className = ''; $('#results').textContent = 'loading plan…';
+  let r; try { r = await (await authFetch('/ops/autopilot')).json(); } catch (e) { $('#results').textContent = 'request failed: ' + e; return; }
+  if (!r.ok) { $('#results').className = 'empty'; $('#results').textContent = 'enter the auth token above to use the Prioritizer'; return; }
+  APLAN = r.plan; APSPEC = r.commands || {};
+  renderAutopilot(r.state || {});
+}
+function renderAutopilot(state) {
+  const p = APLAN;
+  const st = state.enabled
+    ? `<b style="color:#2e7d32">ON</b> — ${esc(state.running_step || state.last_reason || 'idle')}`
+    : `<b style="color:#999">off</b>`;
+  const rows = (p.steps || []).map((s, i) => {
+    const opts = Object.keys(APSPEC).sort().map(c =>
+      `<option ${c === s.command ? 'selected' : ''}>${c}</option>`).join('');
+    return `<tr data-i="${i}">
+      <td style="white-space:nowrap">
+        <button class="toolbtn" onclick="moveStep(${i},-1)" title="higher priority" ${i === 0 ? 'disabled' : ''}>▲</button>
+        <button class="toolbtn" onclick="moveStep(${i},1)" title="lower priority" ${i === p.steps.length - 1 ? 'disabled' : ''}>▼</button>
+      </td>
+      <td><input type="checkbox" data-f="enabled" ${s.enabled ? 'checked' : ''}></td>
+      <td><select data-f="command">${opts}</select></td>
+      <td><input data-f="args" value="${esc(JSON.stringify(s.args || {}))}" style="width:180px"
+                 title='JSON, e.g. {"bundle":"vinkona"} or {"limit":50}'></td>
+      <td><input data-f="min_interval_s" type="number" min="0" value="${s.min_interval_s || 0}" style="width:90px"></td>
+      <td><input data-f="label" value="${esc(s.label || '')}" style="width:220px"></td>
+      <td><button class="toolbtn" onclick="delStep(${i})">✕</button></td></tr>`;
+  }).join('');
+  $('#results').innerHTML =
+    `<div style="margin:6px 0 12px;font-size:13px">
+       <label><input type="checkbox" id="apEnabled" ${p.enabled ? 'checked' : ''}> <b>Autopilot enabled</b></label>
+       &nbsp;·&nbsp; status: ${st}
+       <div style="opacity:.65;margin-top:6px">Steps run top-to-bottom by priority; after each, the list is
+         re-checked from the top, so a higher step that just gained work (e.g. fresh Vinkona drops) preempts
+         the backlog below it. “Min interval” throttles a step; leave 0 to run whenever there's work.</div>
+     </div>
+     <label style="font-size:13px"><input type="checkbox" id="apLeases" ${p.respect_leases ? 'checked' : ''}>
+       Yield to the assistant (pause while it's using the LMs)</label>
+     &nbsp;·&nbsp; <label style="font-size:13px">idle re-check
+       <input id="apInterval" type="number" min="5" value="${p.idle_interval_s || 60}" style="width:70px">s</label>
+     <table style="margin-top:10px"><tr><th>order</th><th>on</th><th>command</th><th>args (JSON)</th>
+       <th>min interval s</th><th>label</th><th></th></tr>${rows}</table>`;
+}
+function _readAutopilotForm() {
+  const steps = [];
+  document.querySelectorAll('#results tr[data-i]').forEach(tr => {
+    const g = f => tr.querySelector(`[data-f="${f}"]`);
+    let args = {};
+    try { args = JSON.parse(g('args').value || '{}'); } catch (e) { args = {}; }
+    steps.push({ command: g('command').value, enabled: g('enabled').checked,
+                 args, min_interval_s: parseInt(g('min_interval_s').value || '0', 10),
+                 label: g('label').value });
+  });
+  return { enabled: $('#apEnabled').checked, respect_leases: $('#apLeases').checked,
+           idle_interval_s: parseInt($('#apInterval').value || '60', 10), steps };
+}
+function moveStep(i, d) { const s = APLAN.steps; const j = i + d;
+  if (j < 0 || j >= s.length) return; APLAN = _readAutopilotForm();
+  [APLAN.steps[i], APLAN.steps[j]] = [APLAN.steps[j], APLAN.steps[i]]; renderAutopilot({}); }
+function delStep(i) { APLAN = _readAutopilotForm(); APLAN.steps.splice(i, 1); renderAutopilot({}); }
+function addAutopilotStep() { APLAN = _readAutopilotForm();
+  APLAN.steps.push({ command: 'distill', args: {}, enabled: true, min_interval_s: 0, label: 'new step' });
+  renderAutopilot({}); }
+async function saveAutopilot() {
+  const plan = _readAutopilotForm();
+  const r = await postJSON('/ops/autopilot', { plan }).catch(e => ({ ok: false, error: '' + e }));
+  $('#banner').innerHTML = `<div class="note">${r.ok ? '✓ plan saved' : '✗ ' + esc(r.error || 'failed')}</div>`;
+  if (r.ok) loadAutopilot();
 }
 
 async function loadSettings() {

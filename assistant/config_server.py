@@ -49,6 +49,7 @@ def _load_mod(name: str):
 
 CFGMOD = _load_mod("config")
 PEOPLE = _load_mod("people")           # for the Self tab (Vinkona's self-authored identity)
+IDLECTL = _load_mod("idle_control")    # idle pause/resume + quiet-hours math
 UI_PATH = Path(__file__).parent / "config_ui.html"
 LOGS_DIR = Path(__file__).parent / "logs"            # written by vinkona.sh (shared filesystem)
 
@@ -373,6 +374,38 @@ class MemoryAdmin:
             c.commit()
         return {"ok": True, "queued": True}
 
+    def idle_status(self, cfg: dict) -> dict:
+        """Effective idle-work state: the manual override (worker_state) resolved against
+        the scheduled quiet hours (config), for the header button + Settings."""
+        _ic = IDLECTL
+        override = ""
+        try:
+            if Path(self.path).exists():
+                with self._conn() as c:
+                    row = c.execute("SELECT value FROM worker_state WHERE key='idle_override'").fetchone()
+                    if row:
+                        override = row[0] or ""
+        except Exception:
+            pass
+        quiet = (cfg.get("research", {}).get("idle", {}) or {}).get("quiet_hours", []) or []
+        now_min = _ic.now_minutes(time.localtime())
+        d = _ic.describe(override, now_min, quiet)
+        d["quiet_hours"] = quiet
+        return d
+
+    def set_idle_override(self, override: str) -> dict:
+        """Set the manual pause/resume switch the worker polls: 'paused' | 'active' | 'auto'."""
+        override = (override or "auto").strip().lower()
+        if override not in ("paused", "active", "auto"):
+            return {"ok": False, "error": "override must be paused | active | auto"}
+        stored = "" if override == "auto" else override
+        with self._conn(ensure=True) as c:
+            c.execute("CREATE TABLE IF NOT EXISTS worker_state (key TEXT PRIMARY KEY, value TEXT)")
+            c.execute("INSERT INTO worker_state(key,value) VALUES('idle_override',?) "
+                      "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (stored,))
+            c.commit()
+        return {"ok": True, "override": override}
+
     def request_export(self) -> dict:
         """Queue a FULL research export (documents -> solved/*.md) for the worker — it polls
         worker_state and rebuilds every drop, repairing anything removed from the folder."""
@@ -591,6 +624,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, SelfAdmin(self._cfg()).view())
             except Exception as e:
                 return self._json(500, {"error": str(e)})
+        if path == "/api/idle":
+            try:
+                return self._json(200, MemoryAdmin(self._cfg()).idle_status(self._cfg()))
+            except Exception as e:
+                return self._json(500, {"error": str(e)})
         if path == "/api/research_defaults":
             return self._json(200, _research_defaults())
         if path == "/api/research/deadends":
@@ -685,6 +723,12 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/research/export":
             try:
                 return self._json(200, MemoryAdmin(self._cfg()).request_export())
+            except Exception as e:
+                return self._json(500, {"error": str(e)})
+        if path == "/api/idle":
+            try:
+                return self._json(200, MemoryAdmin(self._cfg()).set_idle_override(
+                    obj.get("override", "auto")))
             except Exception as e:
                 return self._json(500, {"error": str(e)})
         if path == "/api/research/reopen":

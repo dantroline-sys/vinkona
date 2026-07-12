@@ -1097,6 +1097,27 @@ async def main():
         except Exception:
             return True
 
+    # Idle-work suppression: the header button (worker_state 'idle_override') plus
+    # scheduled quiet hours (config research.idle.quiet_hours).  When suppressed we
+    # skip all big-LM idle work so the LMs are free (e.g. for the knowledge host).
+    idle_ctl = _load("idle_control")
+    _suppress_state = {"on": None}
+
+    def idle_suppressed() -> bool:
+        override = memory.get_state("idle_override") or ""
+        quiet = rcfg.get("idle", {}).get("quiet_hours", []) or []
+        now_min = idle_ctl.now_minutes(time.localtime())
+        on = idle_ctl.is_suppressed(override, now_min, quiet)
+        if on != _suppress_state["on"]:                    # log the transition once
+            _suppress_state["on"] = on
+            info = idle_ctl.describe(override, now_min, quiet)
+            _log(f"idle work {'PAUSED' if on else 'resumed'} ({info['reason']})")
+            try:
+                trace.write(kind="idle_control", suppressed=on, reason=info["reason"])
+            except Exception:
+                pass
+        return on
+
     async def tools_desc() -> str:
         """Names + descriptions of the tools available now, so reflection can spot old
         requests it could handle better today."""
@@ -1570,7 +1591,9 @@ async def main():
             if _task_on("garden") and garden_interval and time.time() - last_garden >= garden_interval:
                 garden()
                 last_garden = time.time()
-            if _task_on("ingest") and ingest_interval and time.time() - last_ingest >= ingest_interval:
+            suppressed = idle_suppressed()          # manual pause or scheduled quiet hours
+            if (not suppressed and _task_on("ingest") and ingest_interval
+                    and time.time() - last_ingest >= ingest_interval):
                 await run_big(ingest_all(session))
                 last_ingest = time.time()
             # News crawl: append fresh headlines to the queryable archive.  No big LM, so it runs
@@ -1589,8 +1612,9 @@ async def main():
                     _log(f"research export failed (continuing): {e}")
                 last_export = time.time()
             # With idle learning on, only work the big LM while the box is idle, so it
-            # never competes with a live session's briefings.
-            if idle_on and not is_idle():
+            # never competes with a live session's briefings.  'suppressed' (manual
+            # pause / quiet hours) counts as not-idle so the LMs stay free.
+            if idle_on and (suppressed or not is_idle()):
                 if args.once:
                     break
                 await asyncio.sleep(poll)

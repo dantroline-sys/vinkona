@@ -754,6 +754,11 @@ DEFAULTS: dict = {
             # perspective_audit, synthesis, reconcile, affect, reflect, plans, research_queue,
             # crawl, ingest, garden.
             "tasks": {},
+            # Quiet hours: windows (local time) where idle work is suppressed so the fast/big
+            # LMs are free (e.g. for the knowledge host to distill uninterrupted).  Each entry
+            # {"start":"HH:MM","end":"HH:MM"}; a window may wrap midnight.  The header button's
+            # manual pause/resume overrides this live (stored in worker_state, not here).
+            "quiet_hours": [],               # e.g. [{"start":"10:00","end":"14:00"}]
             "idle_after_s": 120,             # no session + quiet this long ⇒ idle
             "open_stale_s": 1800,            # a session left "open" but silent this long ⇒
                                              # treat as crashed/abandoned, allow idle work

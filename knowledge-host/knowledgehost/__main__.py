@@ -95,7 +95,7 @@ def _cmd_reset(cfg, args, log) -> int:
     return 0
 
 
-def _run_distill(cfg, embedder, log, *, limit=None, watch=False, interval=30) -> int:
+def _run_distill(cfg, embedder, log, *, limit=None, watch=False, interval=30, bundle=None) -> int:
     """Distil raw chunks into the structured KB (owns its own raw-store handle so
     `--watch` can reopen for a fresh snapshot).  Returns a process exit code.
 
@@ -143,7 +143,7 @@ def _run_distill(cfg, embedder, log, *, limit=None, watch=False, interval=30) ->
                 rc = 1
                 break
             stats = distill_mod.distill_corpus(store, kb, extractors, embedder, cfg,
-                                               limit=limit, verifiers=verifiers)
+                                               limit=limit, verifiers=verifiers, bundle=bundle)
             log.info("distilled: %s", stats)
             log.info("kb: %s", kb.counts())
             if not watch or limit:
@@ -691,6 +691,9 @@ def main(argv=None):
                     help="distill --watch: seconds to wait between passes (default 30)")
     ap.add_argument("--limit", type=int,
                     help="ingest/distill/adjudicate: cap items processed (testing)")
+    ap.add_argument("--bundle",
+                    help="distill: only chunks from this provenance bundle (e.g. 'vinkona') — "
+                         "distil Vinkona's research drops ahead of a big uncurated corpus")
     ap.add_argument("--batch", type=int, default=8,
                     help="adjudicate: merge-candidate pairs per big-LM call (default 8)")
     ap.add_argument("--no-auto", action="store_true",
@@ -823,7 +826,8 @@ def main(argv=None):
     if args.command == "distill":
         store.close()                          # _run_distill owns its own store handle
         return _run_distill(cfg, embedder, log, limit=args.limit,
-                            watch=args.watch, interval=args.interval)
+                            watch=args.watch, interval=args.interval,
+                            bundle=getattr(args, "bundle", None))
 
     if args.command == "refine":               # raw store (source) + KB + big LM
         return _run_refine(cfg, store, embedder, log, limit=args.limit, force=args.force)

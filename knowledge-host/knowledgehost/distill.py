@@ -1128,33 +1128,46 @@ def verify_endpoints(cfg, log=None) -> list:
         "distill_max_tokens": cfg.get("verify_max_tokens", 1024)})
 
 
-def distill_corpus(store, kb, extractors, embedder, cfg, *, limit=None, verifiers=None) -> dict:
+def distill_corpus(store, kb, extractors, embedder, cfg, *, limit=None, verifiers=None,
+                   bundle=None) -> dict:
     """Distil the not-yet-done chunks.  Resumable (the distilled set is the checkpoint).
     With a verifier tier and the fast `extractors`, runs the decoupled two-tier pipeline
     (fast extract → big verify → write); otherwise the single-tier path (parallel across
-    >1 endpoint, else sequential)."""
+    >1 endpoint, else sequential).
+
+    `bundle` (e.g. "vinkona") restricts the pass to chunks from that provenance bundle,
+    so Vinkona's own research drops can be distilled ahead of a big uncurated corpus."""
     if not extractors:
         raise BackendUnavailable("no distill endpoints available")
     if verifiers and cfg.get("verify", True):
-        return _distill_pipeline(store, kb, extractors, verifiers, embedder, cfg, limit=limit)
+        return _distill_pipeline(store, kb, extractors, verifiers, embedder, cfg,
+                                 limit=limit, bundle=bundle)
     if len(extractors) == 1:
-        return _distill_sequential(store, kb, extractors[0], embedder, cfg, limit=limit)
-    return _distill_parallel(store, kb, extractors, embedder, cfg, limit=limit)
+        return _distill_sequential(store, kb, extractors[0], embedder, cfg,
+                                   limit=limit, bundle=bundle)
+    return _distill_parallel(store, kb, extractors, embedder, cfg, limit=limit, bundle=bundle)
 
 
-def _pending_chunks(store, kb, counter):
+def _chunk_bundle(ch) -> str:
+    """A chunk's provenance bundle; unbundled sources (plain PDFs etc.) read as 'base'."""
+    return (ch.get("bundle") or "base")
+
+
+def _pending_chunks(store, kb, counter, bundle=None):
     for ch in store.iter_chunks():
+        if bundle is not None and _chunk_bundle(ch) != bundle:
+            continue
         if kb.is_distilled(ch["id"]):
             counter[0] += 1
             continue
         yield ch
 
 
-def _distill_sequential(store, kb, lm, embedder, cfg, *, limit=None) -> dict:
+def _distill_sequential(store, kb, lm, embedder, cfg, *, limit=None, bundle=None) -> dict:
     done = concepts = relations = cards = 0
     skipped = [0]
     every = cfg["ingest_log_every"]
-    for chunk in _pending_chunks(store, kb, skipped):
+    for chunk in _pending_chunks(store, kb, skipped, bundle=bundle):
         reg = regime_for_path(cfg, chunk.get("path_or_url") or chunk.get("id"))
         with kb.batch():                              # one transaction / fsync per chunk
             nc, nr, ncard = distill_chunk(kb, lm, embedder, chunk,
@@ -1173,7 +1186,7 @@ def _distill_sequential(store, kb, lm, embedder, cfg, *, limit=None) -> dict:
             "skipped": skipped[0]}
 
 
-def _distill_parallel(store, kb, lms, embedder, cfg, *, limit=None) -> dict:
+def _distill_parallel(store, kb, lms, embedder, cfg, *, limit=None, bundle=None) -> dict:
     import queue
     import threading
     from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
@@ -1210,7 +1223,7 @@ def _distill_parallel(store, kb, lms, embedder, cfg, *, limit=None) -> dict:
         src = kb.get_source(doc_id)
         return src.get("regime") if src else None
 
-    chunks = _pending_chunks(store, kb, skipped)
+    chunks = _pending_chunks(store, kb, skipped, bundle=bundle)
     stop = False
     with ThreadPoolExecutor(max_workers=len(lms)) as ex:
         futures = set()
@@ -1284,7 +1297,8 @@ def _get(q, upstream_done, timeout=0.3):
                 return None
 
 
-def _distill_pipeline(store, kb, extractors, verifiers, embedder, cfg, *, limit=None) -> dict:
+def _distill_pipeline(store, kb, extractors, verifiers, embedder, cfg, *, limit=None,
+                      bundle=None) -> dict:
     """Two-tier, decoupled pipeline (the user's design): fast EXTRACTORS (4090) and big
     VERIFIERS (3090) each pull from their own bounded queue and run at their own max
     rate; a single writer serialises KB writes.  A chunk is marked distilled only after
@@ -1321,6 +1335,8 @@ def _distill_pipeline(store, kb, extractors, verifiers, embedder, cfg, *, limit=
             for ch in store.iter_chunks():
                 if st["stop"]:
                     break
+                if bundle is not None and _chunk_bundle(ch) != bundle:
+                    continue
                 if fcon.execute("SELECT 1 FROM distilled_chunks WHERE chunk_id=?",
                                 (ch["id"],)).fetchone():
                     with lock:

@@ -7,9 +7,17 @@
 <style>
   :root { color-scheme: dark; }
   body { font-family: system-ui, sans-serif; margin: 0; background:#15171c; color:#e6e8ec; }
-  header { padding: 16px 24px; background:#1e2128; border-bottom:1px solid #2c303a; }
+  header { padding: 16px 24px; background:#1e2128; border-bottom:1px solid #2c303a;
+    display:flex; align-items:center; justify-content:space-between; gap:16px; }
   header h1 { margin:0; font-size:18px; }
   header .sub { color:#8b93a1; font-size:13px; margin-top:4px; }
+  #idleControl { text-align:right; font-size:12px; white-space:nowrap; }
+  #idleBtn { background:#2a2e37; border:1px solid #3a3f4b; color:#e6e8ec; border-radius:8px;
+    padding:8px 14px; font-size:13px; cursor:pointer; }
+  #idleBtn:hover { border-color:#4b5160; }
+  #idleBtn.paused { background:#5a2733; border-color:#7a3140; color:#ffd7dd; }
+  #idleState { color:#8b93a1; margin-top:5px; }
+  #idleState.paused { color:#f0a5b0; }
   nav { display:flex; gap:4px; padding:0 24px; background:#1e2128; border-bottom:1px solid #2c303a; }
   nav button { background:none; border:0; color:#8b93a1; padding:12px 16px; font-size:13px;
     cursor:pointer; border-bottom:2px solid transparent; }
@@ -124,9 +132,17 @@
 </head>
 <body>
 <header>
-  <h1>Vinkona Config</h1>
-  <div class="sub">Personas &amp; tunables apply on the next call. Ports/models &amp; ASR need a service restart.
-    <a id="chatLink" href="#" target="_blank" style="color:#7aa7ff; margin-left:8px;">Open text chat ↗</a></div>
+  <div>
+    <h1>Vinkona Config</h1>
+    <div class="sub">Personas &amp; tunables apply on the next call. Ports/models &amp; ASR need a service restart.
+      <a id="chatLink" href="#" target="_blank" style="color:#7aa7ff; margin-left:8px;">Open text chat ↗</a></div>
+  </div>
+  <div id="idleControl" title="Pause Vinkona's background research/idle tasks to free the LMs (e.g. for the knowledge host)">
+    <button id="idleBtn" onclick="toggleIdle()">Pause idle work</button>
+    <div id="idleState">idle work: —</div>
+    <a id="idleAuto" href="#" onclick="setIdle('auto');return false;"
+       style="display:none;color:#7aa7ff;font-size:11px;">follow schedule</a>
+  </div>
 </header>
 <nav id="tabs">
   <button data-tab="personas" class="active">Personas</button>
@@ -1548,8 +1564,49 @@ async function setChatLink() {
   } catch (e) {}
 }
 
+// ── Idle-work pause/resume (header button) ──────────────────────────────────
+function _hhmm(min) {
+  if (min == null) return '';
+  const h = String(Math.floor(min / 60)).padStart(2, '0'), m = String(min % 60).padStart(2, '0');
+  return `${h}:${m}`;
+}
+async function refreshIdle() {
+  try {
+    const s = await (await fetch('/api/idle')).json();
+    const btn = document.getElementById('idleBtn'), st = document.getElementById('idleState');
+    const paused = s.suppressed;
+    btn.textContent = paused ? 'Resume idle work' : 'Pause idle work';
+    btn.classList.toggle('paused', paused);
+    let label = paused ? 'idle work paused' : 'idle work active';
+    if (s.reason) label += ` — ${s.reason}`;
+    if (s.override === 'auto' && s.next_change_min != null)
+      label += ` (until ${_hhmm(s.next_change_min)})`;
+    st.textContent = label;
+    st.classList.toggle('paused', paused);
+    btn.dataset.override = s.override;
+    btn.dataset.suppressed = paused ? '1' : '';
+    // Offer "follow schedule" only when manually overridden AND a schedule exists.
+    const hasSchedule = (s.quiet_hours || []).length > 0;
+    document.getElementById('idleAuto').style.display =
+      (s.override !== 'auto' && hasSchedule) ? 'inline' : 'none';
+  } catch (e) {}
+}
+async function setIdle(override) {
+  try {
+    await fetch('/api/idle', {method:'POST', headers:{'Content-Type':'application/json'},
+                              body: JSON.stringify({override})});
+  } catch (e) {}
+  refreshIdle();
+}
+function toggleIdle() {
+  // If currently suppressed, resume (→ active); else pause. 'active' rather than
+  // 'auto' so a click during quiet hours actually forces it on until you re-auto.
+  setIdle(document.getElementById('idleBtn').dataset.suppressed ? 'active' : 'paused');
+}
+
 // initial load
 loadPersonas(); loadConfig(); setChatLink();
+refreshIdle(); setInterval(refreshIdle, 15000);
 </script>
 </body>
 </html>
