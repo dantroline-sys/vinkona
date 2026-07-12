@@ -398,6 +398,9 @@ DEFAULTS: dict = {
         "host": "127.0.0.1",
         "port": 11436,
         "url": "http://127.0.0.1:11436",
+        # Which TTS engine tts_server.py loads (and which services vinkona.sh
+        # starts): "orpheus_gguf" (llama.cpp + SNAC — lightest, recommended),
+        # "orpheus" (vLLM, needs orpheus_env), or "neutts" (cloned voice).
         "engine": "orpheus",
         "default_voice": "tara",
         # Trim the silent head/tail Orpheus bakes into each sentence and replace it

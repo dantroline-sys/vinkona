@@ -81,6 +81,16 @@ INDEX_HTML = """<!doctype html>
   th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid #8883; }
   th { opacity: .7; font-weight: 600; }
   .empty { opacity: .6; padding: 20px 0; }
+  /* per-tab help (help.json via /help) + the Import formats table (live probes) */
+  .tabhelp { margin: 0 0 12px; font-size: 13px; }
+  .tabhelp > summary { cursor: pointer; opacity: .6; list-style: none; }
+  .tabhelp > summary::-webkit-details-marker { display: none; }
+  .tabhelp > div { opacity: .85; border-left: 2px solid #8886; padding: 8px 12px;
+                   margin-top: 6px; max-width: 860px; }
+  .fmt-ok { color: #22aa66; font-weight: 600; }
+  .fmt-no { color: #d9534f; font-weight: 600; }
+  #fmtbox { margin: 10px 0 14px; }
+  #fmtbox .fmt-h { font-size: 12px; text-transform: uppercase; opacity: .55; margin-bottom: 4px; }
 </style>
 </head>
 <body>
@@ -92,6 +102,7 @@ INDEX_HTML = """<!doctype html>
 </header>
 <main>
   <div class="bar" id="bar"></div>
+  <div id="tabhelp"></div>
   <div id="banner"></div>
   <div id="results" class="empty">…</div>
 </main>
@@ -112,12 +123,35 @@ function buildTabs() {
   $('#tabs').innerHTML = TABS.map(([k, lbl]) =>
     `<button data-k="${k}" onclick="go('${k}')">${lbl}</button>`).join('');
 }
+// ── Help: tab intros from help.json + live import-format probes (/help) ─────
+let HELP = { help: {}, formats: [] };
+async function loadHelp() {
+  try { HELP = await (await fetch('/help')).json(); } catch (e) { /* keep empty */ }
+  renderHelp(active);
+}
+function renderHelp(k) {
+  const box = $('#tabhelp');
+  const txt = (HELP.help || {})[k];
+  let h = txt ? `<details class="tabhelp"><summary>ⓘ about this tab</summary><div>${esc(txt)}</div></details>` : '';
+  if (k === 'ops' && (HELP.formats || []).length) {
+    const rows = HELP.formats.map(f =>
+      `<tr><td>${esc(f.format)}</td><td><code>${esc(f.matches)}</code></td>
+       <td class="${f.ready ? 'fmt-ok' : 'fmt-no'}">${f.ready ? '✓ ready' : '✗ not installed'}</td>
+       <td style="opacity:.75">${esc(f.how)}</td></tr>`).join('');
+    h += `<details id="fmtbox"><summary style="cursor:pointer;opacity:.6;font-size:13px">📄 Import formats — what this host can ingest (click to expand)</summary>
+      <div style="opacity:.85;font-size:13px;margin:8px 0;max-width:860px">${esc((HELP.help || {}).import || '')}</div>
+      <table><tr><th>format</th><th>files</th><th>status</th><th>enable / notes</th></tr>${rows}</table></details>`;
+  }
+  box.innerHTML = h;
+}
+
 function go(k) {
   active = k;
   if (opsTimer) { clearInterval(opsTimer); opsTimer = null; }   // stop polling when leaving Ops
   document.querySelectorAll('#tabs button').forEach(b =>
     b.classList.toggle('active', b.dataset.k === k));
   renderBar(k);
+  renderHelp(k);
   if (k === 'ask') { $('#results').className = 'empty'; $('#results').textContent = 'Ask the structured KB a what / how / why question.'; $('#aq') && $('#aq').focus(); }
   else if (k === 'search') { $('#results').className = 'empty'; $('#results').textContent = 'Type a query above.'; $('#q') && $('#q').focus(); }
   else if (k === 'ops') { loadOps(); opsTimer = setInterval(() => { if (active === 'ops') pollOps(); }, 2500); }
@@ -741,7 +775,7 @@ async function saveSettings() {
   if (r.ok) loadSettings();
 }
 
-buildTabs(); refreshStats(); setInterval(refreshStats, REFRESH_MS); go('ask');
+buildTabs(); refreshStats(); setInterval(refreshStats, REFRESH_MS); loadHelp(); go('ask');
 </script>
 </body>
 </html>

@@ -50,6 +50,7 @@ def _load_mod(name: str):
 CFGMOD = _load_mod("config")
 PEOPLE = _load_mod("people")           # for the Self tab (Vinkona's self-authored identity)
 IDLECTL = _load_mod("idle_control")    # idle pause/resume + quiet-hours math
+HELPMOD = _load_mod("confighelp")      # /api/help — extracted config.py comments + help.json
 UI_PATH = Path(__file__).parent / "config_ui.html"
 LOGS_DIR = Path(__file__).parent / "logs"            # written by vinkona.sh (shared filesystem)
 
@@ -575,6 +576,14 @@ class Handler(BaseHTTPRequestHandler):
             # current option even if config.json predates a schema addition.  Runtime
             # resolution (profile paths) is intentionally NOT applied here.
             return self._send(200, json.dumps(CFGMOD.merged_config(self.config_path), indent=2))
+        if path == "/api/help":
+            # Help text keyed by dotted config path (extracted from config.py's own
+            # comments) plus "tab.*" intros from help.json — see confighelp.py.
+            # Both re-read on change, so editing help needs only a browser refresh.
+            try:
+                return self._json(200, {"help": HELPMOD.load(Path(__file__).parent)})
+            except Exception as e:
+                return self._json(500, {"error": str(e)})
         if path == "/api/personas":
             return self._send(200, CFGMOD.resolve_read(self._personas_path()).read_text())
         if path == "/api/models":

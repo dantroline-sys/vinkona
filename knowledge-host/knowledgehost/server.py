@@ -31,6 +31,49 @@ from .viewer import INDEX_HTML
 log = logging.getLogger("knowledgehost.server")
 
 
+def _import_formats() -> list:
+    """What can THIS install ingest right now?  Live probes (find_spec/which),
+    never assumptions — the viewer's Import table renders exactly this."""
+    import importlib.util as _iu
+    import shutil as _sh
+
+    def has(mod):
+        try:
+            return _iu.find_spec(mod) is not None
+        except Exception:
+            return False
+
+    traf = has("trafilatura")
+    ocr = bool(_sh.which("tesseract")) and bool(_sh.which("ocrmypdf"))
+    return [
+        {"format": "Text / Markdown", "matches": ".txt  .md", "ready": True,
+         "how": "always available (stdlib) — Vinkona's research drops are .md"},
+        {"format": "HTML", "matches": ".html  .htm", "ready": True,
+         "how": ("trafilatura installed — full boilerplate stripping" if traf else
+                 "works via the stdlib fallback; ./install.sh --html upgrades extraction")},
+        {"format": "PDF", "matches": ".pdf", "ready": has("fitz"),
+         "how": "./install.sh --pdf   (PyMuPDF)"},
+        {"format": "Scanned-PDF OCR", "matches": "(fallback inside PDF ingest)", "ready": ocr,
+         "how": "system packages: tesseract + ocrmypdf (the --pdf install offers them)"},
+        {"format": "EPUB", "matches": ".epub", "ready": has("ebooklib"),
+         "how": "./install.sh --epub   (ebooklib)"},
+        {"format": "Wikipedia ZIM", "matches": ".zim — run: ingest --wikipedia",
+         "ready": has("libzim"),
+         "how": "./install.sh --wikipedia   (libzim; set zim_path in Settings)"},
+    ]
+
+
+def _help_payload() -> dict:
+    """Tab help (help.json, read per request so edits show on refresh) + the
+    live import-format probes above."""
+    from pathlib import Path
+    try:
+        tabs = json.loads((Path(__file__).parent / "help.json").read_text())
+    except Exception:
+        tabs = {}
+    return {"help": tabs, "formats": _import_formats()}
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = f"knowledgehost/{__version__}"
     protocol_version = "HTTP/1.1"
@@ -170,6 +213,8 @@ class Handler(BaseHTTPRequestHandler):
             if res.get("ok"):
                 return self._send_json({"ok": True, **json.loads(res["result"])})
             return self._send_json(res)
+        if path == "/help":                        # viewer: tab help + import-format probes
+            return self._send(json.dumps(_help_payload()).encode())
         if path == "/tools":
             return self._send_json(self.server.tools.catalogue())
         # ── control panel (auth-gated when a token is set) ──

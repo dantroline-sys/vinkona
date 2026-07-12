@@ -119,6 +119,21 @@
   .cfg-field { display:grid; grid-template-columns:280px 1fr; align-items:start; gap:12px; margin:9px 0; }
   .cfg-field > label { margin:6px 0 0; color:#cdd3dc; }
   .cfg-field.bool .ctl { justify-self:start; }
+  /* help system: ? toggles per field/group (text comes from config.py comments
+     via /api/help), ⓘ intro per tab (from help.json) */
+  .qmark { display:inline-block; width:16px; height:16px; line-height:16px; text-align:center;
+           border:1px solid #3d4350; border-radius:50%; font-size:11px; color:#8b93a1;
+           cursor:pointer; margin-left:6px; user-select:none; }
+  .qmark:hover { color:#e8eaf0; border-color:#8b93a1; }
+  .cfg-help { grid-column:1 / -1; font-size:12.5px; color:#9aa3b2; background:#161920;
+              border-left:2px solid #3d4350; padding:7px 10px; border-radius:0 6px 6px 0; }
+  .cfg-group-help { font-size:12.5px; color:#9aa3b2; background:#161920;
+              border-left:2px solid #3d4350; padding:7px 10px; margin:6px 0 10px; border-radius:0 6px 6px 0; }
+  .tabhelp { margin:2px 0 14px; font-size:13px; }
+  .tabhelp > summary { cursor:pointer; color:#8b93a1; list-style:none; }
+  .tabhelp > summary::-webkit-details-marker { display:none; }
+  .tabhelp > div { color:#9aa3b2; background:#161920; border-left:2px solid #3d4350;
+                   padding:8px 12px; margin-top:6px; border-radius:0 6px 6px 0; max-width:820px; }
   .cfg-field input[type=checkbox] { width:auto; }
   .cfg-field .ctl { min-width:0; }
   .cfg-path { font-size:10.5px; color:#6b7280; font-family:ui-monospace,monospace; margin-top:2px; font-weight:400; }
@@ -1466,22 +1481,48 @@ function renderConfigForm(){
   if (q) filterConfig(q);
 }
 // Render parent[key]; objects become collapsible groups, everything else a labelled widget.
+// Help: HELP[dotted.path] (from /api/help — config.py's own comments) hangs a ? on the
+// label that toggles the text; group summaries get the same for their section comment.
+function helpToggle(text, targetDiv){
+  const q = document.createElement('span'); q.className = 'qmark'; q.textContent = '?';
+  q.title = text;
+  q.onclick = (e) => { e.preventDefault(); e.stopPropagation();
+    targetDiv.style.display = targetDiv.style.display === 'none' ? '' : 'none'; };
+  return q;
+}
 function renderNode(parent, key, path, top){
   const t = nodeType(parent[key]);
+  const dp = path.join('.');
   if (t === 'object'){
     const d = document.createElement('details');
     d.className = top ? 'cfg-group' : 'cfg-group cfg-sub';
     const sum = document.createElement('summary'); sum.textContent = humanize(key); d.appendChild(sum);
     const body = document.createElement('div'); body.className = 'cfg-body';
+    if (HELP[dp]) {
+      const hd = document.createElement('div'); hd.className = 'cfg-group-help';
+      hd.textContent = HELP[dp]; hd.style.display = 'none';
+      sum.appendChild(helpToggle(HELP[dp], hd));
+      body.appendChild(hd);
+    }
     for (const ck of Object.keys(parent[key]).sort()) body.appendChild(renderNode(parent[key], ck, path.concat(ck), false));
     d.appendChild(body);
     return d;
   }
   const field = document.createElement('div');
   field.className = 'cfg-field' + (t === 'bool' ? ' bool' : '');
-  field.dataset.search = path.join('.').toLowerCase();
+  // searchable by path AND by help words, so "stutter"/"penalty" finds the knob
+  field.dataset.search = (dp + ' ' + (HELP[dp] || '')).toLowerCase();
   const lab = document.createElement('label'); lab.textContent = humanize(key);
-  const p = document.createElement('div'); p.className = 'cfg-path'; p.textContent = path.join('.'); lab.appendChild(p);
+  if (HELP[dp]) {
+    const hd = document.createElement('div'); hd.className = 'cfg-help';
+    hd.textContent = HELP[dp]; hd.style.display = 'none';
+    lab.appendChild(helpToggle(HELP[dp], hd));
+    const p = document.createElement('div'); p.className = 'cfg-path'; p.textContent = dp; lab.appendChild(p);
+    const ctl = document.createElement('div'); ctl.className = 'ctl'; ctl.appendChild(widgetFor(parent, key, t));
+    field.appendChild(lab); field.appendChild(ctl); field.appendChild(hd);
+    return field;
+  }
+  const p = document.createElement('div'); p.className = 'cfg-path'; p.textContent = dp; lab.appendChild(p);
   const ctl = document.createElement('div'); ctl.className = 'ctl'; ctl.appendChild(widgetFor(parent, key, t));
   field.appendChild(lab); field.appendChild(ctl);
   return field;
@@ -1605,7 +1646,28 @@ function toggleIdle() {
 }
 
 // initial load
-loadPersonas(); loadConfig(); setChatLink();
+// ── Help system ─────────────────────────────────────────────────────────────
+// One fetch serves the whole UI: config.py's per-option comments (extracted
+// server-side, keyed by dotted path) merged with help.json's "tab.*" intros.
+// To edit help: settings → edit the comment in config.py; tabs → edit help.json.
+let HELP = {};
+async function loadHelp(){
+  try { HELP = (await (await fetch('/api/help')).json()).help || {}; } catch(e){ HELP = {}; }
+  injectTabHelp();
+  if (document.querySelector('#tab-settings.active')) renderConfigForm();
+}
+function injectTabHelp(){
+  for (const sec of document.querySelectorAll('section.tab')){
+    const txt = HELP['tab.' + sec.id.replace(/^tab-/, '')];
+    if (!txt || sec.querySelector('.tabhelp')) continue;
+    const d = document.createElement('details'); d.className = 'tabhelp';
+    d.innerHTML = `<summary>ⓘ about this tab</summary><div>${escHtml(txt)}</div>`;
+    const h2 = sec.querySelector('h2');
+    h2 ? h2.after(d) : sec.prepend(d);
+  }
+}
+
+loadPersonas(); loadHelp().then(loadConfig); setChatLink();
 refreshIdle(); setInterval(refreshIdle, 15000);
 </script>
 </body>
