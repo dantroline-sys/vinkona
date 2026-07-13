@@ -1,6 +1,6 @@
-# Vinkona Knowledge Host — a local grounded-knowledge tool (phased)
+# Vinur — a local grounded-knowledge tool (phased design spec)
 
-**Status:** design spec (not yet built)
+**Status:** design spec — realized as [Vinur](https://github.com/dantroline-sys/vinur), its own repository since 2026-07-13
 **Thesis:** give the reasoning LM **grounded structure + a confidence signal**, so it
 *reasons, hedges, or abstains* — and never confabulates when it's at a loss. Retrieval
 hands over a grounded candidate set with provenance; it never diagnoses on its own. This is
