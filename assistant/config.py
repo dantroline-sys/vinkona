@@ -378,6 +378,15 @@ DEFAULTS: dict = {
         "n_gpu_layers": 99,
         "flash_attn": False,                 # embedding mode; keep it simple
         "pooling": "mean",                   # nomic uses mean pooling
+        # HARD host-RAM ceiling (systemd-run cgroup scope; Linux only).
+        # llama.cpp's embedding server leaks under heavy use (a knowledge-host
+        # import): without a cgroup of its own, it builds until systemd-oomd
+        # kills your whole SESSION — terminal, supervisor and all — because
+        # oomd kills by cgroup.  With the cap, the kernel kills the embed
+        # server alone and the supervisor watchdog respawns it.  Set "" to
+        # disable.  Keep it above the watchdog's soft cap (VINKONA_WATCH,
+        # default 6000 MB), which restarts the server gracefully first.
+        "mem_max": "8G",
         "extra_args": [],
     },
     # Orpheus TTS backbone as a plain llama-server (the "orpheus_gguf" engine).
