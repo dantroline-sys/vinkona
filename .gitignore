@@ -18,5 +18,6 @@ venv/
 *.db-shm
 logs/
 
-# Machine-local service selection for ./vinkona.sh (both|assistant|knowledge-host)
+# Machine-local service selection for ./vinkona.sh (both|assistant|knowledge-host),
+# plus an optional vinur_dir= line pointing at the Vinur checkout
 .vinkona-services

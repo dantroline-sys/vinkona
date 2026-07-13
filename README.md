@@ -1,9 +1,18 @@
 # Vinkona
 
-A local, private voice assistant that learns its user — and the knowledge engine
-behind it. Everything runs on your own hardware: speech recognition, language
-models, speech synthesis, memory, and research. Nothing about you is sent to a
-cloud service.
+A local, private voice assistant that learns its user. Everything runs on your
+own hardware: speech recognition, language models, speech synthesis, memory,
+and research. Nothing about you is sent to a cloud service.
+
+> **Vinkona and Vinur.** Until 2026-07-13 this repository also contained the
+> knowledge host. It now lives in its own repository,
+> [**Vinur**](https://github.com/dantroline-sys/vinur) (*vinur* and *vinkona*
+> are Icelandic for a friend), and the pair are licensed separately: Vinur — a
+> more or less headless knowledge API — stays **Apache 2.0**; Vinkona, the
+> user-facing front-end, is **PolyForm Noncommercial 1.0.0** from the split
+> onward (all earlier commits remain Apache 2.0 — see [LICENSE](LICENSE)).
+> Vinkona works without Vinur, and talks to it only over the tool-host HTTP
+> contract when it's there.
 
 Vinkona is built around a deliberately **small** language model (~9B). The bet is
 that *understanding isn't about model size — it's about explicit, persistent,
@@ -14,10 +23,10 @@ already own, alongside a lower-tier TTS model.
 
 ## The two components
 
-| Directory | What it is |
+| Where | What it is |
 |---|---|
-| [`assistant/`](assistant/) | The voice assistant: a real-time local cascade (denoise → VAD → ASR → fast LM → TTS, with a big LM reasoning in the background), persistent memory, personas, a Flutter client, a config web UI, and an autonomous research worker. |
-| [`knowledge-host/`](knowledge-host/) | A standalone knowledge-base service: ingests Wikipedia snapshots, PDFs, books and the assistant's own research; distills them into typed, cited knowledge cards; answers `kb_search`/`kb_ask` over HTTP with trust tiers, facets, and conflict checking. |
+| [`assistant/`](assistant/) (this repo) | The voice assistant: a real-time local cascade (denoise → VAD → ASR → fast LM → TTS, with a big LM reasoning in the background), persistent memory, personas, a Flutter client, a config web UI, and an autonomous research worker. |
+| [Vinur](https://github.com/dantroline-sys/vinur) (its own repo, Apache 2.0) | A standalone knowledge-base service: ingests Wikipedia snapshots, PDFs, books and the assistant's own research; distills them into typed, cited knowledge cards; answers `kb_search`/`kb_ask` over HTTP with trust tiers, facets, and conflict checking. |
 
 They are separate services that speak a tiny, shared **tool-host contract**
 (`GET /tools` + `POST /call`, documented in
@@ -48,7 +57,7 @@ contract plugs into the assistant as a tool the fast LM can call mid-conversatio
                             │ tool-host contract (GET /tools + POST /call)
           ┌─────────────────┼───────────────────────┬─────────────────────┐
           ▼                 ▼                       ▼                     ▼
-   knowledge-host/    Mac tool host*          music host*         (your own hosts)
+   Vinur (own repo)   Mac tool host*          music host*         (your own hosts)
    kb_search/kb_ask   calendar, mail,         local library
    cards + citations  files, keyless          search & queue
    (:8771)            research sources
@@ -56,8 +65,8 @@ contract plugs into the assistant as a tool the fast LM can call mid-conversatio
 ```
 
 The research loop closes on itself: conversations raise questions → the research
-worker investigates them during idle time → findings are exported to the
-knowledge-host, which distills them into cited cards → the assistant retrieves
+worker investigates them during idle time → findings are exported to Vinur,
+which distills them into cited cards → the assistant retrieves
 those cards (with confidence scores) in later conversations → periodic
 reflection reviews what was learned and updates the user model.
 
@@ -109,8 +118,8 @@ development are **not** part of this repository:
 - **Music host** — local music library search and playback queue, per
   [`assistant/MUSIC.md`](assistant/MUSIC.md) (Surface 1).
 
-The knowledge-host in this repository implements the same contract and is the
-reference example of writing a host.
+[Vinur](https://github.com/dantroline-sys/vinur) implements the same contract
+and is the reference example of writing a host.
 
 ## Getting started
 
@@ -123,6 +132,11 @@ reference example of writing a host.
 ./install.sh status # installer state;  ./install.sh uninstall  to undo
 ```
 
+To run the knowledge host too, clone [Vinur](https://github.com/dantroline-sys/vinur)
+**next to** this repository (`../vinur`) — the installer and orchestrator find
+it there (or wherever `$VINUR_DIR` points) and manage it alongside the
+assistant. Vinur is also entirely usable on its own.
+
 The top-level installer drives one installer per component (each also usable
 directly, with its own uninstall):
 
@@ -130,11 +144,10 @@ directly, with its own uninstall):
   [`assistant/ENVIRONMENTS.md`](assistant/ENVIRONMENTS.md)) — venvs,
   dependencies, models, an in-tree llama.cpp build. Run the stack with the
   `vinkona.sh` tmux orchestrator.
-- **Knowledge host** ([`knowledge-host/README.md`](knowledge-host/README.md))
-  — venv + config, then `./ingest.sh` and `./run.sh`. Large third-party
-  datasets used by optional importers are documented in
-  [`knowledge-host/external/README.md`](knowledge-host/external/README.md) and
-  are downloaded separately.
+- **Knowledge host** ([Vinur](https://github.com/dantroline-sys/vinur), cloned
+  alongside) — venv + config, then its `./ingest.sh` and `./run.sh`. Large
+  third-party datasets used by optional importers are documented in its
+  `external/README.md` and are downloaded separately.
 
 **Filesystem guarantee:** everything Vinkona writes — config, memory, models,
 indexes, caches, logs, temp files — stays inside this folder tree; nothing
@@ -150,4 +163,11 @@ CPU-friendly; heavy ingestion borrows the LMs when the voice path is idle.
 
 ## License
 
-Apache License 2.0 — see [LICENSE](LICENSE).
+PolyForm Noncommercial License 1.0.0 — see [LICENSE](LICENSE). Free for
+personal, research, educational, and other noncommercial use; the source stays
+open to read and audit. Commercial licensing: contact the author.
+
+History: everything up to and including commit `1ec8d93` (2026-07-12) was
+published under the Apache License 2.0 and remains available under it. The
+knowledge host continues under Apache 2.0 in its own repository,
+[Vinur](https://github.com/dantroline-sys/vinur).

@@ -20,6 +20,11 @@
 # The assistant stack is managed by assistant/vinkona.sh (its own tmux session
 # "vinkona"); the knowledge host runs in tmux session "vinkona-kb". The saved
 # choice lives in .vinkona-services (machine-local, git-ignored).
+#
+# The knowledge host is Vinur, its own repository since the 2026-07-13 split
+# (https://github.com/dantroline-sys/vinur). This script finds the checkout as:
+#   $VINUR_DIR > vinur_dir= in .vinkona-services > ../vinur (sibling clone)
+#   > ./knowledge-host (legacy monorepo layout)
 set -u
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
@@ -27,6 +32,12 @@ source assistant/env.sh          # vk_require_tools; cache pinning is harmless h
 
 CONF="$ROOT/.vinkona-services"
 KB_SESSION="vinkona-kb"
+# The Vinur checkout (see header). Resolved once; every kb_* helper uses $VINUR.
+VINUR="${VINUR_DIR:-}"
+[ -n "$VINUR" ] || VINUR="$(sed -n 's/^vinur_dir=//p' "$CONF" 2>/dev/null | head -1)"
+case "$VINUR" in "~"*) VINUR="${HOME}${VINUR#\~}";; esac
+[ -n "$VINUR" ] || { [ -d "$ROOT/../vinur" ] && VINUR="$(cd "$ROOT/../vinur" && pwd)"; }
+[ -n "$VINUR" ] || VINUR="$ROOT/knowledge-host"
 # tmux -t prefix-matches when there's no exact hit ("vinkona" would match
 # "vinkona-kb"!) — always target sessions as "=$name" (exact match only).
 CYAN='\033[0;36m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RESET='\033[0m'
@@ -80,7 +91,7 @@ runs_kb()        { [ "$SERVICES" = both ] || [ "$SERVICES" = knowledge-host ]; }
 # ── knowledge host (tmux session vinkona-kb) ─────────────────────────────────
 kb_port() {
     local p
-    p="$(sed -n 's/^port *= *\([0-9][0-9]*\).*/\1/p' knowledge-host/config.toml 2>/dev/null | head -1)"
+    p="$(sed -n 's/^port *= *\([0-9][0-9]*\).*/\1/p' "$VINUR/config.toml" 2>/dev/null | head -1)"
     echo "${p:-8771}"
 }
 
@@ -90,12 +101,17 @@ kb_start() {
         say "knowledge host: already running (tmux session $KB_SESSION)"
         return 0
     fi
-    if [ ! -f knowledge-host/config.toml ] && [ ! -x knowledge-host/.venv/bin/python3 ]; then
-        warn "the knowledge host doesn't look installed here — run ./install.sh first"
+    if [ ! -d "$VINUR" ]; then
+        warn "no Vinur checkout found — clone https://github.com/dantroline-sys/vinur"
+        warn "next to this repo (../vinur), or point VINUR_DIR at it"
         return 1
     fi
-    say "knowledge host: starting (tmux session $KB_SESSION, port $(kb_port))"
-    tmux new-session -d -s "$KB_SESSION" -c "$ROOT/knowledge-host" \
+    if [ ! -f "$VINUR/config.toml" ] && [ ! -x "$VINUR/.venv/bin/python3" ]; then
+        warn "the knowledge host doesn't look installed at $VINUR — run ./install.sh first"
+        return 1
+    fi
+    say "knowledge host: starting (tmux session $KB_SESSION, port $(kb_port), $VINUR)"
+    tmux new-session -d -s "$KB_SESSION" -c "$VINUR" \
         "bash -c './run.sh 2>&1 | tee -a var/service.log'"
 }
 

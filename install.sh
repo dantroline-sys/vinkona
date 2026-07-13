@@ -7,17 +7,28 @@
 #   ./install.sh status           # the checklist, nothing else
 #   ./install.sh all              # run every missing task in order
 #   ./install.sh <task>           # one task: assistant-core | tts [orpheus|neutts]
-#                                 #   | models | llama | knowledge-host
+#                                 #   | models | llama | vinur
 #   ./install.sh uninstall        # uninstall both components (keeps your data)
 #                 --with-models   #   also delete downloaded weights
 #                 --purge         #   ALSO delete user data + knowledge base (asks)
 #
-# Everything installed or written lives INSIDE this folder tree — see the
-# "Filesystem guarantee" sections in the READMEs. Deleting the folder removes
-# every trace.
+# The knowledge host is Vinur, its own repository since the 2026-07-13 split
+# (https://github.com/dantroline-sys/vinur) — clone it next to this repo and
+# the vinur task manages it. Found as: $VINUR_DIR > vinur_dir= in
+# .vinkona-services > ../vinur > ./knowledge-host (legacy monorepo layout).
+#
+# Everything installed or written lives INSIDE this folder tree (and Vinur's
+# inside its own) — see the "Filesystem guarantee" sections in the READMEs.
+# Deleting the folders removes every trace.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
+
+VINUR="${VINUR_DIR:-}"
+[ -n "$VINUR" ] || VINUR="$(sed -n 's/^vinur_dir=//p' "$ROOT/.vinkona-services" 2>/dev/null | head -1)" || true
+case "$VINUR" in "~"*) VINUR="${HOME}${VINUR#\~}";; esac
+[ -n "$VINUR" ] || { [ -d "$ROOT/../vinur" ] && VINUR="$(cd "$ROOT/../vinur" && pwd)"; } || true
+[ -n "$VINUR" ] || VINUR="$ROOT/knowledge-host"
 
 GREEN='\033[0;32m'; RED='\033[0;31m'; CYAN='\033[0;36m'; BOLD='\033[1m'; RESET='\033[0m'
 say() { echo -e "${CYAN}==>${RESET} $*"; }
@@ -25,7 +36,7 @@ say() { echo -e "${CYAN}==>${RESET} $*"; }
 usage() { sed -n '2,/^set /p' "$0" | sed -n 's/^#\{1,\} \{0,1\}//p'; exit "${1:-0}"; }
 
 # ── task registry: id | description | check | action ────────────────────────
-TASKS=(assistant-core tts models llama knowledge-host)
+TASKS=(assistant-core tts models llama vinur)
 
 desc() {
     case "$1" in
@@ -33,7 +44,11 @@ desc() {
         tts)            echo "TTS engine (orpheus_gguf: llama.cpp + SNAC, no venv — recommended; or orpheus/vLLM, neutts)" ;;
         models)         echo "LM weights (download defaults from HF, or select models you copied in)" ;;
         llama)          echo "llama-server binary (llama.cpp — system PATH or built in-tree)" ;;
-        knowledge-host) echo "knowledge host (.venv + config; add format flags for pdf/epub/zim)" ;;
+        vinur)          if [ -d "$VINUR" ]; then
+                            echo "knowledge host — Vinur @ $VINUR (.venv + config; format flags for pdf/epub/zim)"
+                        else
+                            echo "knowledge host — no Vinur checkout; clone github.com/dantroline-sys/vinur alongside"
+                        fi ;;
     esac
 }
 
@@ -75,7 +90,7 @@ installed() {
                         || _venv_has assistant/orpheus_env numpy || _venv_has assistant/neutts_env numpy ;;
         models)         [ -n "$(find -L assistant/Models -name '*.gguf' -print -quit 2>/dev/null)" ] ;;
         llama)          [ -x assistant/bin/llama-server ] || command -v llama-server >/dev/null 2>&1 ;;
-        knowledge-host) [ -f knowledge-host/.venv/bin/activate ] ;;   # installer smoke-tests itself
+        vinur)          [ -f "$VINUR/.venv/bin/activate" ] ;;   # installer smoke-tests itself
     esac
 }
 
@@ -99,7 +114,14 @@ run_task() {
             fi ;;
         models)         (cd assistant && ./install.sh models) ;;
         llama)          (cd assistant && ./install.sh llama) ;;
-        knowledge-host) (cd knowledge-host && ./install.sh "$@") ;;
+        vinur)
+            if [ ! -d "$VINUR" ]; then
+                echo -e "${RED}no Vinur checkout found${RESET} — the knowledge host lives in its own repo now:"
+                echo "  git clone https://github.com/dantroline-sys/vinur \"$ROOT/../vinur\""
+                echo "  (or point VINUR_DIR at an existing checkout)"
+                return 1
+            fi
+            (cd "$VINUR" && ./install.sh "$@") ;;
         *) echo "unknown task: $t" >&2; usage 1 ;;
     esac
 }
@@ -112,7 +134,7 @@ checklist() {
         echo -e "  $i. [$mark] $t — $(desc "$t")"
         i=$((i+1))
     done
-    echo "  Everything installs inside this folder; nothing is written elsewhere."
+    echo "  Everything installs inside this folder (Vinur inside its own); nothing is written elsewhere."
 }
 
 all_done() { local t; for t in "${TASKS[@]}"; do installed "$t" || return 1; done; }
@@ -133,11 +155,15 @@ case "$cmd" in
         shift || true
         say "uninstalling assistant"
         (cd assistant && ./install.sh uninstall "$@")
-        say "uninstalling knowledge-host"
-        if [ "${1:-}" = "--purge" ] || [ "${2:-}" = "--purge" ]; then
-            (cd knowledge-host && ./install.sh uninstall --purge)
+        if [ -d "$VINUR" ]; then
+            say "uninstalling knowledge host (Vinur @ $VINUR)"
+            if [ "${1:-}" = "--purge" ] || [ "${2:-}" = "--purge" ]; then
+                (cd "$VINUR" && ./install.sh uninstall --purge)
+            else
+                (cd "$VINUR" && ./install.sh uninstall)
+            fi
         else
-            (cd knowledge-host && ./install.sh uninstall)
+            say "no Vinur checkout found — nothing to uninstall there"
         fi ;;
     -h|--help|help)
         usage 0 ;;
@@ -164,7 +190,7 @@ case "$cmd" in
                         extra=""
                         if [ "$t" = "tts" ]; then
                             printf "engine [orpheus_gguf] / orpheus (vLLM) / neutts: "; read -r extra
-                        elif [ "$t" = "knowledge-host" ]; then
+                        elif [ "$t" = "vinur" ]; then
                             printf "format flags (e.g. --all or --pdf --epub) [none]: "; read -r extra
                         fi
                         # shellcheck disable=SC2086
@@ -176,6 +202,7 @@ case "$cmd" in
         done ;;
     *)  # a named task, remaining args pass through (e.g. ./install.sh tts neutts)
         t="$cmd"; shift || true
+        [ "$t" = "knowledge-host" ] && t=vinur      # pre-split name still works
         case " ${TASKS[*]} " in
             *" $t "*) run_task "$t" "$@"; echo ""; checklist ;;
             *) echo "unknown command or task: $t" >&2; usage 1 ;;

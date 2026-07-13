@@ -1,9 +1,0 @@
-Vinkona
-Copyright 2026 Daniel Aras
-
-Licensed under the Apache License, Version 2.0.
-
-This product includes no bundled third-party datasets. Optional importers in
-knowledge-host/ consume separately-downloaded datasets (ConceptNet, CauseNet,
-GLUCOSE, ATOMIC, Wikipedia/Kiwix ZIM snapshots, RxNorm/RxClass/MED-RT) — each
-is governed by its own license; see knowledge-host/external/README.md.
