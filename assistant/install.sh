@@ -10,6 +10,7 @@
 #   ./install.sh                   # core: vinkona_env + cascade/ASR/memory deps + rnnoise
 #   ./install.sh tts orpheus_gguf  # Orpheus on llama.cpp (no venv: GGUF + SNAC ONNX)
 #   ./install.sh tts neutts        # NeuTTS in its own venv
+#   ./install.sh tts chatterbox    # Chatterbox in its own venv (low-footprint)
 #   ./install.sh models            # download the default GGUFs into Models/
 #   ./install.sh llama             # build llama.cpp's llama-server into ./bin
 #   ./install.sh all               # core + tts orpheus_gguf + models (+ llama if absent)
@@ -75,8 +76,8 @@ step_tts() {
         orpheus_gguf) bash install_orpheus_gguf.sh ;;
         orpheus)      say "engine 'orpheus' (vLLM) was retired — installing orpheus_gguf"
                       bash install_orpheus_gguf.sh ;;
-        neutts)       bash install_tts.sh ;;
-        *) die "unknown TTS engine: $engine (orpheus_gguf|neutts)" ;;
+        neutts|chatterbox) bash install_tts.sh "$engine" ;;
+        *) die "unknown TTS engine: $engine (orpheus_gguf|neutts|chatterbox)" ;;
     esac
 }
 
@@ -309,7 +310,7 @@ step_status() {
     local d
     # orpheus_env/personaplex_env are retired names, still listed so an old
     # install shows up in status and gets cleaned by uninstall.
-    for d in vinkona_env neutts_env orpheus_env personaplex_env; do
+    for d in vinkona_env neutts_env chatterbox_env orpheus_env personaplex_env; do
         [ -d "$d" ] && echo "  venv      $d  ($(du -sh "$d" 2>/dev/null | cut -f1))"
     done
     [ -x bin/llama-server ] && echo "  binary    bin/llama-server" || {
@@ -333,7 +334,7 @@ step_uninstall() {
 
     say "removing generated artifacts (source files and user data are kept)"
     local d
-    for d in vinkona_env orpheus_env neutts_env personaplex_env var bin moshi_src; do
+    for d in vinkona_env orpheus_env neutts_env chatterbox_env personaplex_env var bin moshi_src; do
         [ -e "$d" ] && { rm -rf "$d"; ok "removed $d/"; }
     done
     find . -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null || true

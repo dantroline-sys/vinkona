@@ -6,7 +6,7 @@
 #   ./install.sh                  # interactive: checklist -> pick a task -> repeat
 #   ./install.sh status           # the checklist, nothing else
 #   ./install.sh all              # run every missing task in order
-#   ./install.sh <task>           # one task: assistant-core | tts [orpheus_gguf|neutts]
+#   ./install.sh <task>           # one task: assistant-core | tts [orpheus_gguf|neutts|chatterbox]
 #                                 #   | models | llama | vinur
 #   ./install.sh uninstall        # uninstall both components (keeps your data)
 #                 --with-models   #   also delete downloaded weights
@@ -41,7 +41,7 @@ TASKS=(assistant-core tts models llama vinur)
 desc() {
     case "$1" in
         assistant-core) echo "assistant core (vinkona_env: cascade, ASR, memory, research, config UI)" ;;
-        tts)            echo "TTS engine (orpheus_gguf: llama.cpp + SNAC, no venv — default; or neutts, cloned voice)" ;;
+        tts)            echo "TTS engine (orpheus_gguf: llama.cpp + SNAC, no venv — default; neutts or chatterbox, own venv)" ;;
         models)         echo "LM weights (download defaults from HF, or select models you copied in)" ;;
         llama)          echo "llama-server binary (llama.cpp — system PATH or built in-tree)" ;;
         vinur)          if [ -d "$VINUR" ]; then
@@ -92,7 +92,8 @@ installed() {
         assistant-core) _venv_has assistant/vinkona_env faster_whisper \
                         && compgen -G "assistant/var/rnnoise/lib*/librnnoise.*" >/dev/null 2>&1 ;;
         tts)            { _venv_has assistant/vinkona_env onnxruntime && _orpheus_gguf_present; } \
-                        || _venv_has assistant/neutts_env numpy ;;
+                        || _venv_has assistant/neutts_env numpy \
+                        || _venv_has assistant/chatterbox_env chatterbox ;;
         models)         [ -n "$(find -L assistant/Models -name '*.gguf' -print -quit 2>/dev/null)" ] ;;
         llama)          [ -x assistant/bin/llama-server ] || command -v llama-server >/dev/null 2>&1 ;;
         vinur)          [ -f "$VINUR/.venv/bin/activate" ] ;;   # installer smoke-tests itself
@@ -193,7 +194,7 @@ case "$cmd" in
                         t="${TASKS[$((choice-1))]}"
                         extra=""
                         if [ "$t" = "tts" ]; then
-                            printf "engine [orpheus_gguf] / neutts: "; read -r extra
+                            printf "engine [orpheus_gguf] / neutts / chatterbox: "; read -r extra
                         elif [ "$t" = "vinur" ]; then
                             printf "format flags (e.g. --all or --pdf --epub) [none]: "; read -r extra
                         fi

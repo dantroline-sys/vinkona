@@ -136,6 +136,12 @@
       "backbone": "neuphonic/neutts-air",
       "ref_wav": "voices/vinkona.wav",
       "ref_text": null
+    },
+    "chatterbox": {
+      "ref_wav": null,
+      "exaggeration": 0.5,
+      "cfg_weight": 0.5,
+      "temperature": 0.8
     }
   },
   "memory": {

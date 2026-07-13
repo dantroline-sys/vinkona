@@ -80,7 +80,7 @@ def load_config() -> dict:
 def tts_engine(cfg: dict) -> str:
     # Legacy "orpheus" (the retired vLLM engine) maps to orpheus_gguf.
     eng = (cfg.get("tts") or {}).get("engine") or "orpheus_gguf"
-    return eng if eng == "neutts" else "orpheus_gguf"
+    return eng if eng in ("neutts", "chatterbox") else "orpheus_gguf"
 
 
 def load_topo() -> dict:
@@ -134,11 +134,10 @@ def services_for(mode: str, topo: dict) -> list[dict]:
             add("big_lm", "host", ["./serve_big_lm.sh"])
             add("embed", "host", ["./serve_embed.sh"])
             add("tunnel", "host", ["./serve_tunnel.sh"])
-            if tts_engine(load_config()) == "neutts":
-                add("tts", "box", ["./serve_tts.sh", "neutts"], r"tts_server\.py")
-            else:
+            eng = tts_engine(load_config())
+            if eng == "orpheus_gguf":          # only Orpheus needs the tts_lm llama-server
                 add("tts_lm", "host", ["./serve_tts_lm.sh"])
-                add("tts", "box", ["./serve_tts.sh", "orpheus_gguf"], r"tts_server\.py")
+            add("tts", "box", ["./serve_tts.sh", eng], r"tts_server\.py")
             add("cascade", "box", ["./serve_cascade.sh"], r"cascade_server\.py")
             add("config", "box", ["./serve_config.sh"], r"config_server\.py")
             add("research", "box", ["./serve_research.sh"], r"research_worker\.py")

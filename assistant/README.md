@@ -106,9 +106,12 @@ itself if the system one won't do — see [`ENVIRONMENTS.md`](ENVIRONMENTS.md).
 GGUF on a plain llama-server (the `tts_lm` tier, port 11439) and vocodes with
 SNAC via onnxruntime on the CPU — preset voices and `<laugh>`/`<sigh>` tags, no
 separate venv, no Python-version pin, and it's the path that can port to macOS
-(Metal). The alternative `neutts` engine clones a voice from a reference clip;
-it needs torch, so it lives in its own venv — see
-[`ENVIRONMENTS.md`](ENVIRONMENTS.md). Switch engines with `tts.engine` in the
+(Metal). Two alternative engines clone a voice from a reference clip and
+carry their own torch in their own venvs (see
+[`ENVIRONMENTS.md`](ENVIRONMENTS.md)): `neutts`, and `chatterbox` — a ~0.5B
+model (~2-3 GB loaded, cuda/mps/cpu) with an emotion-exaggeration knob, the
+low-footprint choice for machines that can't hold the Orpheus 3B backbone at
+real time (e.g. a 16 GB M2 mini). Switch engines with `tts.engine` in the
 config UI; `vinkona.sh` starts the right services for whichever is set.
 
 **Filesystem guarantee:** everything the assistant writes stays inside this

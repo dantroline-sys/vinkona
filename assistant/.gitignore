@@ -11,6 +11,7 @@ __pycache__/
 vinkona_env/
 personaplex_env/
 neutts_env/
+chatterbox_env/
 orpheus_env/
 
 # Live config + personas are USER DATA (edited via the web UI), not source.

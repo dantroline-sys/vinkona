@@ -50,6 +50,16 @@ def build_engine(engine: str, cfg: dict, device: str):
             raise SystemExit("config tts.neutts.ref_wav is required for the neutts engine")
         eng.register_voice(tts["default_voice"], ref, ref_text=nt.get("ref_text"))
         return eng
+    if engine == "chatterbox":
+        from tts_chatterbox import ChatterboxEngine
+        cb = tts["chatterbox"]
+        eng = ChatterboxEngine(device=device,
+                               exaggeration=cb["exaggeration"],
+                               cfg_weight=cb["cfg_weight"],
+                               temperature=cb["temperature"])
+        # ref_wav null = the built-in voice; a clip clones the persona voice.
+        eng.register_voice(tts["default_voice"], cb.get("ref_wav"))
+        return eng
     if engine == "orpheus_gguf":
         from tts_orpheus_gguf import OrpheusGGUFEngine
         og = tts["orpheus_gguf"]
@@ -165,7 +175,7 @@ def main():
     import importlib.util
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="config/config.json")
-    ap.add_argument("--engine", choices=["neutts", "orpheus", "orpheus_gguf"], default=None,
+    ap.add_argument("--engine", choices=["neutts", "orpheus", "orpheus_gguf", "chatterbox"], default=None,
                     help="override config tts.engine (also selects which venv's deps to load)")
     ap.add_argument("--device", default="auto",
                     help="auto (cuda > mps > cpu), or an explicit torch device")

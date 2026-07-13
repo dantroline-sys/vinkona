@@ -11,6 +11,10 @@ selected by --engine (run this inside that engine's venv):
   CUDA_VISIBLE_DEVICES=0 python test_tts.py --engine neutts \
       --ref voices/vinkona.wav --text "Hello, I'm Vinkona." --out /tmp/neutts.wav
 
+  # Chatterbox (in chatterbox_env): built-in voice, or clone with --ref
+  source chatterbox_env/bin/activate
+  python test_tts.py --engine chatterbox --text "Hello." --out /tmp/cb.wav
+
   # Orpheus on llama.cpp has its own end-to-end test: test_tts_orpheus_gguf.py
 """
 
@@ -23,6 +27,11 @@ import soundfile as sf
 
 def build_engine(args):
     """Lazy-import and construct the selected engine (only its venv has its deps)."""
+    if args.engine == "chatterbox":
+        from tts_chatterbox import ChatterboxEngine
+        eng = ChatterboxEngine(device=args.device)
+        eng.register_voice("test", ref_wav=args.ref)   # None = the built-in voice
+        return eng, "test"
     if args.engine == "neutts":
         from tts_neutts import NeuTTSEngine
         eng = NeuTTSEngine(backbone_repo=args.backbone or "neuphonic/neutts-air",
@@ -36,7 +45,7 @@ def build_engine(args):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--engine", choices=["neutts"], default="neutts")
+    ap.add_argument("--engine", choices=["neutts", "chatterbox"], default="neutts")
     ap.add_argument("--text", default="Hello, this is a test of the text to speech voice.")
     ap.add_argument("--out", default="/tmp/tts_test.wav")
     ap.add_argument("--device", default="auto", help="auto (cuda > mps > cpu), or explicit (neutts)")

@@ -3,24 +3,27 @@
 The default stack needs just ONE virtualenv: the default TTS engine
 (`orpheus_gguf`) runs the Orpheus backbone on llama-server and vocodes with
 onnxruntime inside `vinkona_env`, so no torch ever gets installed. The
-alternative `neutts` engine needs torch, so it keeps its own venv.
+alternative engines (`neutts`, `chatterbox`) need torch, so each keeps its
+own venv, built from its own uv project under `deps/`.
 
-Both are built by **uv** (bootstrapped in-tree by the install scripts — see
-`env.sh` `vk_uv`), each from its own project so their resolutions never mix:
-[`pyproject.toml`](pyproject.toml) + `uv.lock` pin `vinkona_env`, and
-[`deps/neutts/`](deps/neutts/pyproject.toml) pins `neutts_env` — NeuTTS's
-torch/numba stack caps numpy and lags new CPython releases, and a joint
-resolution would drag the core venv down to its ceilings. One lockfile each
+All of them are built by **uv** (bootstrapped in-tree by the install scripts —
+see `env.sh` `vk_uv`), each from its own project so their resolutions never
+mix: [`pyproject.toml`](pyproject.toml) + `uv.lock` pin `vinkona_env`, and
+each engine project under `deps/` ([`deps/neutts/`](deps/neutts/pyproject.toml),
+[`deps/chatterbox/`](deps/chatterbox/pyproject.toml)) pins its own venv —
+those torch stacks cap numpy and lag new CPython releases, and a joint
+resolution would drag the core venv down to their ceilings. One lockfile each
 covers Linux, macOS, and Windows. If the system Python doesn't satisfy a
 project's `requires-python`, uv downloads a matching CPython into `var/uv/`
-instead of failing (this is how neutts_env gets 3.13 on a 3.14 system). The
-venvs it produces are plain venvs; every script that calls
+instead of failing (this is how the engine venvs get a 3.12/3.13 on a 3.14
+system). The venvs it produces are plain venvs; every script that calls
 `vinkona_env/bin/python` works unchanged.
 
 | venv          | runs in          | what lives in it |
 |---------------|------------------|------------------|
 | `vinkona_env`   | host + container | The core Python services: the **cascade** (voice loop), **ASR** (faster-whisper) + soxr + rnnoise, the **memory** system, the **research worker**, the **config** web UI — and the default **orpheus_gguf TTS** (onnxruntime, CPU SNAC vocoder; the 3B backbone is a llama-server, not a Python dep). |
-| `neutts_env`  | container        | **NeuTTS** (alternative TTS engine — voice cloning; carries its own torch). |
+| `neutts_env`  | container        | **NeuTTS** (alternative TTS engine — voice cloning; carries its own torch, from `deps/neutts/`). |
+| `chatterbox_env` | container     | **Chatterbox** (alternative TTS engine — ~0.5B, voice cloning + emotion knob; its own torch, from `deps/chatterbox/`; the low-footprint choice for small machines). |
 
 The llama.cpp LM launchers — `serve_fast_lm.sh`, `serve_big_lm.sh`, `serve_big_lm2.sh`,
 `serve_embed.sh`, `serve_tts_lm.sh` — use the system `python3`: they only exec

@@ -1,0 +1,28 @@
+# Chatterbox TTS (Resemble AI) — this engine's OWN uv project, same pattern as
+# ../neutts: a torch stack with tight pins that must not share a resolution
+# with the core project (vinkona_env stays torch-free).  install_tts.sh
+# chatterbox syncs this into chatterbox_env; uv downloads a matching CPython
+# into var/uv/python when the system one is too new.
+#
+# Why this engine exists: the ~0.5B token model + flow-matching vocoder load
+# in ~2-3 GB and run on cuda/mps/cpu — the low-footprint option for machines
+# that can't hold the Orpheus 3B backbone at real time (e.g. a 16 GB M2 mini).
+
+[project]
+name = "vinkona-chatterbox"
+version = "0"
+description = "Chatterbox TTS engine environment (voice cloning + emotion control; torch)"
+requires-python = ">=3.11,<3.13"    # follows chatterbox-tts's numpy/torch pins — raise when it catches up
+
+dependencies = [
+    "chatterbox-tts",
+    "soundfile",       # tts_server.py writes WAV responses
+    "numpy",           # imported directly by tts_chatterbox.py / tts_server.py
+    "setuptools<81",   # resemble-perth imports pkg_resources without declaring it,
+                       # and setuptools >= 81 removed pkg_resources; without this the
+                       # watermarker silently resolves to None and ChatterboxTTS
+                       # crashes at load ('NoneType' is not callable)
+]
+
+[tool.uv]
+package = false     # env-only project — sync manages dependencies, nothing installs

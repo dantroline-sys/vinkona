@@ -399,8 +399,11 @@ DEFAULTS: dict = {
         "port": 11436,
         "url": "http://127.0.0.1:11436",
         # Which TTS engine tts_server.py loads (and which services vinkona.sh
-        # starts): "orpheus_gguf" (Orpheus on llama.cpp + SNAC) or "neutts"
-        # (cloned voice).  A legacy "orpheus" value is treated as orpheus_gguf.
+        # starts): "orpheus_gguf" (Orpheus on llama.cpp + SNAC), "neutts"
+        # (cloned voice), or "chatterbox" (~0.5B, cloned voice + emotion knob —
+        # the low-footprint choice for machines that can't hold the Orpheus 3B
+        # backbone at real time, e.g. a 16 GB M2 mini).  A legacy "orpheus"
+        # value is treated as orpheus_gguf.
         "engine": "orpheus_gguf",
         "default_voice": "tara",
         # Trim the silent head/tail Orpheus bakes into each sentence and replace it
@@ -435,6 +438,15 @@ DEFAULTS: dict = {
             "backbone": "neuphonic/neutts-air",
             "ref_wav": "voices/vinkona.wav",
             "ref_text": None,
+        },
+        # Chatterbox (Resemble AI): runs in its own venv (chatterbox_env,
+        # ./install.sh tts chatterbox); weights download from the HF hub into
+        # the in-tree cache on first start.
+        "chatterbox": {
+            "ref_wav": None,                 # ~7-20 s voice-clone clip; null = the built-in voice
+            "exaggeration": 0.5,             # 0 ≈ flat … ~1 ≈ theatrical
+            "cfg_weight": 0.5,               # pacing/adherence; lower = slower, more deliberate
+            "temperature": 0.8,
         },
     },
     "memory": {
