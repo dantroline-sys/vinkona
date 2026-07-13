@@ -16,7 +16,7 @@
 #
 # Reads are unrestricted — point Models/ or config at anything you like.
 # Known exceptions (documented, not writes by Vinkona itself): system packages
-# you install with dnf/apt (espeak-ng, toolchain), and tmux's own socket.
+# you install with dnf/apt/brew (espeak-ng, toolchain).
 #
 # Everything here is process-scoped: sourcing this affects Vinkona's services
 # only, never your shell profile or other programs.

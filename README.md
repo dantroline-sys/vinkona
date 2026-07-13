@@ -128,7 +128,7 @@ and is the reference example of writing a host.
 ./vinkona.sh start  # then start the system (asks once what THIS machine runs:
                     #   everything / assistant only / knowledge host only —
                     #   so the knowledge host can live on a separate device)
-./vinkona.sh status # what's up;  stop / restart / attach / services also available
+./vinkona.sh status # what's up;  stop / restart / logs / services also available
 ./install.sh status # installer state;  ./install.sh uninstall  to undo
 ```
 
@@ -143,7 +143,8 @@ directly, with its own uninstall):
 - **Assistant** ([`assistant/README.md`](assistant/README.md),
   [`assistant/ENVIRONMENTS.md`](assistant/ENVIRONMENTS.md)) — venvs,
   dependencies, models, an in-tree llama.cpp build. Run the stack with the
-  `vinkona.sh` tmux orchestrator.
+  `vinkona.sh` orchestrator (a thin shim over the Python process
+  supervisor, `assistant/supervisor.py`).
 - **Knowledge host** ([Vinur](https://github.com/dantroline-sys/vinur), cloned
   alongside) — venv + config, then its `./ingest.sh` and `./run.sh`. Large
   third-party datasets used by optional importers are documented in its
@@ -171,14 +172,15 @@ container and places services accordingly.
 **macOS** works host-only: llama.cpp uses Metal automatically (`./install.sh
 llama` builds it in-tree), uv downloads any Python it needs, and the CUDA/
 container logic simply never engages. You'll want Homebrew for the handful of
-system tools (tmux, cmake, autotools for the optional rnnoise build) — the
+system tools (cmake, autotools for the optional rnnoise build) — the
 installers name the exact packages and offer to install them. One caveat:
 faster-whisper runs CPU-only on macOS (CTranslate2 has no Metal backend), which
 is fine for the small ASR models the cascade uses.
 
-**Windows** is planned: the Python layer is already portable (uv + one
-lockfile), but service orchestration is bash+tmux and will move to a small
-cross-platform supervisor first.
+**Windows** is planned: the Python layer (uv + one lockfile) and the process
+supervisor (`assistant/supervisor.py`, stdlib Python) are already portable in
+design; what remains is the supervisor's Windows process-control branch and
+the per-service launch scripts, which are still bash.
 
 ## Disclaimer
 

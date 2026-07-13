@@ -47,7 +47,7 @@ overview is in the [top-level README](../README.md).
 
 Every stage is a separate process with its own environment (see
 [`ENVIRONMENTS.md`](ENVIRONMENTS.md)); [`vinkona.sh`](vinkona.sh) orchestrates
-them all in one tmux session.
+them all under one Python process supervisor (`supervisor.py`).
 
 ### Why a cascade?
 
@@ -118,7 +118,7 @@ logs in `logs/`, caches/builds/temp in `var/`, binaries in `bin/`, venvs in
 compile caches and temp files are pinned in-tree by [`env.sh`](env.sh), which
 every service sources. Reads can come from anywhere (e.g. symlink `Models/` to
 your weight store). The only exceptions are system packages you install
-yourself (espeak-ng, C toolchain) and tmux's own socket.
+yourself (espeak-ng, C toolchain).
 `./install.sh uninstall` removes what was installed and keeps your data;
 `--purge` removes the data too; deleting the folder removes every trace.
 
@@ -137,7 +137,7 @@ web UI (`./serve_config.sh`, then http://localhost:8090).
 ### 4. Run everything
 
 ```bash
-./vinkona.sh start        # whole stack in tmux ("vinkona" session)
+./vinkona.sh start        # whole stack under the supervisor
 ./vinkona.sh status       # what's running
 ./vinkona.sh restart tts  # bounce one service
 ```
