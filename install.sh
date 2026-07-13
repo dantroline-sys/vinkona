@@ -85,7 +85,12 @@ PY
 
 installed() {
     case "$1" in
-        assistant-core) _venv_has assistant/vinkona_env faster_whisper ;;
+        # Core = the venv AND the in-tree librnnoise build.  The second half
+        # matters after an uninstall (it clears var/, where rnnoise lives) or a
+        # partial install: a venv-only probe shows a green ✓ over a cascade
+        # that dies at startup.  Re-running core rebuilds whichever is missing.
+        assistant-core) _venv_has assistant/vinkona_env faster_whisper \
+                        && compgen -G "assistant/var/rnnoise/lib*/librnnoise.*" >/dev/null 2>&1 ;;
         tts)            { _venv_has assistant/vinkona_env onnxruntime && _orpheus_gguf_present; } \
                         || _venv_has assistant/neutts_env numpy ;;
         models)         [ -n "$(find -L assistant/Models -name '*.gguf' -print -quit 2>/dev/null)" ] ;;
