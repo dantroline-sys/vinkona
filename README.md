@@ -161,6 +161,12 @@ one consumer GPU; the big LM prefers a second GPU but is off the latency path,
 so slower/CPU setups degrade gracefully. The knowledge host's query service is
 CPU-friendly; heavy ingestion borrows the LMs when the voice path is idle.
 
+## Disclaimer
+
+This software is provided as-is, for research and reference purposes, without
+warranty, and is not validated or intended for production or safety-critical
+use.
+
 ## License
 
 PolyForm Noncommercial License 1.0.0 — see [LICENSE](LICENSE). Free for
