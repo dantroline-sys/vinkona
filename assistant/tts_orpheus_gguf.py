@@ -1,11 +1,11 @@
 """
 Orpheus TTS on llama.cpp — the "orpheus_gguf" engine.
 
-Same Orpheus model as tts_orpheus.py, no vLLM: the Llama-3B backbone runs as a
+The Orpheus voices without a heavyweight venv: the Llama-3B backbone runs as a
 GGUF on a plain llama-server (the `tts_lm` config tier, started by
 serve_tts_lm.sh next to the other LM tiers), and this module turns its token
-stream into audio.  That removes the ~6 GB orpheus_env venv, the Python ≤3.13
-pin (vLLM/numba), and the vLLM event-loop workarounds — the whole engine is a
+stream into audio.  No multi-GB engine venv, no Python-version pin —
+the whole engine is a
 llama-server HTTP client plus a ~50 MB SNAC vocoder decoded with onnxruntime
 on the CPU (well under realtime; zero GPU contention with the LMs).
 
@@ -14,7 +14,7 @@ How Orpheus encodes speech: the LM emits <custom_token_N> vocab tokens, 7 per
 codes per frame) and decoded, each frame yields 2048 samples of 24 kHz PCM.
 The sliding window here mirrors the official orpheus-speech decoder exactly —
 decode the last 4 frames, keep the middle 2048 samples — so audio quality
-matches the vLLM path by construction (including its baked-in silent head and
+matches the reference implementation by construction (including its baked-in silent head and
 tail, which the cascade's trim_silence already handles).
 
 Same synthesize()/synthesize_stream() contract as the other engines; runs in

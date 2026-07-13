@@ -11,10 +11,7 @@ selected by --engine (run this inside that engine's venv):
   CUDA_VISIBLE_DEVICES=0 python test_tts.py --engine neutts \
       --ref voices/vinkona.wav --text "Hello, I'm Vinkona." --out /tmp/neutts.wav
 
-  # Orpheus (in orpheus_env): preset voice + inline emotion tag
-  source orpheus_env/bin/activate
-  CUDA_VISIBLE_DEVICES=0 python test_tts.py --engine orpheus --voice tara \
-      --text "Well <laugh> hello there." --out /tmp/orpheus.wav
+  # Orpheus on llama.cpp has its own end-to-end test: test_tts_orpheus_gguf.py
 """
 
 import argparse
@@ -34,16 +31,12 @@ def build_engine(args):
             raise SystemExit("--ref <voice.wav> is required for --engine neutts")
         eng.register_voice("test", args.ref, ref_text=args.ref_text)
         return eng, "test"
-    elif args.engine == "orpheus":
-        from tts_orpheus import OrpheusEngine
-        eng = OrpheusEngine(model_name=args.backbone or "canopylabs/orpheus-tts-0.1-finetune-prod")
-        return eng, (args.voice or "tara")
     raise SystemExit(f"unknown engine {args.engine}")
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--engine", choices=["neutts", "orpheus"], default="neutts")
+    ap.add_argument("--engine", choices=["neutts"], default="neutts")
     ap.add_argument("--text", default="Hello, this is a test of the text to speech voice.")
     ap.add_argument("--out", default="/tmp/tts_test.wav")
     ap.add_argument("--device", default="cuda", help="cuda or cpu (neutts)")
@@ -51,8 +44,6 @@ def main():
     # NeuTTS-specific
     ap.add_argument("--ref", default=None, help="[neutts] reference voice WAV (~3-10 s)")
     ap.add_argument("--ref-text", default=None, help="[neutts] transcript of --ref (else sibling .txt)")
-    # Orpheus-specific
-    ap.add_argument("--voice", default=None, help="[orpheus] preset voice (tara/leah/jess/leo/dan/mia/zac/zoe)")
     args = ap.parse_args()
 
     print(f"Loading engine '{args.engine}' ...")

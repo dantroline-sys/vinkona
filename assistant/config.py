@@ -399,9 +399,9 @@ DEFAULTS: dict = {
         "port": 11436,
         "url": "http://127.0.0.1:11436",
         # Which TTS engine tts_server.py loads (and which services vinkona.sh
-        # starts): "orpheus_gguf" (llama.cpp + SNAC — lightest, recommended),
-        # "orpheus" (vLLM, needs orpheus_env), or "neutts" (cloned voice).
-        "engine": "orpheus",
+        # starts): "orpheus_gguf" (Orpheus on llama.cpp + SNAC) or "neutts"
+        # (cloned voice).  A legacy "orpheus" value is treated as orpheus_gguf.
+        "engine": "orpheus_gguf",
         "default_voice": "tara",
         # Trim the silent head/tail Orpheus bakes into each sentence and replace it
         # with one short uniform gap — kills the long unnatural inter-sentence pauses.
@@ -413,17 +413,9 @@ DEFAULTS: dict = {
         # boundaries so no one synthesis overruns the engine's audio-token budget and
         # truncates mid-word.  Also shortens first-audio latency.
         "max_tts_chars": 240,
-        "orpheus": {
-            "model": "canopylabs/orpheus-tts-0.1-finetune-prod",
-            "max_model_len": 2048,
-            "gpu_memory_utilization": 0.4,
-            "enforce_eager": False,
-            "max_tokens": None,              # per-call audio-token cap (null → ~max_model_len-256)
-        },
-        # Same Orpheus voices WITHOUT vLLM: the backbone runs on the tts_lm
+        # The Orpheus voices on llama.cpp: the backbone runs on the tts_lm
         # llama-server tier above, SNAC vocodes on CPU (onnxruntime).  Needs no
-        # extra venv — ./install.sh tts orpheus_gguf sets it up.  Enable with
-        # tts.engine = "orpheus_gguf".
+        # extra venv — ./install.sh tts orpheus_gguf sets it up.
         "orpheus_gguf": {
             "lm_url": None,                  # null → tts_lm.url
             # Official sampling; the repetition penalty is load-bearing (Orpheus

@@ -1,11 +1,10 @@
 """
 CPU speech-to-text for the user stream (faster-whisper / CTranslate2).
 
-PersonaPlex's text stream is the AI's own monologue, so the user's words have to
-be recovered with a separate ASR pass.  We run faster-whisper on the CPU over the
-VAD-segmented turns the RNNoise front-end already produces — one transcription per
-turn, off the asyncio event-loop thread, so the GPU stays free for PersonaPlex and
-the fast LM and the audio stream never stalls.
+We run faster-whisper on the CPU over the VAD-segmented turns the RNNoise
+front-end already produces — one transcription per turn, off the asyncio
+event-loop thread, so the GPU stays free for the LMs and TTS and the audio
+stream never stalls.
 
 The resulting text drives two things: the 'You: …' dialogue line and the
 user_turn_queue that feeds the two-tier LLM bridge.

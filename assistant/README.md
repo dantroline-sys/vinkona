@@ -24,8 +24,8 @@ overview is in the [top-level README](../README.md).
                                             ┌──────────────────────▼───┐   ┌───────────▼──────────┐
                                             │ llm_bridge.py            │   │ tts_server.py :11436 │
                                             │ • fast LM: streamed      │   │ Orpheus (llama.cpp   │
-                                            │   real-time replies      │   │ :11439 + SNAC, or    │
-                                            │ • big LM: background     │   │ vLLM) or NeuTTS —    │
+                                            │   real-time replies      │   │ :11439 + SNAC) or    │
+                                            │ • big LM: background     │   │ NeuTTS —             │
                                             │   briefing, reflection,  │   │ 24 kHz PCM           │
                                             │   deep reasoning         │   └──────────────────────┘
                                             └───┬──────────────┬───────┘
@@ -51,11 +51,11 @@ them all in one tmux session.
 
 ### Why a cascade?
 
-Vinkona originally ran on NVIDIA PersonaPlex (a Moshi-based full-duplex
-speech-to-speech model — see "Legacy" below). It fought injected LLM tokens, so
-the project pivoted to a cascade: less exotic, fully controllable, and every
-tier is swappable from config. Latency is engineered instead: streamed ASR,
-sub-150 ms-TTFT fast LM, sentence-by-sentence TTS, and barge-in via VAD.
+An earlier iteration ran on a full-duplex speech-to-speech model; it fought
+injected LLM tokens, so the project pivoted to a cascade: less exotic, fully
+controllable, and every tier is swappable from config. Latency is engineered
+instead: streamed ASR, sub-150 ms-TTFT fast LM, sentence-by-sentence TTS, and
+barge-in via VAD.
 
 ### The two-tier LM design
 
@@ -88,7 +88,7 @@ sub-150 ms-TTFT fast LM, sentence-by-sentence TTS, and barge-in via VAD.
 ```bash
 ./install.sh               # core: vinkona_env + cascade/ASR/memory deps + rnnoise (in-tree)
 ./install.sh tts           # TTS: orpheus_gguf (llama.cpp + SNAC — default, no extra venv)
-                           #   or: tts orpheus (vLLM venv) | tts neutts (own venv)
+                           #   or: tts neutts (cloned voice, own venv)
 ./install.sh models        # download the default GGUFs into Models/
 ./install.sh llama         # build llama.cpp's llama-server into ./bin (if not on PATH)
 # or all four at once:  ./install.sh all
@@ -100,17 +100,17 @@ Each step is also a standalone script (`install_orpheus_gguf.sh`,
 
 **TTS engines.** The default `orpheus_gguf` runs the Orpheus 3B backbone as a
 GGUF on a plain llama-server (the `tts_lm` tier, port 11439) and vocodes with
-SNAC via onnxruntime on the CPU — same voices and `<laugh>`/`<sigh>` tags, no
-vLLM, no separate venv, no Python-version pin, and it's the path that can port
-to macOS (Metal). The `orpheus` (vLLM) and `neutts` engines remain available;
-they need their own venvs because their torch/vLLM pins conflict — see
+SNAC via onnxruntime on the CPU — preset voices and `<laugh>`/`<sigh>` tags, no
+separate venv, no Python-version pin, and it's the path that can port to macOS
+(Metal). The alternative `neutts` engine clones a voice from a reference clip;
+it needs torch, so it lives in its own venv — see
 [`ENVIRONMENTS.md`](ENVIRONMENTS.md). Switch engines with `tts.engine` in the
 config UI; `vinkona.sh` starts the right services for whichever is set.
 
 **Filesystem guarantee:** everything the assistant writes stays inside this
 folder — live config, personas and memory in `config/`, weights in `Models/`,
 logs in `logs/`, caches/builds/temp in `var/`, binaries in `bin/`, venvs in
-`*_env/`. That includes third-party stacks: HuggingFace downloads, torch/vLLM
+`*_env/`. That includes third-party stacks: HuggingFace downloads, torch
 compile caches and temp files are pinned in-tree by [`env.sh`](env.sh), which
 every service sources. Reads can come from anywhere (e.g. symlink `Models/` to
 your weight store). The only exceptions are system packages you install
@@ -179,17 +179,3 @@ python3 test_idle_learning.py
 # … see test_*.py
 ```
 
-## Legacy: PersonaPlex mode
-
-The original PersonaPlex/Moshi full-duplex path is retained for reference:
-`personaplex_server.py`, `personaplex_config.json`, `serve.sh`, `persona.txt`,
-and the root `config.json`. It works (with heavy patches: KV-cache user-audio
-injection into slots 9–16, a text-logits hook to speak LLM tokens, 12.5 fps
-output pacing), but PersonaPlex fights forced text tokens, which is why the
-cascade replaced it. Weights: `nvidia/personaplex-7b-v1` into
-`Models/personaplex-7b-v1-raw/`. Its Python stack lives in
-`requirements-personaplex.txt` (installed by `install_personaplex.sh`, never
-by the core installer) — note it needs Python ≤ 3.13; the pinned
-moshi-era packages (sphn/rustymimi) don't build on newer interpreters. If you
-migrated from that era, `rename_env.sh` renames the old `personaplex_env`
-venv in place.

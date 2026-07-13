@@ -1,11 +1,10 @@
 #!/bin/bash
 # Install the Orpheus-on-llama.cpp TTS path (engine "orpheus_gguf").
 #
-# No new venv, no vLLM, no torch: the Orpheus 3B backbone runs as a GGUF on a
+# No new venv, no torch: the Orpheus 3B backbone runs as a GGUF on a
 # plain llama-server (the tts_lm tier), and the SNAC vocoder decodes on the CPU
 # via onnxruntime inside vinkona_env.  Total footprint: one ~3.4 GB GGUF, one
-# ~50 MB ONNX file, one pip wheel — versus the ~6 GB orpheus_env the vLLM path
-# builds.  Works on any Python vinkona_env runs on (no vLLM ≤3.13 pin).
+# ~50 MB ONNX file, one pip wheel.  Works on any Python vinkona_env runs on.
 #
 # What this does:
 #   1. pip install onnxruntime into vinkona_env (+ import verify)
@@ -174,8 +173,8 @@ print("  config: tts.engine = orpheus_gguf")
 PY
            echo "switched — './vinkona.sh restart' starts the tts_lm llama-server + the new engine." ;;
     esac
-elif [ "$current" = "orpheus" ] && [ ! -f orpheus_env/bin/activate ]; then
-    # Non-interactive, and the configured vLLM engine isn't even installed —
+elif [ "$current" = "orpheus" ]; then
+    # Non-interactive, and the configured engine is the retired vLLM one —
     # switching can only fix things, never break a working setup.
     ./vinkona_env/bin/python - <<'PY'
 import json

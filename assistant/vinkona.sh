@@ -32,11 +32,6 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOGS="$DIR/logs"
 
 # name | where (host|box) | command | kill-pattern (box only, to reap orphans on restart)
-# The tts pattern must also match vLLM's detached children — Orpheus runs on vLLM,
-# whose v1 engine forks a separate "VLLM::EngineCore" (+ "VLLM::Worker") process that
-# holds the GPU memory and survives a kill of tts_server.py.  If it isn't reaped, the
-# relaunched TTS can't allocate VRAM and silently fails.  reap_box() also KILLs and
-# waits for the GPU to free, so the patterns just need to find every piece.
 # Stack mode (normal | knowledge), persisted in a one-line control file the web UI can write.
 #   normal     — the full live stack (voice path + Vinkona's own learning).
 #   knowledge  — knowledge-acquisition: live voice path DOWN, TWO big LMs (3090 + 4090) + embed
@@ -57,13 +52,13 @@ read_mode() {
 WATCH_SPECS="${VINKONA_WATCH:-embed:11437:6000}"
 WATCH_INTERVAL="${VINKONA_WATCH_INTERVAL:-20}"
 
-tts_engine() {                             # config tts.engine (default orpheus on any failure)
-  python3 - "$DIR/config/config.json" <<'PY' 2>/dev/null || echo orpheus
+tts_engine() {                             # config tts.engine (default orpheus_gguf on any failure)
+  python3 - "$DIR/config/config.json" <<'PY' 2>/dev/null || echo orpheus_gguf
 import json, sys
 try:
-    print(json.load(open(sys.argv[1])).get("tts", {}).get("engine") or "orpheus")
+    print(json.load(open(sys.argv[1])).get("tts", {}).get("engine") or "orpheus_gguf")
 except Exception:
-    print("orpheus")
+    print("orpheus_gguf")
 PY
 }
 
@@ -83,18 +78,17 @@ set_services() {                           # populate SERVICES for the current m
       "tunnel|host|./serve_tunnel.sh|"
     )
     # The TTS service set depends on the configured engine: orpheus_gguf adds a
-    # host-side llama-server for the Orpheus GGUF (and has no vLLM orphans to
-    # reap); classic orpheus is the vLLM path with its detached EngineCore.
+    # host-side llama-server for the Orpheus GGUF backbone.  Anything else
+    # (including a legacy "orpheus" value from a pre-gguf config) gets
+    # orpheus_gguf — the vLLM engine was retired.
     case "$(tts_engine)" in
-      orpheus_gguf)
+      neutts)
+        SERVICES+=( "tts|box|./serve_tts.sh neutts|tts_server\.py" ) ;;
+      *)
         SERVICES+=(
           "tts_lm|host|./serve_tts_lm.sh|"
           "tts|box|./serve_tts.sh orpheus_gguf|tts_server\.py"
         ) ;;
-      neutts)
-        SERVICES+=( "tts|box|./serve_tts.sh neutts|tts_server\.py" ) ;;
-      *)
-        SERVICES+=( "tts|box|./serve_tts.sh orpheus|tts_server\.py|VLLM::|EngineCore" ) ;;
     esac
     SERVICES+=(
       "cascade|box|./serve_cascade.sh|cascade_server.py"
@@ -105,7 +99,7 @@ set_services() {                           # populate SERVICES for the current m
 }
 
 reap_box() {                               # pattern -> thorough kill INSIDE the box
-  # SIGTERM, wait for processes (incl. detached vLLM workers) to exit and release the
+  # SIGTERM, wait for processes (incl. detached workers) to exit and release the
   # GPU, then SIGKILL any stragglers.  Run for box services so a restart can't collide
   # with an orphan still holding VRAM.
   #
@@ -153,7 +147,7 @@ restart_one() {
     echo "restarting $name"
     tmux kill-window -t "=$SESSION:=$name" 2>/dev/null
     if [ "$where" = "box" ] && [ -n "$killpat" ]; then
-      reap_box "$killpat"                  # reap orphans (incl. vLLM EngineCore) + free VRAM
+      reap_box "$killpat"                  # reap orphans + free VRAM
     fi
     sleep 1
     # shellcheck disable=SC2086
@@ -259,8 +253,8 @@ status() {
 stop() {
   tmux kill-session -t "=$SESSION" 2>/dev/null && echo "killed tmux session '$SESSION'"
   pkill -f 'llm_server\.py|llama-server|serve_tunnel\.sh|8765:127\.0\.0\.1:8765' 2>/dev/null
-  # Reap the box services + vLLM's detached EngineCore/Worker so no GPU memory leaks.
-  reap_box 'tts_server\.py|cascade_server\.py|config_server\.py|research_worker\.py|VLLM::|EngineCore'
+  # Reap the box services so no GPU memory leaks.
+  reap_box 'tts_server\.py|cascade_server\.py|config_server\.py|research_worker\.py'
   # If anything above died holding the pty in a raw state (the old reaper
   # self-kill did exactly this), put the terminal back so typing stays visible.
   [ -t 0 ] && stty sane 2>/dev/null

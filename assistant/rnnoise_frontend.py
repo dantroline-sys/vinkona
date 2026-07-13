@@ -1,12 +1,12 @@
 """
 CPU-side mic front-end: RNNoise denoise + voice-activity probability.
 
-PersonaPlex needs the user stream to fall truly silent between turns, otherwise
-it stays in listen-mode forever (background noise / speaker bleed keeps the
-injected user stream "active").  RNNoise is a tiny GRU denoiser built for VoIP:
-negligible CPU, ~0 added latency, and it returns a speech probability per 10 ms
-frame for free — so one CPU component gives us both clean audio and a reliable
-VAD, leaving the GPU entirely for PersonaPlex and the fast LM.
+Turn-taking needs the user stream to fall truly silent between turns, otherwise
+background noise / speaker bleed keeps the turn "active" and the assistant never
+gets to answer.  RNNoise is a tiny GRU denoiser built for VoIP: negligible CPU,
+~0 added latency, and it returns a speech probability per 10 ms frame for free —
+so one CPU component gives us both clean audio and a reliable VAD, leaving the
+GPU entirely for the LMs and TTS.
 
 RNNoise is hardcoded to 48 kHz / 480-sample frames.  Our pipeline is 24 kHz with
 1920-sample (80 ms) chunks, which maps to exactly 3840 samples = 8 RNNoise frames

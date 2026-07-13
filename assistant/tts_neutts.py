@@ -1,9 +1,8 @@
 """
 NeuTTS Air text-to-speech engine — the controllable "mouth" for the cascade.
 
-Unlike PersonaPlex (a conversational model that fights forced tokens), NeuTTS is a
-true TTS: it says exactly the text it's given, with human-like prosody, and clones
-a voice from a ~3 s reference clip.  On a 4090 it runs ~320x real-time, so a full
+NeuTTS is a true TTS: it says exactly the text it's given, with human-like
+prosody, and clones a voice from a ~3 s reference clip.  On a 4090 it runs ~320x real-time, so a full
 sentence synthesizes in ~10 ms — negligible latency, tiny VRAM, GPU mostly free
 for the LLM.  Output is 24 kHz, matching the client PCM pipeline exactly.
 

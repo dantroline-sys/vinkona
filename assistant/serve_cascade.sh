@@ -1,11 +1,11 @@
 #!/bin/bash
-# Start the cascade voice server (TTS mouth) — the PersonaPlex-free path.
+# Start the cascade voice server (the realtime voice loop).
 #
 # Prereqs, each in its own process (settings from config/config.json):
 #   ./serve_fast_lm.sh           # fast LM   — llama.cpp (GPU 0)
 #   ./serve_big_lm.sh            # big LM    — llama.cpp (GPU 1, optional)
 #   ./serve_embed.sh             # embed LM  — llama.cpp (GPU 0, for memory)
-#   ./serve_tts.sh orpheus       # TTS service (GPU 0)
+#   ./serve_tts.sh orpheus_gguf  # TTS service (see serve_tts_lm.sh)
 #   ./serve_tunnel.sh            # SSH tunnel to the Mac tool host (if tools.tunnel on)
 # Then this, in vinkona_env (rnnoise/soxr/faster-whisper/aiohttp):
 #   ./serve_cascade.sh

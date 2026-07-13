@@ -1,11 +1,9 @@
 #!/bin/bash
 # Install NeuTTS Air into its OWN venv (neutts_env).
 #
-# NeuTTS's dependencies (torch 2.12, numpy 2.2, modern huggingface-hub) are
-# mutually incompatible with moshi-personaplex's pins (torch <2.5, numpy <2.2),
-# so it CANNOT share vinkona_env — installing into it breaks PersonaPlex.
-# We isolate NeuTTS here; at integration it runs as a separate local service the
-# main server calls over HTTP (exactly like the Ollama LLM instances).
+# NeuTTS needs torch; vinkona_env is deliberately torch-free (pure wheels, fast
+# installs), so NeuTTS gets its own venv and runs as a separate local service
+# the main server calls over HTTP (exactly like the local LLM instances).
 #
 # Run INSIDE the distrobox.  The backbone (~748M) downloads from HF on first use.
 set -e

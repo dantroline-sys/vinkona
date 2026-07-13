@@ -1,7 +1,7 @@
 # Core cascade dependencies — pure-Python or well-wheeled packages only.
-# No torch, no Rust builds: the TTS engines carry their own torch in their own
-# venvs (orpheus_env/neutts_env), and the legacy PersonaPlex stack lives in
-# requirements-personaplex.txt (installed by install_personaplex.sh only).
+# No torch, no Rust builds: the neutts TTS engine carries its own torch in its
+# own venv (neutts_env); the orpheus_gguf engine needs no venv at all (llama.cpp
+# backbone + CPU ONNX vocoder).
 #
 # NOTE: these are loose ranges for a fresh install.  For a REPRODUCIBLE deploy,
 # capture the working set on the live box with `pip freeze > requirements.lock`

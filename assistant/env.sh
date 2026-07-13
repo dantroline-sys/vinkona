@@ -2,13 +2,13 @@
 #
 # THE GUARANTEE: everything Vinkona writes stays inside this folder tree.
 # This file is how that's enforced for the third-party stacks we run: model
-# downloads (huggingface_hub / faster-whisper / vLLM), compile caches
+# downloads (huggingface_hub / faster-whisper / torch), compile caches
 # (torch inductor, triton), and temp files are all pinned under ./var.
 #
 # Vinkona's own writes already live in-tree: config/ (live config, personas,
 # memory.db, ws token), logs/, Models/. With this file, so does everything else:
 #
-#   var/cache/     third-party caches (HF hub, torch, vLLM, triton, pip, …)
+#   var/cache/     third-party caches (HF hub, torch, triton, pip, …)
 #   var/tmp/       temp files (TMPDIR)
 #   var/build/     source builds (rnnoise, llama.cpp)
 #   var/rnnoise/   the in-tree librnnoise install prefix
@@ -28,7 +28,6 @@ export VINKONA_VAR="$VINKONA_ROOT/var"
 # Model hubs + ML caches
 export HF_HOME="$VINKONA_VAR/cache/huggingface"
 export TORCH_HOME="$VINKONA_VAR/cache/torch"
-export VLLM_CACHE_ROOT="$VINKONA_VAR/cache/vllm"
 export TRITON_CACHE_DIR="$VINKONA_VAR/cache/triton"
 export TORCHINDUCTOR_CACHE_DIR="$VINKONA_VAR/cache/torchinductor"
 export NUMBA_CACHE_DIR="$VINKONA_VAR/cache/numba"
@@ -36,7 +35,7 @@ export NUMBA_CACHE_DIR="$VINKONA_VAR/cache/numba"
 # Anything that honours XDG (pip's cache, misc libraries)
 export XDG_CACHE_HOME="$VINKONA_VAR/cache"
 
-# Temp files — pip build isolation, vLLM compile scratch, OCR, …
+# Temp files — pip build isolation, compile scratch, OCR, …
 export TMPDIR="$VINKONA_VAR/tmp"
 
 # In-tree binaries (llama-server) take precedence, system PATH still works
@@ -47,7 +46,7 @@ mkdir -p "$VINKONA_VAR/cache" "$VINKONA_VAR/tmp"
 # ── vk_pick_python: newest CPython 3.x on PATH within [min,max] minors ──────
 # Usage:  PY="$(vk_pick_python 10 13 || true)"   # empty if none qualifies
 # Prefers plain python3 when it qualifies (fewest surprises), then scans
-# newest-first. For stacks whose deps cap the interpreter (vLLM/numba).
+# newest-first. For stacks whose deps cap the interpreter version.
 vk_pick_python() {
     local min="$1" max="$2" x m
     if command -v python3 >/dev/null 2>&1; then

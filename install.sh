@@ -6,7 +6,7 @@
 #   ./install.sh                  # interactive: checklist -> pick a task -> repeat
 #   ./install.sh status           # the checklist, nothing else
 #   ./install.sh all              # run every missing task in order
-#   ./install.sh <task>           # one task: assistant-core | tts [orpheus|neutts]
+#   ./install.sh <task>           # one task: assistant-core | tts [orpheus_gguf|neutts]
 #                                 #   | models | llama | vinur
 #   ./install.sh uninstall        # uninstall both components (keeps your data)
 #                 --with-models   #   also delete downloaded weights
@@ -41,7 +41,7 @@ TASKS=(assistant-core tts models llama vinur)
 desc() {
     case "$1" in
         assistant-core) echo "assistant core (vinkona_env: cascade, ASR, memory, research, config UI)" ;;
-        tts)            echo "TTS engine (orpheus_gguf: llama.cpp + SNAC, no venv — recommended; or orpheus/vLLM, neutts)" ;;
+        tts)            echo "TTS engine (orpheus_gguf: llama.cpp + SNAC, no venv — default; or neutts, cloned voice)" ;;
         models)         echo "LM weights (download defaults from HF, or select models you copied in)" ;;
         llama)          echo "llama-server binary (llama.cpp — system PATH or built in-tree)" ;;
         vinur)          if [ -d "$VINUR" ]; then
@@ -87,7 +87,7 @@ installed() {
     case "$1" in
         assistant-core) _venv_has assistant/vinkona_env faster_whisper ;;
         tts)            { _venv_has assistant/vinkona_env onnxruntime && _orpheus_gguf_present; } \
-                        || _venv_has assistant/orpheus_env numpy || _venv_has assistant/neutts_env numpy ;;
+                        || _venv_has assistant/neutts_env numpy ;;
         models)         [ -n "$(find -L assistant/Models -name '*.gguf' -print -quit 2>/dev/null)" ] ;;
         llama)          [ -x assistant/bin/llama-server ] || command -v llama-server >/dev/null 2>&1 ;;
         vinur)          [ -f "$VINUR/.venv/bin/activate" ] ;;   # installer smoke-tests itself
@@ -101,8 +101,7 @@ run_task() {
         tts)
             # The TTS service runs INSIDE the distrobox at serve time, so install it
             # there when the container exists — a venv must be built with the python
-            # that will run it (and for the vLLM engine that also sidesteps a too-new
-            # host interpreter).  orpheus_gguf only adds a wheel + downloads, but the
+            # that will run it.  orpheus_gguf only adds a wheel + downloads, but the
             # wheel goes into vinkona_env, which lives in the container too.
             local box="${VINKONA_BOX:-vinkona-cuda}"
             if command -v distrobox >/dev/null 2>&1 && distrobox list 2>/dev/null | grep -qw "$box"; then
@@ -189,7 +188,7 @@ case "$cmd" in
                         t="${TASKS[$((choice-1))]}"
                         extra=""
                         if [ "$t" = "tts" ]; then
-                            printf "engine [orpheus_gguf] / orpheus (vLLM) / neutts: "; read -r extra
+                            printf "engine [orpheus_gguf] / neutts: "; read -r extra
                         elif [ "$t" = "vinur" ]; then
                             printf "format flags (e.g. --all or --pdf --epub) [none]: "; read -r extra
                         fi

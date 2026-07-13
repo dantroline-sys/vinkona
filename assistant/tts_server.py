@@ -1,20 +1,16 @@
 #!/usr/bin/env python
 """
-TTS HTTP service — wraps one TTS engine (Orpheus on llama.cpp, Orpheus on vLLM,
-or NeuTTS) in the right venv and exposes synthesis over HTTP, so the main server
-(a different venv) can call it like the Ollama LLM instances.  Stdlib-only HTTP
-(no extra deps beyond the engine + soundfile), engine loaded once at startup so
-any warmup is paid a single time.
+TTS HTTP service — wraps one TTS engine (Orpheus on llama.cpp, or NeuTTS) in
+the right venv and exposes synthesis over HTTP, so the main server (a different
+venv) can call it like the local LLM instances.  Stdlib-only HTTP (no extra deps
+beyond the engine + soundfile), engine loaded once at startup so any warmup is
+paid a single time.
 
 Run INSIDE the engine's venv:
 
-  # Orpheus on llama.cpp (vinkona_env) — same voices/tags, no vLLM; needs the
-  # tts_lm llama-server running (serve_tts_lm.sh)
+  # Orpheus on llama.cpp (vinkona_env) — preset voices + inline <laugh>/<sigh>
+  # tags; needs the tts_lm llama-server running (serve_tts_lm.sh)
   python tts_server.py --engine orpheus_gguf
-
-  # Orpheus on vLLM (orpheus_env) — preset voices + inline <laugh>/<sigh> tags
-  CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=1 \
-      python tts_server.py --engine orpheus --voice tara --port 11436
 
   # NeuTTS (neutts_env) — cloned voice from a reference clip
   CUDA_VISIBLE_DEVICES=0 python tts_server.py --engine neutts \
@@ -54,15 +50,6 @@ def build_engine(engine: str, cfg: dict, device: str):
             raise SystemExit("config tts.neutts.ref_wav is required for the neutts engine")
         eng.register_voice(tts["default_voice"], ref, ref_text=nt.get("ref_text"))
         return eng
-    if engine == "orpheus":
-        from tts_orpheus import OrpheusEngine
-        orp = tts["orpheus"]
-        return OrpheusEngine(model_name=orp["model"],
-                             default_voice=tts["default_voice"],
-                             max_model_len=orp["max_model_len"],
-                             gpu_memory_utilization=orp["gpu_memory_utilization"],
-                             enforce_eager=orp["enforce_eager"],
-                             max_tokens=orp.get("max_tokens"))
     if engine == "orpheus_gguf":
         from tts_orpheus_gguf import OrpheusGGUFEngine
         og = tts["orpheus_gguf"]

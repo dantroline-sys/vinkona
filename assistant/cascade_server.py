@@ -1,13 +1,13 @@
 #!/usr/bin/env python
 """
-Cascade voice server — the TTS-mouth alternative to PersonaPlex.
+Cascade voice server — Vinkona's realtime voice loop.
 
 Flow:  mic PCM → RNNoise → VAD → faster-whisper ASR → user text
        → LLM bridge (fast LM) → response sentences
        → TTS HTTP service → 24 kHz PCM → client
 
-Speaks the same WebSocket protocol as moshi.server so the existing Flutter client
-works unchanged:
+WebSocket protocol (kept wire-compatible with the client's original server, so
+the Flutter client works unchanged):
   server→client : 0x00 handshake | 0x02 JSON bubble {role,text} | 0x03 float32 PCM
   client→server : 0x03 float32 PCM (mic) | 0x04 JSON {text} (typed, text mode)
 
@@ -17,7 +17,7 @@ in the config web UI take effect on the next call without a restart.  Structural
 bits (ports, SSL, the ASR model) are read once at startup.
 
 Standalone: reuses the project's own modules (rnnoise_frontend, asr, llm_bridge,
-config) but never imports moshi/torch.  TTS runs as a separate HTTP service.
+config); no torch in-process.  TTS runs as a separate HTTP service.
 
   python cascade_server.py --config config/config.json
 """

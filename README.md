@@ -89,8 +89,8 @@ Three composable systems (see
 
 ## Design principles
 
-- **Local and private.** All models run locally (llama.cpp, faster-whisper,
-  vLLM). The only outbound traffic is explicit, keyless research fetches
+- **Local and private.** All models run locally (llama.cpp, faster-whisper).
+  The only outbound traffic is explicit, keyless research fetches
   (Wikipedia, OpenAlex, PubMed, …) — and outbound queries pass a privacy filter
   that masks emails, phone numbers, and known private names first.
 - **Personal content is firewalled.** Your memory database, live config,

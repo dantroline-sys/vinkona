@@ -1,5 +1,5 @@
 """
-Two-tier local LLM bridge for the cascade (also drives the legacy PersonaPlex path).
+Two-tier local LLM bridge for the cascade.
 
 LMs are llama.cpp llama-server processes spoken to over the OpenAI-compatible API
 (/v1/chat/completions, streaming SSE).
@@ -16,11 +16,8 @@ Big LM   (background, GPU 1 / 3090, dedicated)
     is injected into the fast LM's next system message so it can give richer,
     more contextually accurate answers without needing its own long context.
 
-Output modes
-    speak_sink   — cascade (TTS): each complete sentence is handed to speak_sink.
-    inject (legacy) — PersonaPlex: SentencePiece token IDs pushed into
-                   ServerState.text_inject_queue; a logit hook forces the model
-                   to emit them verbatim.  user_turn_queue feeds in user speech.
+Output: each complete sentence is handed to ``speak_sink`` (the cascade's TTS
+feed; the text-chat path passes a sink that emits text frames instead).
 """
 
 import asyncio
@@ -142,7 +139,7 @@ class _ThinkStripper:
         return out
 
 
-# ── Simple logger (mirrors moshi.client_utils.log format) ────────────────────
+# ── Simple logger (compact colourised one-liners) ────────────────────────────
 
 def _log(level: str, msg: str) -> None:
     ts = time.strftime("%H:%M:%S")
@@ -601,8 +598,8 @@ class LLMBridge:
         self.latitude = latitude
         self.longitude = longitude
         self.holidays_country = holidays_country
-        # Cascade (TTS) mode: when set, the bridge calls speak_sink(sentence) for
-        # each complete sentence instead of injecting tokens into PersonaPlex.
+        # Output sink: the bridge calls speak_sink(sentence) for each complete
+        # sentence (TTS on the voice path; a text-frame emitter in text chat).
         self.speak_sink = speak_sink
         # Memory hooks (optional): recall_hook(user_text) -> a text block to add to
         # the system prompt; log_hook(role, text) records the turn for reflection.
@@ -704,8 +701,7 @@ class LLMBridge:
         # A staged change to self canon awaiting the user's yes/no (local, not a host write).
         self._pending_identity: tp.Optional[dict] = None
         # Spoken on connect so the AI establishes its (fixed) identity before the
-        # user says anything — otherwise PersonaPlex free-runs a random persona
-        # until the first answer.  Set to "" to disable.
+        # user says anything.  Set to "" to disable.
         self.greeting = DEFAULT_GREETING if greeting is None else greeting
         # Static voice exemplars (persona-authored): a couple of short "this is how you
         # sound" exchanges, injected in the cached static band — high-leverage for a small
@@ -1016,8 +1012,7 @@ class LLMBridge:
             # pay the cold-start model-load cost (seconds on the first call).  Runs
             # concurrently while the user hears the greeting and starts talking.
             self._warmup_task = asyncio.create_task(self._warmup_fast_lm())
-            # Greet on connect so the AI speaks as its configured persona right
-            # away, rather than free-running a random PersonaPlex identity.
+            # Greet on connect so the AI speaks as its configured persona right away.
             if self.greeting:
                 _log("info", f"greeting: '{self.greeting}'")
                 self._trace("greeting", text=self.greeting)
@@ -1046,7 +1041,7 @@ class LLMBridge:
     # ── Turn handling ─────────────────────────────────────────────────────────
 
     async def _handle_turn(self, user_text: str) -> None:
-        """Query the fast LM and speak its response (TTS) or inject it (PersonaPlex)."""
+        """Query the fast LM and speak its response."""
         self.history.append({"role": "user", "content": user_text})
         self._turn_tool_calls = []                  # reset per turn, for trace capture
         if self.log_hook:
@@ -1197,10 +1192,7 @@ class LLMBridge:
                     tools_offered=[t.get("function", {}).get("name", "?") for t in tools])
 
         self._first_token_ms = None
-        if self.speak_sink is not None:
-            response_text = await self._run_turn(messages, tools)
-        else:
-            response_text = await self._stream_to_inject(messages)
+        response_text = await self._run_turn(messages, tools)
         _log("info", f"fast LM complete: '{response_text[:120]}'")
         self._trace("fast_reply", model=self.fast_model, text=response_text,
                     first_token_ms=self._first_token_ms)
@@ -1259,11 +1251,8 @@ class LLMBridge:
             self._big_lm_task = asyncio.create_task(self._update_big_lm_briefing())
 
     async def _emit(self, text: str) -> None:
-        """Speak a fixed line (e.g. the greeting) via whichever output mode is active."""
-        if self.speak_sink is not None:
-            await self.speak_sink(text)
-        else:
-            await self._inject_text(text)
+        """Speak a fixed line (e.g. the greeting) via the output sink."""
+        await self.speak_sink(text)
 
     async def _stream_to_tts(self, messages: list[dict],
                              tools: tp.Optional[list] = None) -> tuple[str, list]:
@@ -1855,35 +1844,6 @@ class LLMBridge:
             self.log_hook("assistant", msg)
         return True
 
-    async def _stream_to_inject(self, messages: list[dict]) -> str:
-        """PersonaPlex mode: stream the LM and inject on whole-word boundaries.
-
-        The LM streams arbitrary fragments; SentencePiece must tokenise complete
-        words, or partial fragments re-encode into wrong/duplicated tokens (heard
-        as "every single every single", "I 'm").  We buffer until whitespace and
-        inject up to the last space, keeping the partial remainder.
-        """
-        parts: list[str] = []
-        word_buf = ""
-        t0 = time.monotonic()
-        first = True
-        async for chunk in self._stream_chat(
-            self.fast_url, self.fast_model, messages, self.FAST_MAX_TOKENS
-        ):
-            if first:
-                self._first_token_ms = (time.monotonic() - t0) * 1000
-                _log("info", f"fast LM first token in {self._first_token_ms:.0f} ms")
-                first = False
-            parts.append(chunk)
-            word_buf += chunk
-            cut = word_buf.rfind(" ")
-            if cut >= 0:
-                await self._inject_text(word_buf[:cut + 1])
-                word_buf = word_buf[cut + 1:]
-        if word_buf.strip():
-            await self._inject_text(word_buf)
-        return "".join(parts).strip()
-
     async def _warmup_fast_lm(self) -> None:
         """Fire a throwaway 1-token request so llama-server loads the model into VRAM."""
         try:
@@ -1895,22 +1855,6 @@ class LLMBridge:
             _log("info", "fast LM warmed")
         except Exception as exc:
             _log("warning", f"fast LM warmup failed: {exc}")
-
-    # ── Text token injection ──────────────────────────────────────────────────
-
-    async def _inject_text(self, text: str) -> None:
-        """
-        Tokenise text with PersonaPlex's own SentencePiece model and push each
-        token ID into text_inject_queue.  The logit hook in lm_gen._step() will
-        force the model to emit those tokens instead of sampling freely.
-        """
-        if not text:
-            return
-        token_ids: list[int] = self.state.text_tokenizer.encode(text)
-        for tid in token_ids:
-            # put() instead of put_nowait() so we back-pressure naturally if
-            # the LM is generating much faster than real-time audio frames.
-            await self.state.text_inject_queue.put(tid)
 
     # ── Deliberate: hand a hard turn to the big LM, with latency ──────────────
 

@@ -115,20 +115,13 @@
     "host": "127.0.0.1",
     "port": 11436,
     "url": "http://127.0.0.1:11436",
-    "engine": "orpheus",
+    "engine": "orpheus_gguf",
     "default_voice": "tara",
     "trim_silence": true,
     "silence_threshold": 0.01,
     "tail_keep_ms": 160,
     "sentence_gap_ms": 80,
     "max_tts_chars": 240,
-    "orpheus": {
-      "model": "canopylabs/orpheus-tts-0.1-finetune-prod",
-      "max_model_len": 2048,
-      "gpu_memory_utilization": 0.4,
-      "enforce_eager": false,
-      "max_tokens": null
-    },
     "orpheus_gguf": {
       "lm_url": null,
       "temperature": 0.6,

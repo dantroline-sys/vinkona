@@ -8,8 +8,7 @@
 #
 # Usage:
 #   ./install.sh                   # core: vinkona_env + cascade/ASR/memory deps + rnnoise
-#   ./install.sh tts orpheus_gguf  # Orpheus on llama.cpp (no venv: GGUF + SNAC ONNX — lightest)
-#   ./install.sh tts orpheus       # Orpheus TTS in its own venv (vLLM; needs CUDA)
+#   ./install.sh tts orpheus_gguf  # Orpheus on llama.cpp (no venv: GGUF + SNAC ONNX)
 #   ./install.sh tts neutts        # NeuTTS in its own venv
 #   ./install.sh models            # download the default GGUFs into Models/
 #   ./install.sh llama             # build llama.cpp's llama-server into ./bin
@@ -19,7 +18,7 @@
 #                 --with-models    #   also delete downloaded weights in Models/
 #                 --purge          #   ALSO delete user data (config/, logs/) — asks first
 #
-# Components are also standalone scripts (install_asr.sh, install_orpheus.sh,
+# Components are also standalone scripts (install_asr.sh, install_orpheus_gguf.sh,
 # install_rnnoise.sh, fetch_models.sh, …) — this orchestrates them in the right
 # order. Re-running any step is safe and incremental.
 set -euo pipefail
@@ -72,7 +71,7 @@ step_core() {
         rm -rf vinkona_env
         "$py" -m venv vinkona_env || die "venv creation failed — install python3-venv / python3-virtualenv first"
     fi
-    say "core: python dependencies (requirements.txt — cascade only, no torch; TTS venvs and the legacy PersonaPlex stack carry their own)"
+    say "core: python dependencies (requirements.txt — cascade only, no torch; the neutts TTS venv carries its own)"
     ./vinkona_env/bin/pip install --upgrade pip -q
     local torch_idx; torch_idx="$(detect_torch_index)"
     if [ -n "$torch_idx" ]; then
@@ -99,12 +98,13 @@ step_core() {
 }
 
 step_tts() {
-    local engine="${1:-orpheus}"
+    local engine="${1:-orpheus_gguf}"
     case "$engine" in
         orpheus_gguf) bash install_orpheus_gguf.sh ;;
-        orpheus)      bash install_orpheus.sh ;;
+        orpheus)      say "engine 'orpheus' (vLLM) was retired — installing orpheus_gguf"
+                      bash install_orpheus_gguf.sh ;;
         neutts)       bash install_tts.sh ;;
-        *) die "unknown TTS engine: $engine (orpheus_gguf|orpheus|neutts)" ;;
+        *) die "unknown TTS engine: $engine (orpheus_gguf|neutts)" ;;
     esac
 }
 
@@ -322,7 +322,9 @@ step_status() {
     cuda="$(driver_cuda)"; idx="$(detect_torch_index)"
     echo "  gpu       driver CUDA: ${cuda:-none detected} → torch wheels: ${idx:-PyPI default} (override: TORCH_CUDA=cuXXX|cpu)"
     local d
-    for d in vinkona_env orpheus_env neutts_env personaplex_env; do
+    # orpheus_env/personaplex_env are retired names, still listed so an old
+    # install shows up in status and gets cleaned by uninstall.
+    for d in vinkona_env neutts_env orpheus_env personaplex_env; do
         [ -d "$d" ] && echo "  venv      $d  ($(du -sh "$d" 2>/dev/null | cut -f1))"
     done
     [ -x bin/llama-server ] && echo "  binary    bin/llama-server" || {

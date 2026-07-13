@@ -1,5 +1,5 @@
 #!/bin/bash
-# Install faster-whisper (CPU ASR) into the personaplex venv.
+# Install faster-whisper (CPU ASR) into vinkona_env.
 # Run INSIDE the distrobox.  CTranslate2 ships CPU wheels — no compiler needed.
 # The model itself (e.g. base.en ~140 MB) downloads from HuggingFace on first use.
 set -e
