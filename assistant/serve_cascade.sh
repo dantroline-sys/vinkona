@@ -15,8 +15,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/env.sh"          # in-tree caches/tmp/PATH — see env.sh
 source "$SCRIPT_DIR/vinkona_env/bin/activate"
 
-# Real libcuda for faster-whisper / ctranslate2 CUDA, same as serve.sh.
-export LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+# Real libcuda for faster-whisper / ctranslate2 CUDA — the Debian/Ubuntu
+# container library path; skipped where it doesn't exist (macOS, Fedora host).
+[ -d /usr/lib/x86_64-linux-gnu ] \
+    && export LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
 
 cd "$SCRIPT_DIR"
 exec python cascade_server.py --config "$SCRIPT_DIR/config/config.json"

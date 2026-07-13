@@ -75,13 +75,16 @@ vk_uv() {
 
 # ── vk_require_tools: check for system tools, offer to install the missing ──
 # Usage:   vk_require_tools gcc make "libtoolize:libtool" "g++:gcc-c++|g++" || exit 1
-# Spec:    tool[:package] — package may be "dnfname|aptname" where they differ.
-# Interactive shells get a [Y/n] offer to run sudo dnf/apt themselves;
+# Spec:    tool[:package] — package may be "dnfname|aptname|brewname" where they
+#          differ; a spec with fewer alternatives falls back to the first name.
+# Interactive shells get a [Y/n] offer to run the package manager themselves
+# (sudo dnf/apt/…; Homebrew on macOS runs WITHOUT sudo — it refuses root);
 # non-interactive shells get the exact command printed and a non-zero return.
 vk_require_tools() {
-    local mgr="" pick=1 spec tool pkg missing=() pkgs=()
+    local mgr="" pick=1 sudo_cmd="sudo" spec tool pkg a1 a2 a3 missing=() pkgs=()
     if command -v dnf >/dev/null 2>&1;      then mgr="dnf install -y"
     elif command -v apt-get >/dev/null 2>&1; then mgr="apt-get install -y"; pick=2
+    elif command -v brew >/dev/null 2>&1;    then mgr="brew install"; pick=3; sudo_cmd=""
     elif command -v pacman >/dev/null 2>&1;  then mgr="pacman -S --needed --noconfirm"
     elif command -v zypper >/dev/null 2>&1;  then mgr="zypper install -y"
     fi
@@ -89,7 +92,12 @@ vk_require_tools() {
         tool="${spec%%:*}"
         command -v "$tool" >/dev/null 2>&1 && continue
         pkg="${spec#*:}"; [ "$pkg" = "$spec" ] && pkg="$tool"
-        if [ "$pick" -eq 2 ]; then pkg="${pkg##*|}"; else pkg="${pkg%%|*}"; fi
+        IFS='|' read -r a1 a2 a3 <<<"$pkg"
+        case "$pick" in
+            2) pkg="${a2:-$a1}" ;;
+            3) pkg="${a3:-$a1}" ;;
+            *) pkg="$a1" ;;
+        esac
         missing+=("$tool"); pkgs+=("$pkg")
     done
     [ "${#missing[@]}" -eq 0 ] && return 0
@@ -99,13 +107,13 @@ vk_require_tools() {
         return 1
     fi
     if [ -t 0 ] || [ "${VINKONA_ASSUME_TTY:-}" = 1 ]; then
-        printf "Install now with 'sudo %s %s'? [Y/n]: " "$mgr" "${pkgs[*]}"
+        printf "Install now with '%s%s %s'? [Y/n]: " "${sudo_cmd:+$sudo_cmd }" "$mgr" "${pkgs[*]}"
         local answer; read -r answer
         case "$answer" in
             n*|N*) echo "Skipped — install them and re-run."; return 1 ;;
         esac
         # shellcheck disable=SC2086
-        sudo $mgr "${pkgs[@]}" || { echo "Package install failed — install manually, then re-run."; return 1; }
+        $sudo_cmd $mgr "${pkgs[@]}" || { echo "Package install failed — install manually, then re-run."; return 1; }
         hash -r
         local t
         for t in "${missing[@]}"; do
@@ -114,9 +122,12 @@ vk_require_tools() {
         echo "System tools installed."
         return 0
     fi
-    echo "Non-interactive shell — run:  sudo $mgr ${pkgs[*]}   then re-run this script."
+    echo "Non-interactive shell — run:  ${sudo_cmd:+$sudo_cmd }$mgr ${pkgs[*]}   then re-run this script."
     return 1
 }
+
+# ── vk_ncpu: portable CPU count for make -j (nproc is Linux-only) ────────────
+vk_ncpu() { nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4; }
 
 # ── vk_hf_download: fetch one file from the HuggingFace hub ──────────────────
 # Usage: vk_hf_download <repo> <file> <dest-dir>
@@ -134,7 +145,7 @@ try:
     from huggingface_hub import hf_hub_download
 except ImportError:
     sys.exit("huggingface_hub is not installed — run './install.sh core' first "
-             "(it goes into vinkona_env), or: pip install huggingface_hub")
+             "(it goes into vinkona_env)")
 repo, filename, dest = sys.argv[1:4]
 path = hf_hub_download(repo_id=repo, filename=filename, local_dir=dest)
 print(f"  -> {path}")

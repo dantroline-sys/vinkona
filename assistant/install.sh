@@ -183,11 +183,20 @@ step_llama() {
         ok "llama-server already on PATH: $(command -v llama-server) — skipping build (run './install.sh llama --force' to build in-tree anyway)"
         [ "${1:-}" = "--force" ] || return 0
     fi
-    vk_require_tools git cmake gcc "g++:gcc-c++|g++" make \
-        || die "building llama.cpp needs the C++ toolchain + cmake (see above)"
+    if [ "$(uname -s)" = Darwin ]; then
+        # clang + make ship with the Xcode Command Line Tools; llama.cpp turns
+        # Metal on by default on Apple hardware — no GPU probing needed.
+        command -v cc >/dev/null 2>&1 \
+            || die "no C compiler — install the Xcode Command Line Tools first:  xcode-select --install"
+        vk_require_tools git cmake || die "building llama.cpp needs git + cmake (see above)"
+    else
+        vk_require_tools git cmake gcc "g++:gcc-c++|g++" make \
+            || die "building llama.cpp needs the C++ toolchain + cmake (see above)"
+    fi
 
     # CUDA needs TWO things: the driver (nvidia-smi, to run) and the toolkit's
     # nvcc (to build). A bare /usr/local/cuda directory proves neither.
+    # (On macOS driver_cuda is empty, so this whole block self-skips.)
     local cuda_flag="-DGGML_CUDA=OFF" nvcc=""
     if [ -n "$(driver_cuda)" ]; then
         nvcc="$(resolve_nvcc)"
@@ -282,7 +291,7 @@ step_llama() {
     cmake -S "$src" -B "$src/build" $cuda_flag ${nvcc:+-DCMAKE_CUDA_COMPILER="$nvcc"} \
           ${ccbin:+-DCMAKE_CUDA_HOST_COMPILER="$ccbin"} ${cuda_extra:+-DCMAKE_CUDA_FLAGS="$cuda_extra"} \
           -DBUILD_SHARED_LIBS=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=ON >/dev/null
-    cmake --build "$src/build" --target llama-server -j"$(nproc)"
+    cmake --build "$src/build" --target llama-server -j"$(vk_ncpu)"
     mkdir -p bin
     cp "$src/build/bin/llama-server" bin/
     ok "installed bin/llama-server (env.sh puts ./bin on PATH for all Vinkona services)"
@@ -290,9 +299,13 @@ step_llama() {
 
 step_status() {
     echo "Vinkona assistant @ $SCRIPT_DIR"
-    local cuda
-    cuda="$(driver_cuda)"
-    echo "  gpu       driver CUDA: ${cuda:-none detected}"
+    if [ "$(uname -s)" = Darwin ]; then
+        echo "  gpu       Apple Metal (llama.cpp uses it by default)"
+    else
+        local cuda
+        cuda="$(driver_cuda)"
+        echo "  gpu       driver CUDA: ${cuda:-none detected}"
+    fi
     local d
     # orpheus_env/personaplex_env are retired names, still listed so an old
     # install shows up in status and gets cleaned by uninstall.

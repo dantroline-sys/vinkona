@@ -1,11 +1,14 @@
 #!/bin/bash
 # One command to run the whole Vinkona stack in a tmux session.
 #
-# Split: the LM services (llama.cpp) run on the Fedora HOST; the Python services +
-# TTS run inside the distrobox container.  This script (run ON THE HOST) launches
-# host services directly and container services via `distrobox enter`, one tmux
-# window each.  Host and container share the network (localhost), so the ports line
-# up across both.
+# Placement: on Linux+NVIDIA setups the LM services (llama.cpp) run on the HOST
+# and the Python services + TTS run inside a distrobox container (its image
+# carries the CUDA userland).  This script (run ON THE HOST) launches host
+# services directly and container services via `distrobox enter`, one tmux
+# window each; host and container share the network (localhost), so the ports
+# line up.  Without a usable container — macOS, or a single-environment Linux
+# box — every service simply runs on the host: 'box' placements degrade to
+# 'host' automatically.
 #
 # Each service's output is also written to logs/<name>.log (shared filesystem), so
 # the config web UI can tail it and trigger restarts (a "monitor" window watches
@@ -30,6 +33,20 @@ SESSION="vinkona"
 BOX="${VINKONA_BOX:-vinkona-cuda}"
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOGS="$DIR/logs"
+
+# Is the container actually usable?  Checked once, cached: 'box' services fall
+# back to the host when it isn't (macOS, or Linux without distrobox).
+BOX_OK=""
+box_ok() {
+  if [ -z "$BOX_OK" ]; then
+    if command -v distrobox >/dev/null 2>&1 && distrobox list 2>/dev/null | grep -qw "$BOX"; then
+      BOX_OK=1
+    else
+      BOX_OK=0
+    fi
+  fi
+  [ "$BOX_OK" = 1 ]
+}
 
 # name | where (host|box) | command | kill-pattern (box only, to reap orphans on restart)
 # Stack mode (normal | knowledge), persisted in a one-line control file the web UI can write.
@@ -98,10 +115,11 @@ set_services() {                           # populate SERVICES for the current m
   fi
 }
 
-reap_box() {                               # pattern -> thorough kill INSIDE the box
+reap_box() {                               # pattern -> thorough kill of 'box' services
   # SIGTERM, wait for processes (incl. detached workers) to exit and release the
   # GPU, then SIGKILL any stragglers.  Run for box services so a restart can't collide
-  # with an orphan still holding VRAM.
+  # with an orphan still holding VRAM.  Runs inside the container when there is
+  # one, directly on the host otherwise (same processes, different home).
   #
   # The pattern must never match its own text: distrobox wraps the command in
   # intermediate shells whose cmdlines contain everything we pass (env vars
@@ -111,22 +129,29 @@ reap_box() {                               # pattern -> thorough kill INSIDE the
   # bracket the first character of every alternation branch — '[t]ts_server'
   # still matches tts_server processes, but the literal text '[t]ts_server'
   # can never match the regex '[t]ts_server'.
-  local pat safe
+  local pat safe i
   pat="$1"
   safe="$(printf '%s' "$pat" | sed -E 's/(^|\|)(.)/\1[\2]/g')"
-  distrobox enter "$BOX" -- env VK_REAP_PAT="$safe" bash -lc '
-    pkill -TERM -f "$VK_REAP_PAT" 2>/dev/null
-    for i in 1 2 3 4 5 6 7 8; do pgrep -f "$VK_REAP_PAT" >/dev/null 2>&1 || break; sleep 1; done
-    pkill -KILL -f "$VK_REAP_PAT" 2>/dev/null
+  if box_ok; then
+    distrobox enter "$BOX" -- env VK_REAP_PAT="$safe" bash -lc '
+      pkill -TERM -f "$VK_REAP_PAT" 2>/dev/null
+      for i in 1 2 3 4 5 6 7 8; do pgrep -f "$VK_REAP_PAT" >/dev/null 2>&1 || break; sleep 1; done
+      pkill -KILL -f "$VK_REAP_PAT" 2>/dev/null
+      true
+    ' 2>/dev/null
+  else
+    pkill -TERM -f "$safe" 2>/dev/null
+    for i in 1 2 3 4 5 6 7 8; do pgrep -f "$safe" >/dev/null 2>&1 || break; sleep 1; done
+    pkill -KILL -f "$safe" 2>/dev/null
     true
-  ' 2>/dev/null
+  fi
 }
 
 pane_cmd() {                               # name where command... -> the shell line for the pane
   local name="$1" where="$2"; shift 2
   local log="$LOGS/$name.log"
   local inner="cd $(printf %q "$DIR") && $* 2>&1 | tee $(printf %q "$log")"
-  if [ "$where" = "box" ]; then
+  if [ "$where" = "box" ] && box_ok; then
     printf 'distrobox enter %q -- bash -lc %q' "$BOX" "$inner"
   else
     printf '%s' "$inner"
@@ -176,9 +201,13 @@ start() {
   # simultaneous `distrobox enter` calls at a stopped container races its cold
   # boot, and whichever service loses (often the cascade) dies on first start.
   if printf '%s\n' "${SERVICES[@]}" | grep -q '|box|'; then
-    echo "waking the container ($BOX) ..."
-    distrobox enter "$BOX" -- true 2>/dev/null \
-      || echo "warning: couldn't enter container '$BOX' — box services will fail (create it, or VINKONA_BOX=name ./vinkona.sh start)"
+    if box_ok; then
+      echo "waking the container ($BOX) ..."
+      distrobox enter "$BOX" -- true 2>/dev/null \
+        || echo "warning: couldn't enter container '$BOX' — box services will fail (create it, or VINKONA_BOX=name ./vinkona.sh start)"
+    else
+      echo "no container '$BOX' — running every service on the host (set VINKONA_BOX=name if you have one)"
+    fi
   fi
   local first=1 s name where cmd killpat
   for s in "${SERVICES[@]}"; do
@@ -230,8 +259,13 @@ svc_check() {   # service name -> one-line state
     tts)      _port 11436 ;;
     cascade)  _port 8998 ;;
     config)   _port 8090 ;;
-    research) if distrobox enter "$BOX" -- pgrep -f '[r]esearch_worker\.py' >/dev/null 2>&1; then
-                echo "up            (process)"; else echo "not running"; fi ;;
+    research) if box_ok; then
+                distrobox enter "$BOX" -- pgrep -f '[r]esearch_worker\.py' >/dev/null 2>&1 \
+                  && echo "up            (process)" || echo "not running"
+              else
+                pgrep -f '[r]esearch_worker\.py' >/dev/null 2>&1 \
+                  && echo "up            (process)" || echo "not running"
+              fi ;;
     tunnel)   if pgrep -f '[s]erve_tunnel\.sh|8765:127\.0\.0\.1:8765' >/dev/null 2>&1; then
                 echo "up            (process)"; else echo "not running   (fine if tools.tunnel is off)"; fi ;;
     *)        echo "?" ;;
@@ -271,9 +305,16 @@ monitor() {                                # internal: watch for restart request
       svc="$(basename "$f" .req)"; rm -f "$f"
       if [ "$svc" = "__restart__" ]; then
         echo "[monitor] full restart (mode → $(read_mode)) requested"
-        # A full restart kills this very session (and the monitor), so run it DETACHED.
-        setsid bash -c "cd $(printf %q "$DIR") && VINKONA_BOX=$(printf %q "$BOX") ./vinkona.sh restart" \
-          >>"$LOGS/_restart.log" 2>&1 </dev/null &
+        # A full restart kills this very session (and the monitor), so run it
+        # DETACHED. setsid detaches hardest; macOS doesn't have it, and there
+        # nohup + disown is enough to survive the session kill.
+        if command -v setsid >/dev/null 2>&1; then
+          setsid bash -c "cd $(printf %q "$DIR") && VINKONA_BOX=$(printf %q "$BOX") ./vinkona.sh restart" \
+            >>"$LOGS/_restart.log" 2>&1 </dev/null &
+        else
+          nohup bash -c "cd $(printf %q "$DIR") && VINKONA_BOX=$(printf %q "$BOX") ./vinkona.sh restart" \
+            >>"$LOGS/_restart.log" 2>&1 </dev/null &
+        fi
         disown 2>/dev/null || true
         continue
       fi

@@ -167,7 +167,8 @@ def main():
     ap.add_argument("--config", default="config/config.json")
     ap.add_argument("--engine", choices=["neutts", "orpheus", "orpheus_gguf"], default=None,
                     help="override config tts.engine (also selects which venv's deps to load)")
-    ap.add_argument("--device", default="cuda")
+    ap.add_argument("--device", default="auto",
+                    help="auto (cuda > mps > cpu), or an explicit torch device")
     args = ap.parse_args()
 
     # Load config.py from the repo root (works in any engine venv).

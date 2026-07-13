@@ -39,7 +39,7 @@ def main():
     ap.add_argument("--engine", choices=["neutts"], default="neutts")
     ap.add_argument("--text", default="Hello, this is a test of the text to speech voice.")
     ap.add_argument("--out", default="/tmp/tts_test.wav")
-    ap.add_argument("--device", default="cuda", help="cuda or cpu (neutts)")
+    ap.add_argument("--device", default="auto", help="auto (cuda > mps > cpu), or explicit (neutts)")
     ap.add_argument("--backbone", default=None, help="override the model repo/name")
     # NeuTTS-specific
     ap.add_argument("--ref", default=None, help="[neutts] reference voice WAV (~3-10 s)")

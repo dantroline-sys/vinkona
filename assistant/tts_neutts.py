@@ -10,7 +10,8 @@ A "voice" is a reference WAV + its transcript, encoded once at registration.  Th
 lines up with the persona system: each persona can carry its own cloned voice.
 
 Usage:
-    eng = NeuTTSEngine(device="cuda")          # raises if neutts isn't installed
+    eng = NeuTTSEngine()                       # raises if neutts isn't installed;
+                                               # device="auto" -> cuda > mps > cpu
     eng.register_voice("vinkona", "voices/vinkona.wav")   # reads voices/vinkona.txt
     pcm = eng.synthesize("Hello there.", voice="vinkona")  # float32 @ 24 kHz
 
@@ -26,15 +27,30 @@ import numpy as np
 SAMPLE_RATE = 24000
 
 
+def _resolve_device(device: str) -> str:
+    """'auto' -> the best available torch backend: cuda > mps (Apple) > cpu.
+    Explicit values pass through untouched."""
+    if device != "auto":
+        return device
+    import torch
+    if torch.cuda.is_available():
+        return "cuda"
+    mps = getattr(torch.backends, "mps", None)
+    if mps is not None and mps.is_available():
+        return "mps"
+    return "cpu"
+
+
 class NeuTTSEngine:
     def __init__(
         self,
         backbone_repo: str = "neuphonic/neutts-air",
         codec_repo: str = "neuphonic/neucodec",
-        device: str = "cuda",
+        device: str = "auto",
         codec_device: tp.Optional[str] = None,
     ):
         from neutts import NeuTTS  # raises ImportError if not installed
+        device = _resolve_device(device)
         self._tts = NeuTTS(
             backbone_repo=backbone_repo,
             backbone_device=device,

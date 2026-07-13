@@ -22,6 +22,7 @@ Usage:
 import ctypes
 import os
 import pathlib
+import sys
 import numpy as np
 
 try:
@@ -50,17 +51,18 @@ def _fit(x: np.ndarray, n: int) -> np.ndarray:
 
 def _find_librnnoise() -> str:
     """The in-tree install (install_rnnoise.sh → var/rnnoise/lib) wins; the
-    VINKONA_RNNOISE_LIB env var overrides; a system-wide librnnoise.so is the
-    fallback so a distro package still works."""
+    VINKONA_RNNOISE_LIB env var overrides; a system-wide librnnoise is the
+    fallback so a distro/brew package still works."""
     override = os.environ.get("VINKONA_RNNOISE_LIB")
     if override:
         return override
+    suffix = ".dylib" if sys.platform == "darwin" else ".so"
     here = pathlib.Path(__file__).resolve().parent
-    for candidate in (here / "var" / "rnnoise" / "lib" / "librnnoise.so",
-                      here / "var" / "rnnoise" / "lib64" / "librnnoise.so"):
+    for candidate in (here / "var" / "rnnoise" / "lib" / f"librnnoise{suffix}",
+                      here / "var" / "rnnoise" / "lib64" / f"librnnoise{suffix}"):
         if candidate.exists():
             return str(candidate)
-    return "librnnoise.so"
+    return f"librnnoise{suffix}"
 
 
 class RNNoiseFrontend:

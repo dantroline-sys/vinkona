@@ -1,10 +1,11 @@
 #!/bin/bash
-# Build librnnoise (xiph/rnnoise) + install the soxr resampler — entirely in-tree.
+# Build librnnoise (xiph/rnnoise) — entirely in-tree.
 #
 # The library is built in var/build/rnnoise and installed to var/rnnoise (no
-# sudo, nothing under /usr/local). rnnoise_frontend.py looks there first, so no
-# linker configuration is needed. Run INSIDE the distrobox where the cascade
-# executes (it needs the C toolchain and the vinkona_env venv).
+# sudo, nothing under /usr/local). rnnoise_frontend.py looks there first (.so
+# on Linux, .dylib on macOS), so no linker configuration is needed. On
+# container setups run INSIDE the distrobox where the cascade executes; on
+# macOS or a plain host, run it directly.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -13,10 +14,19 @@ BUILD_DIR="${BUILD_DIR:-$VINKONA_VAR/build/rnnoise}"
 PREFIX="$VINKONA_VAR/rnnoise"
 
 echo "== Checking build tools =="
-# autogen.sh needs libtoolize (shipped by the 'libtool' package), NOT the
-# standalone /usr/bin/libtool binary (which is a separate 'libtool-bin' package
-# on Debian/Ubuntu) — so check for libtoolize, which is what actually runs.
-vk_require_tools git gcc make autoconf automake "libtoolize:libtool" pkg-config || exit 1
+if [ "$(uname -s)" = Darwin ]; then
+    # clang + make ship with the Xcode Command Line Tools; Homebrew's libtool
+    # installs libtoolize as *g*libtoolize (autoreconf honours $LIBTOOLIZE).
+    command -v cc >/dev/null 2>&1 \
+        || { echo "No C compiler — install the Xcode Command Line Tools first:  xcode-select --install"; exit 1; }
+    vk_require_tools git autoconf automake "glibtoolize:libtool" pkg-config || exit 1
+    command -v libtoolize >/dev/null 2>&1 || export LIBTOOLIZE=glibtoolize
+else
+    # autogen.sh needs libtoolize (shipped by the 'libtool' package), NOT the
+    # standalone /usr/bin/libtool binary (which is a separate 'libtool-bin'
+    # package on Debian/Ubuntu) — so check for libtoolize, which actually runs.
+    vk_require_tools git gcc make autoconf automake "libtoolize:libtool" pkg-config || exit 1
+fi
 
 echo "== Cloning / updating xiph/rnnoise =="
 if [ -d "$BUILD_DIR/.git" ]; then
@@ -31,14 +41,14 @@ echo "== autogen (downloads the default model) =="
 ./autogen.sh
 echo "== configure + make (prefix: $PREFIX) =="
 ./configure --prefix="$PREFIX"
-make -j"$(nproc)"
+make -j"$(vk_ncpu)"
 
 echo "== install librnnoise (in-tree, no sudo) =="
 make install
 
-echo "== install soxr (Python resampler) into the venv =="
-source "$SCRIPT_DIR/vinkona_env/bin/activate"
-pip install soxr
+echo "== soxr (Python resampler) — ships with the core set uv installs =="
+"$SCRIPT_DIR/vinkona_env/bin/python" -c "import soxr" 2>/dev/null \
+    || { echo "ERROR: soxr missing from vinkona_env — run './install.sh core' first."; exit 1; }
 
 echo ""
 echo "Done.  librnnoise lives at $PREFIX/lib — verify with:"

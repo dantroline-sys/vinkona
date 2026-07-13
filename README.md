@@ -161,6 +161,25 @@ one consumer GPU; the big LM prefers a second GPU but is off the latency path,
 so slower/CPU setups degrade gracefully. The knowledge host's query service is
 CPU-friendly; heavy ingestion borrows the LMs when the voice path is idle.
 
+## Platforms
+
+Linux is the reference platform. On Linux+NVIDIA setups the Python services can
+run inside a distrobox container that carries the CUDA userland; without one,
+everything runs directly on the host — `vinkona.sh` detects the missing
+container and places services accordingly.
+
+**macOS** works host-only: llama.cpp uses Metal automatically (`./install.sh
+llama` builds it in-tree), uv downloads any Python it needs, and the CUDA/
+container logic simply never engages. You'll want Homebrew for the handful of
+system tools (tmux, cmake, autotools for the optional rnnoise build) — the
+installers name the exact packages and offer to install them. One caveat:
+faster-whisper runs CPU-only on macOS (CTranslate2 has no Metal backend), which
+is fine for the small ASR models the cascade uses.
+
+**Windows** is planned: the Python layer is already portable (uv + one
+lockfile), but service orchestration is bash+tmux and will move to a small
+cross-platform supervisor first.
+
 ## Disclaimer
 
 This software is provided as-is, for research and reference purposes, without

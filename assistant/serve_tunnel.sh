@@ -20,7 +20,9 @@ cd "$SCRIPT_DIR"
 
 # Line 1: connection params (tab-separated).  Lines 2+: one "-L" forward spec each
 # (the main tool-host forward, then any tools.tunnel.extra_forwards, e.g. SearXNG).
-mapfile -t TUNNEL_LINES < <(python3 - <<'PY'
+# (while-read, not mapfile: macOS ships bash 3.2, which has no mapfile.)
+TUNNEL_LINES=()
+while IFS= read -r _tl; do TUNNEL_LINES+=("$_tl"); done < <(python3 - <<'PY'
 import importlib.util
 s = importlib.util.spec_from_file_location("config", "config.py")
 c = importlib.util.module_from_spec(s); s.loader.exec_module(c)

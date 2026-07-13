@@ -7,7 +7,7 @@
 # ~50 MB ONNX file, one wheel.  Works on any Python vinkona_env runs on.
 #
 # What this does:
-#   1. pip install onnxruntime into vinkona_env (+ import verify)
+#   1. onnxruntime into vinkona_env (uv sync + import verify)
 #   2. get an Orpheus GGUF into Models/ — your choice: download the default
 #      (pick a quant with ORPHEUS_GGUF_QUANT=F16|Q8_0|Q4_K_M ...), select a
 #      .gguf you already have in Models/, or skip the download entirely
