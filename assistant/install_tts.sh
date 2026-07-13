@@ -15,24 +15,16 @@ ENV_DIR="$SCRIPT_DIR/neutts_env"
 echo "== System dep: espeak-ng (G2P) =="
 vk_require_tools espeak-ng || exit 1
 
-echo "== Creating isolated venv: $ENV_DIR =="
-# Recreate from scratch if there's no working activate script (a partial venv
-# from a failed run, or python3-venv missing, leaves a dir with no bin/activate).
-# Override the interpreter with PYTHON=python3.13 if a NeuTTS dep lags yours.
-if [ ! -f "$ENV_DIR/bin/activate" ]; then
-    rm -rf "$ENV_DIR"
-    "${PYTHON:-python3}" -m venv "$ENV_DIR" || true
-fi
-if [ ! -f "$ENV_DIR/bin/activate" ]; then
-    echo "ERROR: failed to create venv at $ENV_DIR."
-    echo "The python venv module is likely missing. Install it and re-run:"
-    echo "  Debian/Ubuntu: sudo apt install python3-venv   (or python3.12-venv)"
-    echo "  Fedora:        sudo dnf install python3-virtualenv"
-    exit 1
-fi
-source "$ENV_DIR/bin/activate"
-pip install --upgrade pip
-pip install neutts soundfile
+echo "== Isolated venv: $ENV_DIR (uv sync from deps/neutts — its own project, none of the core deps) =="
+# NeuTTS has its own uv project (deps/neutts/pyproject.toml + lock): its
+# torch/numba stack caps numpy and lags new CPython releases, so it must not
+# share a resolution with vinkona_env. If the system Python is too new for it,
+# uv downloads a matching CPython into var/uv/python — no PYTHON= hunting
+# (though PYTHON=3.13 / a name / a path still overrides).
+UVARGS=(sync --inexact --project "$SCRIPT_DIR/deps/neutts")
+[ -n "${PYTHON:-}" ] && UVARGS+=(--python "$PYTHON")
+UV_PROJECT_ENVIRONMENT="$ENV_DIR" vk_uv "${UVARGS[@]}" \
+    || { echo "ERROR: uv sync failed — see above."; exit 1; }
 
 echo "== Verifying the install (a failed pip must never look like a green tick) =="
 "$ENV_DIR/bin/python" -c "import numpy, soundfile; print('neutts_env sanity: numpy + soundfile present')"

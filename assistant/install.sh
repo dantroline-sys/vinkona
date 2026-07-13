@@ -35,52 +35,24 @@ die()  { echo -e "${RED}error:${RESET} $*" >&2; exit 1; }
 
 usage() { sed -n '2,/^set /p' "$0" | sed -n 's/^#\{1,\} \{0,1\}//p'; exit "${1:-0}"; }
 
-# ── CUDA detection: pick the torch wheel stream from the installed driver ────
-# nvidia-smi's header reports the MAX CUDA version the driver supports; torch
-# wheels only need driver >= their build, so we take the newest known stream
-# that the driver covers. Override with TORCH_CUDA=cuXXX (e.g. cu126) or
-# TORCH_CUDA=cpu; no driver at all -> empty (PyPI's default torch build).
-_TORCH_STREAMS="132 130 128 126 124 121 118"    # newest first; extend as PyTorch adds streams
-
+# ── CUDA detection (used by the llama.cpp build + status) ────────────────────
 driver_cuda() {   # -> e.g. "13.2", or "" if no usable driver
     # The || true guard matters: under set -e -o pipefail, a missing/failing
     # nvidia-smi would otherwise silently abort the whole script.
     { nvidia-smi 2>/dev/null || true; } | sed -n 's/.*CUDA Version: *\([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' | head -1
 }
 
-detect_torch_index() {   # -> wheel index URL, or "" for PyPI default
-    case "${TORCH_CUDA:-}" in
-        cpu)   echo "https://download.pytorch.org/whl/cpu"; return ;;
-        cu*)   echo "https://download.pytorch.org/whl/${TORCH_CUDA}"; return ;;
-    esac
-    local ver n s
-    ver="$(driver_cuda)"
-    [ -n "$ver" ] || return 0
-    n=$(( ${ver%%.*} * 10 + ${ver#*.} ))        # "13.2" -> 132
-    for s in $_TORCH_STREAMS; do
-        if [ "$n" -ge "$s" ]; then echo "https://download.pytorch.org/whl/cu$s"; return; fi
-    done
-}
-
 # ── steps ────────────────────────────────────────────────────────────────────
 
 step_core() {
-    local py="${PYTHON:-python3}"
-    say "core: virtualenv vinkona_env (interpreter: $py — override with PYTHON=python3.13 if a dep lacks wheels for yours)"
-    if [ ! -f vinkona_env/bin/activate ]; then
-        rm -rf vinkona_env
-        "$py" -m venv vinkona_env || die "venv creation failed — install python3-venv / python3-virtualenv first"
-    fi
-    say "core: python dependencies (requirements.txt — cascade only, no torch; the neutts TTS venv carries its own)"
-    ./vinkona_env/bin/pip install --upgrade pip -q
-    local torch_idx; torch_idx="$(detect_torch_index)"
-    if [ -n "$torch_idx" ]; then
-        # No torch in core requirements — the extra index is a no-op unless a
-        # transitive dep pulls torch, in which case it gets the right build.
-        ./vinkona_env/bin/pip install -r requirements.txt --extra-index-url "$torch_idx"
-    else
-        ./vinkona_env/bin/pip install -r requirements.txt
-    fi
+    say "core: python environment vinkona_env (uv sync — the pinned set from pyproject.toml/uv.lock; torch-free, the neutts TTS venv carries its own)"
+    # --inexact: add/upgrade to the locked set but never REMOVE packages — the
+    # tts task installs onnxruntime into this same venv, and a later core
+    # re-run must not strip it (an exact sync would).
+    local uvargs=(sync --inexact)
+    [ -n "${PYTHON:-}" ] && uvargs+=(--python "$PYTHON")   # optional override: a path, name, or version like 3.13
+    UV_PROJECT_ENVIRONMENT="$SCRIPT_DIR/vinkona_env" vk_uv "${uvargs[@]}" \
+        || die "uv sync failed — see above"
     say "core: librnnoise (built and installed in-tree)"
     bash install_rnnoise.sh
     say "core: seeding live config (never overwrites an existing one)"
@@ -318,9 +290,9 @@ step_llama() {
 
 step_status() {
     echo "Vinkona assistant @ $SCRIPT_DIR"
-    local cuda idx
-    cuda="$(driver_cuda)"; idx="$(detect_torch_index)"
-    echo "  gpu       driver CUDA: ${cuda:-none detected} → torch wheels: ${idx:-PyPI default} (override: TORCH_CUDA=cuXXX|cpu)"
+    local cuda
+    cuda="$(driver_cuda)"
+    echo "  gpu       driver CUDA: ${cuda:-none detected}"
     local d
     # orpheus_env/personaplex_env are retired names, still listed so an old
     # install shows up in status and gets cleaned by uninstall.

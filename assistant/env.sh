@@ -35,6 +35,12 @@ export NUMBA_CACHE_DIR="$VINKONA_VAR/cache/numba"
 # Anything that honours XDG (pip's cache, misc libraries)
 export XDG_CACHE_HOME="$VINKONA_VAR/cache"
 
+# uv (the python env manager — see vk_uv below): wheel cache + any CPython
+# interpreters it downloads both stay in-tree. Without the second line,
+# downloaded interpreters would land in ~/.local/share/uv.
+export UV_CACHE_DIR="$VINKONA_VAR/cache/uv"
+export UV_PYTHON_INSTALL_DIR="$VINKONA_VAR/uv/python"
+
 # Temp files — pip build isolation, compile scratch, OCR, …
 export TMPDIR="$VINKONA_VAR/tmp"
 
@@ -43,22 +49,28 @@ export PATH="$VINKONA_ROOT/bin:$PATH"
 
 mkdir -p "$VINKONA_VAR/cache" "$VINKONA_VAR/tmp"
 
-# ── vk_pick_python: newest CPython 3.x on PATH within [min,max] minors ──────
-# Usage:  PY="$(vk_pick_python 10 13 || true)"   # empty if none qualifies
-# Prefers plain python3 when it qualifies (fewest surprises), then scans
-# newest-first. For stacks whose deps cap the interpreter version.
-vk_pick_python() {
-    local min="$1" max="$2" x m
-    if command -v python3 >/dev/null 2>&1; then
-        m="$(python3 -c 'import sys; print(sys.version_info[1])' 2>/dev/null)" || m=""
-        if [ -n "$m" ] && [ "$m" -ge "$min" ] && [ "$m" -le "$max" ]; then
-            echo python3; return 0
-        fi
+# ── vk_uv: run uv, bootstrapping it in-tree on first use ────────────────────
+# uv (https://docs.astral.sh/uv/) builds the venvs from pyproject.toml + uv.lock
+# — same pinned set on every platform, and it downloads a matching CPython
+# itself (into var/uv/python) if the system one doesn't satisfy requires-python,
+# so there is no more "which python3 does this machine have" problem.
+# A system-wide uv is used when present; otherwise one standalone binary is
+# fetched into ./bin (UV_UNMANAGED_INSTALL = no PATH/rc edits, no self-update
+# state — in-tree like everything else). The venvs it makes are plain venvs.
+vk_uv() {
+    local uv
+    uv="$(command -v uv 2>/dev/null || true)"
+    [ -n "$uv" ] || uv="$VINKONA_ROOT/bin/uv"
+    if [ ! -x "$uv" ]; then
+        vk_require_tools curl || return 1
+        echo "==> fetching uv (one-time, into bin/)" >&2
+        mkdir -p "$VINKONA_ROOT/bin"
+        curl -LsSf https://astral.sh/uv/install.sh \
+                | env UV_UNMANAGED_INSTALL="$VINKONA_ROOT/bin" sh >&2 \
+            || { echo "could not bootstrap uv — install it yourself (https://docs.astral.sh/uv/) and re-run" >&2; return 1; }
+        uv="$VINKONA_ROOT/bin/uv"
     fi
-    for ((x=max; x>=min; x--)); do
-        command -v "python3.$x" >/dev/null 2>&1 && { echo "python3.$x"; return 0; }
-    done
-    return 1
+    "$uv" "$@"
 }
 
 # ── vk_require_tools: check for system tools, offer to install the missing ──

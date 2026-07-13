@@ -3,10 +3,11 @@ __pycache__/
 *.pyc
 *.pyo
 
-# Python virtualenvs — large, machine-specific (absolute paths baked in), rebuilt by the
-# install scripts.  Never commit them.  vinkona_env is the core stack (cascade/ASR/memory/
-# research/config); the TTS engines need conflicting torch/vLLM versions so they're separate.
-# (personaplex_env retained for the one-time rename migration — see rename_env.sh.)
+# Python virtualenvs — large, machine-specific, rebuilt by the install scripts
+# (uv sync from pyproject.toml + uv.lock).  Never commit them.  vinkona_env is
+# the core stack (cascade/ASR/memory/research/config); neutts_env quarantines
+# the NeuTTS torch stack.  (personaplex_env / orpheus_env are retired names,
+# ignored so old installs stay invisible until uninstall cleans them.)
 vinkona_env/
 personaplex_env/
 neutts_env/

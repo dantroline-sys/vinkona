@@ -1,0 +1,24 @@
+# NeuTTS Air — the alternative TTS engine's OWN uv project, kept apart from
+# ../../pyproject.toml on purpose: NeuTTS pulls torch and (via librosa) numba,
+# which caps numpy and lags new CPython releases.  Resolving it jointly with
+# the core project would drag vinkona_env's pins down to this stack's ceilings;
+# quarantined here, each side gets its best working set.
+#
+# install_tts.sh syncs this into neutts_env (UV_PROJECT_ENVIRONMENT).  When the
+# system Python is newer than requires-python allows, uv downloads a matching
+# CPython into var/uv/python automatically — no manual PYTHON= hunting.
+
+[project]
+name = "vinkona-neutts"
+version = "0"
+description = "NeuTTS Air TTS engine environment (voice cloning; torch)"
+requires-python = ">=3.11,<3.14"    # numba/numpy wheel ceiling — raise when the stack catches up
+
+dependencies = [
+    "neutts",
+    "soundfile",
+    "numpy",       # imported directly by tts_neutts.py / tts_server.py
+]
+
+[tool.uv]
+package = false     # env-only project — sync manages dependencies, nothing installs

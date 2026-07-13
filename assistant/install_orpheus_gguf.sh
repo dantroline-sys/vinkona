@@ -4,7 +4,7 @@
 # No new venv, no torch: the Orpheus 3B backbone runs as a GGUF on a
 # plain llama-server (the tts_lm tier), and the SNAC vocoder decodes on the CPU
 # via onnxruntime inside vinkona_env.  Total footprint: one ~3.4 GB GGUF, one
-# ~50 MB ONNX file, one pip wheel.  Works on any Python vinkona_env runs on.
+# ~50 MB ONNX file, one wheel.  Works on any Python vinkona_env runs on.
 #
 # What this does:
 #   1. pip install onnxruntime into vinkona_env (+ import verify)
@@ -32,7 +32,9 @@ SNAC_OUT="Models/snac_24khz_decoder.onnx"
     || { echo "ERROR: vinkona_env is missing — run './install.sh core' first."; exit 1; }
 
 echo "== onnxruntime into vinkona_env (SNAC vocoder, CPU) =="
-./vinkona_env/bin/pip install --quiet onnxruntime
+# The orpheus-gguf dependency group on top of the core set, same venv.
+# --inexact: adds the group without touching anything already installed.
+UV_PROJECT_ENVIRONMENT="$SCRIPT_DIR/vinkona_env" vk_uv sync --inexact --group orpheus-gguf
 ./vinkona_env/bin/python -c "import onnxruntime" \
     || { echo "ERROR: onnxruntime did not import after install."; exit 1; }
 

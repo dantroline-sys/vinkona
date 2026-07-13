@@ -1,0 +1,54 @@
+# Vinkona assistant — Python dependencies, managed by uv (https://docs.astral.sh/uv/).
+#
+# You normally never invoke uv yourself — ./install.sh does, and bootstraps uv
+# itself in-tree (see env.sh vk_uv).  What it runs:
+#
+#   uv sync                          -> vinkona_env   core cascade deps (no torch)
+#   uv sync --group orpheus-gguf     -> vinkona_env   + onnxruntime (SNAC vocoder, CPU)
+#
+# The neutts TTS engine is a SEPARATE uv project (deps/neutts/) with its own
+# lock: its torch/numba stack caps numpy and lags new CPython releases, and a
+# joint resolution would drag this venv's pins down with it.
+#
+# uv.lock pins the exact working set for every platform (Linux/macOS/Windows,
+# one lockfile).  To change a dependency: edit the ranges here, run `uv lock`,
+# commit both files.  The venvs uv builds are plain venvs — every script that
+# uses vinkona_env/bin/python keeps working unchanged.
+
+[project]
+name = "vinkona-assistant"
+version = "0"
+description = "Vinkona assistant — local voice/chat cascade (ASR, LM routing, memory, TTS)"
+requires-python = ">=3.11"
+
+# Core cascade dependencies — pure-Python or well-wheeled packages only.
+# No torch, no source builds: the neutts TTS engine carries its own torch in
+# its own venv (the `neutts` group below); the orpheus_gguf engine needs only
+# onnxruntime (the `orpheus-gguf` group).
+dependencies = [
+    # Speech: ASR (faster-whisper/ctranslate2) + resampling (soxr), soundfile for audio I/O
+    "faster-whisper",
+    "soxr",
+    "soundfile",
+    # HTTP server + async client (cascade WS/web, llm_bridge, research worker, knowledge host)
+    "aiohttp",
+    "fastapi",
+    "uvicorn[standard]",
+    "pydantic<3",       # v3 will break (pydantic has a history of major-version breaks)
+    # Utilities
+    "numpy<3",          # cap the next major; 1.x/2.x both fine
+    "huggingface-hub",  # hf_hub_download for fetch_models.sh / vk_hf_download
+    "sympy",            # in-process `calculate` tool (exact/precise math); offered only if present
+    # Time-sense (the semantic clock) — the deterministic core (part-of-day/
+    # weekend/season) works without these; they add light + holidays + recurrence.
+    "astral",           # sunrise/sunset -> "it's dark out" / "the sun's setting"
+    "holidays",         # names today's public holiday (awareness.holidays_country)
+    "python-dateutil",  # recurrence next_expected (rrule); falls back to last+period if absent
+]
+
+[dependency-groups]
+# SNAC vocoder for the orpheus_gguf engine — CPU onnxruntime, into vinkona_env.
+orpheus-gguf = ["onnxruntime"]
+
+[tool.uv]
+package = false     # a script tree, not an installable package — sync deps only

@@ -97,6 +97,10 @@ barge-in via VAD.
 
 Each step is also a standalone script (`install_orpheus_gguf.sh`,
 `install_rnnoise.sh`, `fetch_models.sh`, …) — `install.sh` orchestrates them.
+Python environments are built by **uv** (bootstrapped in-tree on first run):
+[`pyproject.toml`](pyproject.toml) declares the dependencies, `uv.lock` pins
+the exact working set on every platform, and uv fetches a matching CPython
+itself if the system one won't do — see [`ENVIRONMENTS.md`](ENVIRONMENTS.md).
 
 **TTS engines.** The default `orpheus_gguf` runs the Orpheus 3B backbone as a
 GGUF on a plain llama-server (the `tts_lm` tier, port 11439) and vocodes with
