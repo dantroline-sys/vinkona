@@ -147,15 +147,27 @@ class SnacDecoder:
 
 
 def resolve_snac_model(snac_path, repo: str, filename: str) -> Path:
-    """A configured local file wins; otherwise fetch from the HF hub into the
-    in-tree cache (env.sh pins HF_HOME under var/)."""
+    """A configured local file wins; then the installer's default drop
+    location; then the in-tree HF cache (offline — env.sh pins HF_HOME under
+    var/); the network is only touched when none of those have it.  Restarts
+    must never re-download or even re-contact the hub."""
     if snac_path:
         p = Path(snac_path)
         if p.exists():
             return p
-        _log(f"configured snac_path {p} not found — falling back to the HF hub copy")
+        _log(f"configured snac_path {p} not found — trying the local copies")
+    default = Path(__file__).resolve().parent / "Models" / "snac_24khz_decoder.onnx"
+    if default.exists():
+        _log(f"SNAC decoder: using {default}")
+        return default
     from huggingface_hub import hf_hub_download
-    _log(f"fetching SNAC decoder {repo}/{filename} (≈50 MB, cached in-tree after the first time)")
+    try:                                   # cache hit = no network, no HF warning
+        p = Path(hf_hub_download(repo_id=repo, filename=filename, local_files_only=True))
+        _log(f"SNAC decoder: using the in-tree cached copy")
+        return p
+    except Exception:
+        pass
+    _log(f"fetching SNAC decoder {repo}/{filename} (≈50 MB, one-time — cached in-tree)")
     return Path(hf_hub_download(repo_id=repo, filename=filename))
 
 
