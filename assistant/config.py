@@ -384,15 +384,28 @@ DEFAULTS: dict = {
         # systemd-oomd kills your whole SESSION — terminal, supervisor and all
         # — because oomd kills by cgroup.  With the cap, the kernel kills the
         # embed server alone and the supervisor watchdog respawns it; long
-        # ingest jobs wait out the restart and continue.  ONE KNOB: the
-        # watchdog's graceful soft-restart threshold is derived as 75% of this
-        # — raise it on a big-RAM ingest box (e.g. "32G" on 128 GB) and both
-        # scale.  Set "" to disable.  NOTE the server's legitimate need is
-        # ~1-2 GB regardless of corpus size (documents are chunked client-side
-        # and clipped to the embed window — it never sees whole files); growth
+        # ingest jobs wait out the restart and continue.  ONE KNOB: the other
+        # thresholds derive from this — graceful recycle at 50% (below), the
+        # watchdog's soft restart at 75%, kernel kill at 100% — so raising it
+        # on a big-RAM ingest box (e.g. "32G" on 128 GB) scales all three.
+        # Set "" to disable.  NOTE the server's legitimate need is ~1-2 GB
+        # regardless of corpus size (documents are chunked client-side and
+        # clipped to the embed window — it never sees whole files); growth
         # past that is fragmentation/leak, which serve_embed.sh also bounds
         # with MALLOC_ARENA_MAX=2.
         "mem_max": "8G",
+        # Graceful recycling: llm_server.py fronts the embed llama-server with
+        # a tiny reverse proxy (llama-server itself moves to port+10000) and
+        # restarts it BETWEEN requests once its RSS crosses this many MB —
+        # clients never see a dropped connection, a request that lands mid-
+        # recycle just waits out the few seconds of model reload.  First line
+        # of defence against the llama.cpp embed leak (watchdog and cgroup
+        # above are the backstops).  None → derived: half of mem_max (3000 MB
+        # if mem_max is unset).  0 disables the proxy and llama-server binds
+        # the public port directly.  Bigger is FASTER on a big-RAM box: the
+        # reload cost is fixed, so a higher threshold means fewer pauses per
+        # million embeddings.
+        "recycle_rss_mb": None,
         "extra_args": [],
     },
     # Orpheus TTS backbone as a plain llama-server (the "orpheus_gguf" engine).

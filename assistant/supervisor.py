@@ -73,7 +73,10 @@ def watch_specs() -> str:
     """VINKONA_WATCH, or a default derived from config: soft-restart the embed
     LM at 75% of its hard cgroup cap (embed_lm.mem_max), so the graceful
     watchdog restart usually beats the kernel's OOM kill — one knob (mem_max)
-    scales both.  6000 MB when no cap is configured."""
+    scales both.  6000 MB when no cap is configured.  When the embed recycler
+    is on (llm_server.py's default), the leaky llama-server child sits on
+    port+10000 and the public port belongs to the small proxy — probe the
+    child, it's the process whose RSS matters."""
     env = os.environ.get("VINKONA_WATCH")
     if env is not None:
         return env
@@ -82,6 +85,8 @@ def watch_specs() -> str:
         port = int(str(lm.get("url", "")).rsplit(":", 1)[-1].strip("/"))
     except ValueError:
         port = 11437
+    if lm.get("recycle_rss_mb", None) not in (0, "0", False):   # absent → recycler on
+        port = port + 10000 if port + 10000 <= 65535 else port - 10000
     cap = _size_mb(lm.get("mem_max"))
     soft = int(cap * 0.75) if cap else 6000
     return f"embed:{port}:{soft}"

@@ -18,10 +18,12 @@ cd "$SCRIPT_DIR"
 # bounds the fragmentation; export your own value to override.
 : "${MALLOC_ARENA_MAX:=2}"; export MALLOC_ARENA_MAX
 
-# HARD memory ceiling (complements the supervisor watchdog's soft RSS cap):
-# llama.cpp's embedding server leaks under heavy use (knowledge-host imports).
-# Run it in its own cgroup scope capped at embed_lm.mem_max (default 8G) so
-# the kernel kills the EMBED SERVER ALONE the instant it crosses the limit —
+# HARD memory ceiling (the LAST of three defences against the llama.cpp embed
+# leak — llm_server.py's graceful recycler restarts llama-server between
+# requests at 50% of embed_lm.mem_max, the supervisor watchdog TERMs the
+# service at 75%, and this cgroup scope lets the kernel kill it at 100%).
+# Run it in its own cgroup capped at embed_lm.mem_max (default 8G) so the
+# kernel kills the EMBED SERVER ALONE the instant it crosses the limit —
 # the watchdog then respawns it.  Without its own cgroup, the leak builds
 # until systemd-oomd kills the whole session (terminal + supervisor included),
 # because oomd kills by cgroup.  VINKONA_EMBED_MEMMAX overrides config; set it
