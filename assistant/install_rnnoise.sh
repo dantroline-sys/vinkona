@@ -37,6 +37,24 @@ else
 fi
 
 cd "$BUILD_DIR"
+
+# Pre-fetch the model tarball with curl before autogen runs download_model.sh:
+# that script uses wget, and Fedora's wget is wget2, which gives up when a
+# half-broken IPv6 route times out — where curl (and browsers) fall back to
+# IPv4.  download_model.sh skips its own download when the file exists, and
+# still sha256-verifies it, so a corrupt fetch is caught either way.
+if [ -f model_version ] && command -v curl >/dev/null 2>&1; then
+    model="rnnoise_data-$(cat model_version).tar.gz"
+    if [ ! -f "$model" ]; then
+        echo "== Pre-fetching the model tarball (curl) =="
+        curl -L --fail --retry 3 -o "$model.part" \
+             "https://media.xiph.org/rnnoise/models/$model" \
+            && mv "$model.part" "$model" \
+            || { rm -f "$model.part"
+                 echo "curl pre-fetch failed — letting the build's own wget try"; }
+    fi
+fi
+
 echo "== autogen (downloads the default model) =="
 ./autogen.sh
 echo "== configure + make (prefix: $PREFIX) =="
