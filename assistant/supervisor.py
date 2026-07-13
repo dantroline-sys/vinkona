@@ -50,10 +50,41 @@ TOPO = CTRL / "topology.json"              # kb_dir / kb_only, persisted across 
 MODE_FILE = CTRL / "mode"
 
 BOX = os.environ.get("VINKONA_BOX", "vinkona-cuda")
-WATCH_SPECS = os.environ.get("VINKONA_WATCH", "embed:11437:6000")
 WATCH_INTERVAL = int(os.environ.get("VINKONA_WATCH_INTERVAL", "20") or 20)
 WATCHDOG_ON = os.environ.get("VINKONA_WATCHDOG", "1") != "0"
 GRACE_S = 8                                # SIGTERM -> SIGKILL grace, as before
+
+
+def _size_mb(s) -> int:
+    """systemd-style size ('8G', '6144M', bytes) -> MB; 0 if unset/invalid."""
+    try:
+        s = str(s or "").strip().upper()
+        if not s:
+            return 0
+        mult = {"K": 1 / 1024, "M": 1, "G": 1024, "T": 1024 * 1024}.get(s[-1])
+        if mult is None:
+            return int(int(float(s)) / (1024 * 1024))
+        return int(float(s[:-1]) * mult)
+    except (ValueError, IndexError):
+        return 0
+
+
+def watch_specs() -> str:
+    """VINKONA_WATCH, or a default derived from config: soft-restart the embed
+    LM at 75% of its hard cgroup cap (embed_lm.mem_max), so the graceful
+    watchdog restart usually beats the kernel's OOM kill — one knob (mem_max)
+    scales both.  6000 MB when no cap is configured."""
+    env = os.environ.get("VINKONA_WATCH")
+    if env is not None:
+        return env
+    lm = load_config().get("embed_lm") or {}
+    try:
+        port = int(str(lm.get("url", "")).rsplit(":", 1)[-1].strip("/"))
+    except ValueError:
+        port = 11437
+    cap = _size_mb(lm.get("mem_max"))
+    soft = int(cap * 0.75) if cap else 6000
+    return f"embed:{port}:{soft}"
 
 
 # ── small helpers ─────────────────────────────────────────────────────────────
@@ -244,6 +275,7 @@ class Supervisor:
         self.children: dict[str, subprocess.Popen] = {}
         self.svcs: list[dict] = []
         self.stopping = False
+        self.watch = watch_specs()             # re-derived on each start_all (config can change)
         self.wd_last: dict[str, float] = {}    # name -> last watchdog restart ts
 
     def save_state(self):
@@ -264,6 +296,7 @@ class Supervisor:
 
     def start_all(self):
         self.svcs = services_for(read_mode(), load_topo())
+        self.watch = watch_specs()
         # Wake the container ONCE, alone: racing four simultaneous `distrobox
         # enter` calls against a stopped container loses one of them.
         if any(s["where"] == "box" for s in self.svcs):
@@ -354,7 +387,7 @@ class Supervisor:
 
     def watchdog_tick(self):
         """Revive dead watched LMs; pre-empt the embed RSS leak (VINKONA_WATCH)."""
-        for spec in WATCH_SPECS.split():
+        for spec in self.watch.split():
             try:
                 name, port, cap = spec.split(":")
                 port, cap = int(port), int(cap)

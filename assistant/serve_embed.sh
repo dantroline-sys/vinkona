@@ -11,6 +11,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/env.sh"          # in-tree caches/tmp/PATH — see env.sh
 cd "$SCRIPT_DIR"
 
+# glibc malloc arena bloat looks exactly like a catastrophic leak under a
+# threaded server hammered with embedding batches: every thread gets its own
+# arena, freed memory fragments across them and never returns to the OS, and
+# RSS climbs by GB in seconds.  Two arenas is plenty for this service and
+# bounds the fragmentation; export your own value to override.
+: "${MALLOC_ARENA_MAX:=2}"; export MALLOC_ARENA_MAX
+
 # HARD memory ceiling (complements the supervisor watchdog's soft RSS cap):
 # llama.cpp's embedding server leaks under heavy use (knowledge-host imports).
 # Run it in its own cgroup scope capped at embed_lm.mem_max (default 8G) so

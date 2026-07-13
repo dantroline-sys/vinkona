@@ -379,13 +379,19 @@ DEFAULTS: dict = {
         "flash_attn": False,                 # embedding mode; keep it simple
         "pooling": "mean",                   # nomic uses mean pooling
         # HARD host-RAM ceiling (systemd-run cgroup scope; Linux only).
-        # llama.cpp's embedding server leaks under heavy use (a knowledge-host
-        # import): without a cgroup of its own, it builds until systemd-oomd
-        # kills your whole SESSION — terminal, supervisor and all — because
-        # oomd kills by cgroup.  With the cap, the kernel kills the embed
-        # server alone and the supervisor watchdog respawns it.  Set "" to
-        # disable.  Keep it above the watchdog's soft cap (VINKONA_WATCH,
-        # default 6000 MB), which restarts the server gracefully first.
+        # llama.cpp's embedding server balloons under heavy use (a knowledge-
+        # host import): without a cgroup of its own, it builds until
+        # systemd-oomd kills your whole SESSION — terminal, supervisor and all
+        # — because oomd kills by cgroup.  With the cap, the kernel kills the
+        # embed server alone and the supervisor watchdog respawns it; long
+        # ingest jobs wait out the restart and continue.  ONE KNOB: the
+        # watchdog's graceful soft-restart threshold is derived as 75% of this
+        # — raise it on a big-RAM ingest box (e.g. "32G" on 128 GB) and both
+        # scale.  Set "" to disable.  NOTE the server's legitimate need is
+        # ~1-2 GB regardless of corpus size (documents are chunked client-side
+        # and clipped to the embed window — it never sees whole files); growth
+        # past that is fragmentation/leak, which serve_embed.sh also bounds
+        # with MALLOC_ARENA_MAX=2.
         "mem_max": "8G",
         "extra_args": [],
     },
