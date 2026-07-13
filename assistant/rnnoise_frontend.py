@@ -75,7 +75,19 @@ class RNNoiseFrontend:
         self.in_rate = in_rate
         self._up = _RNNOISE_RATE // in_rate  # 2 for 24 kHz
 
-        self._lib = ctypes.CDLL(lib_path or _find_librnnoise())
+        lib = lib_path or _find_librnnoise()
+        try:
+            self._lib = ctypes.CDLL(lib)
+        except OSError as e:
+            here = pathlib.Path(__file__).resolve().parent
+            raise RuntimeError(
+                f"librnnoise could not be loaded ({e}). The in-tree build is "
+                f"missing from {here}/var/rnnoise/lib — build it with "
+                f"'bash install_rnnoise.sh', run INSIDE the container if the "
+                f"cascade runs there (an uninstall clears var/, so this needs "
+                f"re-running after one). VINKONA_RNNOISE_LIB=/path/librnnoise"
+                f"{'.dylib' if sys.platform == 'darwin' else '.so'} overrides."
+            ) from e
         # DenoiseState *rnnoise_create(RNNModel *model);  (model = NULL for default)
         self._lib.rnnoise_create.restype = ctypes.c_void_p
         self._lib.rnnoise_create.argtypes = [ctypes.c_void_p]
