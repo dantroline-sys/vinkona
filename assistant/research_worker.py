@@ -825,7 +825,11 @@ async def sync_calendar(memory, tools, big, scfg, trace=None) -> dict:
                 pass
     if not (tools.active and scfg.get("enabled")):
         return {}
-    vinkona_cal = scfg.get("vinkona_calendar", "Vinkona")
+    vinkona_cal = scfg.get("vinkona_calendar", "Vinkona")   # the WRITE target (one name)
+    # For classification, her own calendar plus its pre-rename aliases ("Amiga") all
+    # count as own — otherwise an old calendar's contents are misread as foreign
+    # origins and re-mirrored (duplicates).
+    own_cals = [vinkona_cal] + [str(c) for c in (scfg.get("legacy_calendars") or []) if c]
     read_tool = scfg.get("read_tool", "calendar_range")
     create_tool = scfg.get("create_tool", "calendar_create")
     update_tool = scfg.get("update_tool", "calendar_update")
@@ -865,7 +869,7 @@ async def sync_calendar(memory, tools, big, scfg, trace=None) -> dict:
         return {}
 
     try:
-        origins, mirrors, own = cs.classify(events, vinkona_cal)
+        origins, mirrors, own = cs.classify(events, own_cals)
         adopt_on = bool(scfg.get("adopt", True))
         actions = cs.plan_actions(origins, mirrors, own=(own if adopt_on else None), prune=prune)
     except Exception as e:

@@ -37,9 +37,19 @@ import typing as tp
 # Marker embedded in every mirror's notes: it ties the mirror back to its origin UID so the
 # next pass recognises its own work.  The inner [vinkona-mirror:UID] is parsed; the whole line
 # is stripped when recovering Vinkona's own note text.
+#
+# LEGACY: the assistant used to be called Amiga, and live calendars still carry her old
+# markers ("kept in sync by Amiga [amiga-mirror:UID]").  Reads accept BOTH forms forever —
+# otherwise every pre-rename mirror turns invisible: the sync duplicates instead of updating,
+# prune can never claim an orphan, and the stale marker text leaks into visible notes.
+# Writes only ever use the new template, and plan_actions upgrades a legacy-marked mirror in
+# place on its next pass, so the old name disappears from the calendar by itself.
 _MARKER_TEMPLATE = "\n\n— kept in sync by Vinkona [vinkona-mirror:{uid}] —"
-_MARKER_INNER = re.compile(r"\[vinkona-mirror:([^\]]+)\]")
-_MARKER_LINE = re.compile(r"\n*—\s*kept in sync by Vinkona\s*\[vinkona-mirror:[^\]]+\]\s*—\s*$")
+_MARKER_INNER = re.compile(r"\[(?:vinkona|amiga)-mirror:([^\]]+)\]", re.IGNORECASE)
+_MARKER_LINE = re.compile(
+    r"\n*—\s*kept in sync by (?:Vinkona|Amiga)\s*\[(?:vinkona|amiga)-mirror:[^\]]+\]\s*—\s*$",
+    re.IGNORECASE)
+_LEGACY_MARKER = re.compile(r"\[amiga-mirror:", re.IGNORECASE)
 
 
 # ── pure helpers ──────────────────────────────────────────────────────────────
@@ -143,7 +153,15 @@ def to_epoch(s: tp.Any) -> tp.Optional[float]:
         return None
 
 
-def classify(events: list, vinkona_calendar: str = "") -> tp.Tuple[list, dict, list]:
+def _own_calendar_names(vinkona_calendar) -> set:
+    """The set of calendar names treated as Vinkona's OWN — the configured name plus any
+    legacy aliases (a string or a list both work).  Case-folded for the comparison."""
+    names = (vinkona_calendar if isinstance(vinkona_calendar, (list, tuple, set))
+             else [vinkona_calendar])
+    return {str(n).strip().lower() for n in names if str(n or "").strip()}
+
+
+def classify(events: list, vinkona_calendar="") -> tp.Tuple[list, dict, list]:
     """Split a flat event list into (origins, mirrors, own).
 
     origins — real appointments from calendars OTHER than Vinkona's, with no marker.
@@ -153,8 +171,11 @@ def classify(events: list, vinkona_calendar: str = "") -> tp.Tuple[list, dict, l
               from conversation), or anything the user put there directly.  These are NEVER
               written or pruned by the sync — but they ARE recorded (flagged self-authored)
               so Vinkona knows her own allocations apart from the mirrored ones.
+
+    `vinkona_calendar` may be one name or a list — the pre-rename "Amiga" calendar must count
+    as her own, or everything in it is misread as foreign origins and re-mirrored (duplicates).
     """
-    vinkona = (vinkona_calendar or "").strip().lower()
+    own_names = _own_calendar_names(vinkona_calendar)
     origins: list = []
     mirrors: dict = {}
     own: list = []
@@ -165,8 +186,9 @@ def classify(events: list, vinkona_calendar: str = "") -> tp.Tuple[list, dict, l
             mirrors[muid] = {**ev, "origin_uid": muid,
                              "vinkona_id": str(raw.get("id") or ev["uid"]),
                              "hash": event_hash(ev),
-                             "note": comment_from_notes(ev["notes"])}
-        elif vinkona and ev["calendar"].lower() == vinkona:
+                             "note": comment_from_notes(ev["notes"]),
+                             "legacy_marker": bool(_LEGACY_MARKER.search(ev["notes"]))}
+        elif own_names and ev["calendar"].lower() in own_names:
             own.append({**ev, "vinkona_id": str(raw.get("id") or ev["uid"])})
         else:
             origins.append(ev)
@@ -216,7 +238,10 @@ def plan_actions(origins: list, mirrors: dict, own: tp.Optional[list] = None,
                 actions.append({"op": "create", "uid": uid, "event": ev, "hash": h})
             continue
         seen.add(mkey)                              # this mirror has a live origin → don't prune it
-        if m.get("hash") != h:
+        if m.get("hash") != h or m.get("legacy_marker"):
+            # legacy_marker: content may be unchanged, but the notes still carry the
+            # pre-rename "Amiga" marker — update once to rewrite them in the new form
+            # (the comment survives; the old name disappears from the visible calendar).
             actions.append({"op": "update", "uid": uid, "event": ev,
                             "vinkona_id": m["vinkona_id"], "hash": h, "note": m.get("note", "")})
         else:

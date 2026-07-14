@@ -305,6 +305,90 @@ def test_store_migrates_old_cache_without_self_authored_column():
     assert "self_authored" in st.all()[0]
 
 
+# ── legacy "Amiga" data (the pre-rename assistant) ─────────────────────────────
+
+_LEGACY_NOTES = "my old note\n\n— kept in sync by Amiga [amiga-mirror:W1] —"
+
+
+def test_legacy_amiga_marker_is_recognised_and_stripped():
+    # Old mirrors on a live calendar still carry the pre-rename marker: it must parse as a
+    # mirror (or the sync duplicates instead of updating) and the marker line must strip
+    # (or "kept in sync by Amiga" leaks into visible notes).
+    assert cs.origin_uid_from_notes(_LEGACY_NOTES) == "W1"
+    assert cs.comment_from_notes(_LEGACY_NOTES) == "my old note"
+
+
+def test_classify_flags_legacy_marker():
+    events = [
+        _origin("W1", "Meeting", "2026-07-01T09:00", cal="Work"),
+        {"id": "M1", "title": "Meeting", "start": "2026-07-01T09:00",
+         "calendar": "Vinkona", "notes": _LEGACY_NOTES},
+    ]
+    origins, mirrors, own = cs.classify(events, vinkona_calendar="Vinkona")
+    assert set(mirrors) == {"W1"} and own == []
+    assert mirrors["W1"]["legacy_marker"] is True
+    assert mirrors["W1"]["note"] == "my old note"
+    # …and a current-marker mirror is NOT flagged
+    events[1]["notes"] = cs.build_notes("my note", "W1")
+    _, mirrors2, _ = cs.classify(events, vinkona_calendar="Vinkona")
+    assert mirrors2["W1"]["legacy_marker"] is False
+
+
+def test_classify_treats_legacy_amiga_calendar_as_own():
+    # The user's own calendar may still be NAMED "Amiga" — its unmarked events are hers
+    # (own), never foreign origins to re-mirror.
+    events = [{"id": "X1", "title": "Call mum", "start": "2026-07-01T09:00",
+               "calendar": "Amiga", "notes": ""}]
+    origins, mirrors, own = cs.classify(events, vinkona_calendar=["Vinkona", "Amiga"])
+    assert origins == [] and mirrors == {}
+    assert len(own) == 1 and own[0]["uid"] == "X1"
+    # without the alias the same event is misread as an origin (the pre-fix bug)
+    origins, _, own = cs.classify(events, vinkona_calendar="Vinkona")
+    assert len(origins) == 1 and own == []
+
+
+def test_plan_upgrades_unchanged_legacy_mirror_in_place():
+    # Content unchanged, but the mirror still wears the old marker → ONE update rewrites
+    # the notes in the new form (comment kept); a current-marker mirror still skips.
+    origin = cs.normalize(_origin("W1", "Meeting", "2026-07-01T09:00"))
+    mirrors = {"W1": {"vinkona_id": "mA", "hash": cs.event_hash(origin),
+                      "note": "my old note", "legacy_marker": True}}
+    ops = cs.plan_actions([origin], mirrors)
+    assert [a["op"] for a in ops] == ["update"]
+    assert ops[0]["note"] == "my old note" and ops[0]["vinkona_id"] == "mA"
+    mirrors["W1"]["legacy_marker"] = False
+    assert [a["op"] for a in cs.plan_actions([origin], mirrors)] == ["skip"]
+
+
+def test_plan_prunes_legacy_orphan():
+    # A legacy-marked mirror whose origin was cancelled is prunable like any other —
+    # before the fix it was invisible and lingered forever.
+    events = [
+        {"id": "A", "title": "Call", "start": "2026-07-01T09:00", "calendar": "Work",
+         "notes": ""},
+        {"id": "mGone", "title": "Old thing", "start": "2026-06-01T09:00",
+         "calendar": "Vinkona",
+         "notes": "bye\n\n— kept in sync by Amiga [amiga-mirror:GONE] —"},
+    ]
+    origins, mirrors, own = cs.classify(events, vinkona_calendar="Vinkona")
+    deletes = [a for a in cs.plan_actions(origins, mirrors, prune=True) if a["op"] == "delete"]
+    assert len(deletes) == 1 and deletes[0]["vinkona_id"] == "mGone"
+
+
+def test_fold_mirrors_folds_legacy_mirror():
+    # The live scan must collapse a legacy mirror onto its origin (no double-count) and
+    # surface the note WITHOUT any of the old marker text.
+    events = [
+        _origin("W1", "Meeting", "2026-07-01T09:00", cal="Work"),
+        {"id": "M1", "title": "Meeting", "start": "2026-07-01T09:00",
+         "calendar": "Vinkona", "notes": _LEGACY_NOTES},
+    ]
+    folded = cs.fold_mirrors(events, "Vinkona")
+    assert len(folded) == 1
+    assert folded[0]["note"] == "my old note"
+    assert "Amiga" not in folded[0]["note"] and "amiga-mirror" not in folded[0]["note"]
+
+
 def main():
     import types
     passed = failed = 0

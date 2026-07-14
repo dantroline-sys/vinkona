@@ -950,6 +950,12 @@ DEFAULTS: dict = {
     "calendar_sync": {
         "enabled": False,
         "vinkona_calendar": "Vinkona",           # the calendar Vinkona owns/writes (excluded as a source)
+        # Pre-rename names for HER OWN calendar (the assistant used to be called Amiga).
+        # Calendars listed here are treated as Vinkona's own, never as mirror sources —
+        # without this, an old "Amiga" calendar's contents are misread as foreign
+        # appointments and re-mirrored (duplicates).  Old [amiga-mirror:…] markers are
+        # recognised regardless and upgraded in place on the next sync pass.
+        "legacy_calendars": ["Amiga"],
         "horizon_days": 90,                  # how far ahead to consolidate
         "min_interval_s": 3600,              # don't re-sync more often than this (idle cadence)
         "prune": True,                       # remove Vinkona's own mirrors whose origin was cancelled
