@@ -151,6 +151,8 @@ def _shim(*, has_host=True, tool="kb_ask", min_conf=0.30):
     sh._kh = kh_mod.KnowledgeHost("http://h", timeout_s=2.0) if has_host else None
     sh._last_user_line = cascade._Session._last_user_line
     sh._looks_like_question = cascade._Session._looks_like_question
+    sh._query_nucleus = cascade._Session._query_nucleus
+    sh._trace_kb = cascade._Session._trace_kb.__get__(sh)   # no-op: sh.s.trace is False
     sh._guidance = cascade._Session._guidance.__get__(sh)
     return sh
 

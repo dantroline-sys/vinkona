@@ -96,7 +96,7 @@ def check(name, cond):
 
 
 class _Dummy:                    # stand-in self for unbound-method calls
-    pass
+    mail_guidance = ""           # LLMBridge attr checked by _tool_policy
 
 
 async def test_chat_json_think():

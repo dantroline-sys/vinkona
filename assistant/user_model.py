@@ -177,11 +177,14 @@ class UserModelStore:
         if level not in ("novice", "intermediate", "expert"):
             raise ValueError("level must be novice/intermediate/expert")
         now = time.time()
+        # UPSERT, not INSERT OR REPLACE: an explicit level change must not reset the
+        # accumulated interaction/correction counters on an existing row.
         self.db.execute(
-            "INSERT OR REPLACE INTO user_domain_fluency(domain, fluency_level, "
-            "confidence, last_updated, interaction_count) VALUES(?, ?, ?, ?, "
-            "(SELECT interaction_count FROM user_domain_fluency WHERE domain=?) OR 0)",
-            (domain, level, 1.0, now, domain)
+            "INSERT INTO user_domain_fluency(domain, fluency_level, confidence, "
+            "last_updated, interaction_count) VALUES(?, ?, ?, ?, 0) "
+            "ON CONFLICT(domain) DO UPDATE SET fluency_level=excluded.fluency_level, "
+            "confidence=excluded.confidence, last_updated=excluded.last_updated",
+            (domain, level, 1.0, now)
         )
         self.db.commit()
 
@@ -237,6 +240,11 @@ class UserModelStore:
             self.record_domain_interaction(domain, correct=True, inferred_level="expert")
         elif domain and correction_type == "factual_error":
             self.record_domain_interaction(domain, correct=False)
+        if domain:
+            self.db.execute(
+                "UPDATE user_domain_fluency SET correction_count = correction_count + 1 "
+                "WHERE domain=?", (domain,))
+            self.db.commit()
 
     def get_corrections_for_domain(self, domain: str, limit: int = 10) -> list[dict]:
         """Get recent corrections in a domain (for analysis/display)."""
