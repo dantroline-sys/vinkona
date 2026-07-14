@@ -746,6 +746,15 @@ DEFAULTS: dict = {
         "searxng_url": None,                 # optional general web search (else Wikipedia only)
         "research_prompt": None,             # None → memory.DEFAULT_RESEARCH_PROMPT
         "synth_prompt": None,                # None → memory.DEFAULT_SYNTH_PROMPT
+        # Card hints (brains): after each research task, one extra big-LM call shapes the
+        # finding for the knowledge host — {card_type, context_features, answer} cached on
+        # the document.  The exporter lifts it into the solved-drop's front-matter, and the
+        # host's distiller runs the matching typed-card extractor (requirements / decision /
+        # playbook / case / procedure) with the features seeding the card's fit-gate
+        # discriminators.  A nudge, never authority — the host still extracts and verifies
+        # from the drop's own text.
+        "card_hints": True,
+        "card_hint_prompt": None,            # None → memory.DEFAULT_CARD_HINT_PROMPT
         # Hoarder mode: keep the FULL raw source text from every tool — discard no snippet — and
         # archive it as a document (the documents table) so nothing found is lost and it can all be
         # re-ingested later, even when this turn's distillation keeps only a little.  Distillation

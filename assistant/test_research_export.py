@@ -136,6 +136,66 @@ def test_render_matches_host_parser_format():
     assert "## Sources" in doc and "### Wikipedia" in doc and "X is a thing" in doc
 
 
+# ── card hints (brains): lifted into front-matter, shaped answer wins ────────────
+
+def _hinted_mem():
+    m = FakeMem()
+    m.db.execute("ALTER TABLE documents ADD COLUMN card_hint TEXT")
+    return m
+
+
+def test_card_hint_lifts_into_front_matter_and_answer():
+    import json
+    m = _hinted_mem()
+    hint = {"card_type": "playbook",
+            "context_features": {"situation": "user goes quiet", "channel": "voice"},
+            "answer": "**State**: quiet spell.\n\n**Moves**: wait a beat; then check in."}
+    m.add("handling silence", "raw source text", digest="generic digest")
+    m.db.execute("UPDATE documents SET card_hint=? WHERE id='d1'", (json.dumps(hint),))
+    m.db.commit()
+    folder = _tmp()
+    rx.export_research(m, folder, full=True)
+    doc = open(os.path.join(folder, _files(folder)[0])).read()
+    assert "card_type: playbook" in doc
+    assert 'context_features: {"situation": "user goes quiet"' in doc
+    # the shaped answer supersedes the generic digest as ## Answer
+    assert "wait a beat; then check in" in doc and "generic digest" not in doc
+    # front-matter stays one-line-scalar parseable: the JSON is on the same line
+    fm_line = [ln for ln in doc.splitlines() if ln.startswith("context_features:")][0]
+    assert json.loads(fm_line.split(":", 1)[1].strip())["channel"] == "voice"
+
+
+def test_null_card_type_ships_answer_but_no_hint_lines():
+    import json
+    m = _hinted_mem()
+    m.add("plain facts", "raw", digest="")
+    m.db.execute("UPDATE documents SET card_hint=? WHERE id='d1'",
+                 (json.dumps({"card_type": None, "context_features": {},
+                              "answer": "just a summary"}),))
+    m.db.commit()
+    folder = _tmp()
+    rx.export_research(m, folder, full=True)
+    doc = open(os.path.join(folder, _files(folder)[0])).read()
+    assert "card_type:" not in doc and "context_features:" not in doc
+    assert "just a summary" in doc                    # the answer still ships
+
+
+def test_malformed_hint_and_old_db_stay_unhinted():
+    m = _hinted_mem()
+    m.add("q1", "raw")
+    m.db.execute("UPDATE documents SET card_hint='not json' WHERE id='d1'")
+    m.db.commit()
+    folder = _tmp()
+    rx.export_research(m, folder, full=True)
+    doc = open(os.path.join(folder, _files(folder)[0])).read()
+    assert "card_type:" not in doc                    # malformed hint skipped
+    m2 = FakeMem()                                    # pre-card_hint schema (no column)
+    m2.add("q2", "raw")
+    folder2 = _tmp()
+    res = rx.export_research(m2, folder2, full=True)  # must not raise
+    assert res["questions"] == 1
+
+
 def main():
     import types
     passed = failed = 0

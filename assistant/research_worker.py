@@ -786,7 +786,8 @@ def _hoard_caps(rcfg) -> tuple[int, int, int]:
 async def research_one(session, memory, task, big, source_label, synth_prompt,
                        searxng_url=None, tools=None, trace=None,
                        max_chars=6000, max_items=6, synth_max_chars=0,
-                       scholarly=True, web=True) -> int:
+                       scholarly=True, web=True, card_hints=True,
+                       card_hint_prompt=None) -> int:
     """Fetch + distil one topic into memories. Returns how many were stored.  Gathers every tool's
     output and ARCHIVES the full raw (hoarder) while distilling from a bounded slice."""
     parts, url = await gather_sources(session, tools, task["query"], searxng_url=searxng_url,
@@ -803,6 +804,20 @@ async def research_one(session, memory, task, big, source_label, synth_prompt,
     n = await memory.learn(task["topic"], task.get("reason", ""), synth,
                            f"{source_label}:{url or via}", big["url"], big["model"],
                            synth_prompt, doc_id=doc_id, max_chars=synth_max_chars)
+    # Card hint (brains): shape the finding for the knowledge host — ONE cue-card hint
+    # ({card_type, context_features, answer}) cached on the document; the exporter lifts
+    # it into the drop's front-matter and the host's distiller runs the matching typed
+    # extractor.  Fail-soft: a missing hint just means a plain (unhinted) drop.
+    if card_hints:
+        try:
+            hint = await memory.card_hint(doc_id, task["topic"], big["url"], big["model"],
+                                          prompt=card_hint_prompt)
+            if hint and trace is not None:
+                trace.write(kind="card_hint", topic=task["topic"],
+                            card_type=hint.get("card_type"),
+                            features=len(hint.get("context_features") or {}))
+        except Exception as e:
+            _log(f"card hint failed for '{task['topic']}' (drop stays unhinted): {e}")
     _log(f"learned {n} note(s) on '{task['topic']}' (via {via}, doc {doc_id}, "
          f"archived {len(extract)} chars)")
     return n
@@ -1688,7 +1703,9 @@ async def main():
                                                tools=tools, trace=trace,
                                                max_chars=_gc, max_items=_gi, synth_max_chars=_sc,
                                                scholarly=rcfg.get("scholarly", True),
-                                               web=rcfg.get("web_search", False)))
+                                               web=rcfg.get("web_search", False),
+                                               card_hints=rcfg.get("card_hints", True),
+                                               card_hint_prompt=rcfg.get("card_hint_prompt")))
                 memory.mark_research(task["id"], "done" if n >= 0 else "failed")
                 # n == -1 means no source was found (distinct from "found a page but
                 # distilled nothing"): say why, so a silent 0 in the feed is actionable.

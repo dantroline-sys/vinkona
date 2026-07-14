@@ -16,6 +16,7 @@ a FULL run re-writes every question — which also repairs any file that was del
 """
 
 import hashlib
+import json
 import os
 import re
 import time
@@ -57,14 +58,20 @@ def exportable_rows(db, crawl_sources: tp.Iterable[str]) -> list[dict]:
     """Documents eligible for export: non-personal (kind not 'crawl') and whose topic is not a
     configured crawl source (catches legacy rows written before `kind` existed)."""
     deny = [s for s in (crawl_sources or []) if s]
-    sql = "SELECT rowid AS rowid, url, title, topic, text, digest, fetched_at, kind FROM documents " \
-          "WHERE COALESCE(kind,'research') <> 'crawl'"
+    cols = "rowid AS rowid, url, title, topic, text, digest, card_hint, fetched_at, kind"
+    sql = f"SELECT {cols} FROM documents WHERE COALESCE(kind,'research') <> 'crawl'"
     params: list = []
     if deny:
         sql += " AND topic NOT IN (%s)" % ",".join("?" * len(deny))
         params += deny
     sql += " ORDER BY rowid"
-    return [dict(r) for r in db.execute(sql, params).fetchall()]
+    try:
+        return [dict(r) for r in db.execute(sql, params).fetchall()]
+    except Exception:
+        # A pre-card_hint DB (the MemoryStore migration adds the column; a bare test
+        # fixture or an old snapshot may lack it) — export still works, just unhinted.
+        return [dict(r) for r in db.execute(
+            sql.replace(" card_hint,", ""), params).fetchall()]
 
 
 def render_doc(question: str, docs: list[dict], max_source_chars: int = 40000) -> str:
@@ -86,17 +93,48 @@ def render_doc(question: str, docs: list[dict], max_source_chars: int = 40000) -
     updated = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(
         max((d.get("fetched_at") or 0) for d in docs) or time.time()))
     q_yaml = question.replace('"', "'")
+    # Card hint (brains): the newest doc carrying one wins.  It becomes two extra
+    # front-matter scalars (card_type + one-line JSON context_features) that the host's
+    # parser lifts, plus the shaped answer — which supersedes the generic digests as
+    # `## Answer` (it IS the question-shaped synthesis, and the host runs its typed-card
+    # extractor on that Answer chunk).
+    hint = _pick_hint(docs)
+    hint_lines = ""
+    if hint.get("card_type"):
+        hint_lines = f"card_type: {hint['card_type']}\n"
+        if hint.get("context_features"):
+            hint_lines += ("context_features: "
+                           + json.dumps(hint["context_features"], ensure_ascii=False,
+                                        separators=(",", ": ")) + "\n")
+    if hint.get("answer"):
+        digests = [hint["answer"]]
     # Front-matter + headings must match the host's parser exactly (knowledgehost/research.py):
     #   provenance: vinkona  (its is_research_doc gate) · trust: low · the question under `# Question`
     #   · `## Answer` (synthesis fallback) · `## Sources` with a `### <source>` per hoard row.
     parts = [f'---\nprovenance: vinkona\nkind: research\ntrust: low\n'
              f'hash: {question_hash(question)}\nupdated: {updated}\nquestion: "{q_yaml}"\n'
-             f'sources:\n{fm_sources}\n---\n',
+             f'{hint_lines}sources:\n{fm_sources}\n---\n',
              f"# Question\n\n{question}\n"]
     if digests:
         parts.append("## Answer\n\n" + "\n\n".join(digests) + "\n")
     parts.append("## Sources\n\n" + "\n\n".join(sources))
     return "\n".join(parts).strip() + "\n"
+
+
+def _pick_hint(docs: list[dict]) -> dict:
+    """The card hint to ship for this question: the NEWEST doc's non-empty, parseable
+    card_hint (docs arrive rowid-ascending).  {} when no doc carries one."""
+    for d in reversed(docs):
+        raw = (d.get("card_hint") or "").strip()
+        if not raw:
+            continue
+        try:
+            hint = json.loads(raw)
+        except ValueError:
+            continue
+        if isinstance(hint, dict):
+            return hint
+    return {}
 
 
 def _write_if_changed(path: str, content: str) -> bool:
