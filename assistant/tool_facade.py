@@ -108,6 +108,10 @@ WRAPPERS: list = [
 # fast LM (still callable internally) — e.g. file_index, fourchan_thread, mail_list.
 PASSTHROUGH: list = [
     "weather", "kb_search", "kb_ask",
+    # runtime brain toggle on the knowledge host ("load the field-geology brain"):
+    # the host only exposes list/load/unload — non-destructive and reversible;
+    # import/eject stay panel-side, they change the master.
+    "kb_brain",
     "calendar_create", "calendar_update", "calendar_delete",
 ]
 
