@@ -898,29 +898,6 @@ DEFAULTS: dict = {
                  "fingerprint_fields": ["size"], "recrawl_after_days": 30},
             ],
         },
-        # Ambient context: a DISPOSABLE, no-LM snapshot of the user's "right now" (calendar,
-        # weather, news).  A scheduler calls these read tools on their TTLs and formats the
-        # results MECHANICALLY into a small "right now" block injected at session start — no
-        # LM call, no tool round-trip on the hot path, and it never touches durable memory.
-        # The fast LM can still fold anything relevant into real memory later, the usual way.
-        # Each source: {type, tool, arguments, ttl_s, max_items, priority?, trust?}.  type
-        # drives the formatter (calendar|weather|news; others fall back to raw text).  News/
-        # feeds are treated as UNTRUSTED (sanitised + fenced) since they're attacker-shaped.
-        "ambient": {
-            "enabled": False,
-            "refresh_interval_s": 300,       # scheduler cadence; each source also honours its ttl_s
-            "max_chars": 600,                # hard cap on the injected block
-            "max_items_per_source": 4,
-            "persist": True,                 # keep the cache across restarts (first session instant)
-            "sources": [
-                {"type": "calendar", "tool": "calendar_range_json", "arguments": {"days": 2},
-                 "ttl_s": 900, "max_items": 4, "priority": 7},   # parsed (format_calendar), needs JSON
-                {"type": "weather", "tool": "weather_now", "arguments": {},
-                 "ttl_s": 1800, "max_items": 1, "priority": 5},
-                {"type": "news", "tool": "rss_latest", "arguments": {}, "trust": "untrusted",
-                 "ttl_s": 1800, "max_items": 4, "priority": 3},
-            ],
-        },
         # Learning plans: a queued topic becomes a checklist of questions the worker
         # answers from sources over idle cycles ("research"), plus a few it raises with you
         # in conversation ("ask_user").  Watch progress in the Plans tab.
@@ -930,6 +907,31 @@ DEFAULTS: dict = {
             "surface_user_questions": 1,     # ask_user questions offered to the fast LM per turn
             "plan_prompt": None,             # None → memory.DEFAULT_PLAN_PROMPT
         },
+    },
+    # Ambient context: a DISPOSABLE, no-LM snapshot of the user's "right now" (calendar,
+    # weather, news).  A scheduler calls these read tools on their TTLs and formats the
+    # results MECHANICALLY into a small "right now" block injected at session start — no
+    # LM call, no tool round-trip on the hot path, and it never touches durable memory.
+    # The fast LM can still fold anything relevant into real memory later, the usual way.
+    # Each source: {type, tool, arguments, ttl_s, max_items, priority?, trust?}.  type
+    # drives the formatter (calendar|weather|news; others fall back to raw text).  News/
+    # feeds are treated as UNTRUSTED (sanitised + fenced) since they're attacker-shaped.
+    # (Top level, NOT under research — that's where every consumer reads it; it used to
+    # sit under research where enabling it did nothing.)
+    "ambient": {
+        "enabled": False,
+        "refresh_interval_s": 300,       # scheduler cadence; each source also honours its ttl_s
+        "max_chars": 600,                # hard cap on the injected block
+        "max_items_per_source": 4,
+        "persist": True,                 # keep the cache across restarts (first session instant)
+        "sources": [
+            {"type": "calendar", "tool": "calendar_range_json", "arguments": {"days": 2},
+             "ttl_s": 900, "max_items": 4, "priority": 7},   # parsed (format_calendar), needs JSON
+            {"type": "weather", "tool": "weather_now", "arguments": {},
+             "ttl_s": 1800, "max_items": 1, "priority": 5},
+            {"type": "news", "tool": "rss_latest", "arguments": {}, "trust": "untrusted",
+             "ttl_s": 1800, "max_items": 4, "priority": 3},
+        ],
     },
     # Proactive notifications Vinkona pushes to the client (a "bell").  The cascade
     # scans the calendar for upcoming events and queues reminders; the client polls
@@ -1084,6 +1086,12 @@ def load_config(path: str | None = None) -> dict:
     """Return the full runtime config: merged_config plus profile routing + absolute
     paths.  Every service reads through here."""
     cfg = merged_config(path)
+    # LEGACY: ambient once sat (only) under research in the schema, where enabling it did
+    # nothing — every consumer reads the top level.  Lift a user's research.ambient into
+    # place unless a real top-level block already overrides it.
+    legacy_amb = (cfg.get("research", {}) or {}).get("ambient")
+    if isinstance(legacy_amb, dict) and not cfg.get("ambient", {}).get("enabled"):
+        cfg["ambient"] = {**cfg.get("ambient", {}), **legacy_amb}
     # Route memory + personas through the active profile (snapshots/fork/fresh start).
     # This OVERRIDES memory.db_path / personas_path from config.json on purpose — those
     # two are owned by the profile now; everything else stays global.

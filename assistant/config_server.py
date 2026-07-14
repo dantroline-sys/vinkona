@@ -32,6 +32,7 @@ import array
 import importlib.util
 import json
 import math
+import os
 import sqlite3
 import time
 import urllib.request
@@ -45,6 +46,16 @@ def _load_mod(name: str):
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
+
+
+def _atomic_json(path: Path, obj) -> None:
+    """Write JSON via temp + os.replace.  config.json/personas.json are read concurrently
+    by the supervisor, cascade, worker and llm_server — a truncate-then-write could hand
+    any of them half a file (which load_config 'survives' by silently running on pure
+    DEFAULTS), and a crash mid-write would corrupt the file durably."""
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(obj, indent=2) + "\n")
+    os.replace(tmp, path)
 
 
 CFGMOD = _load_mod("config")
@@ -708,10 +719,10 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             return self._json(400, {"error": f"invalid JSON: {e}"})
         if path == "/api/config":
-            Path(self.config_path).write_text(json.dumps(obj, indent=2) + "\n")
+            _atomic_json(Path(self.config_path), obj)
             return self._json(200, {"ok": True})
         if path == "/api/personas":
-            Path(self._personas_path()).write_text(json.dumps(obj, indent=2) + "\n")
+            _atomic_json(Path(self._personas_path()), obj)
             return self._json(200, {"ok": True})
         if path == "/api/memory":
             try:
@@ -788,7 +799,7 @@ class Handler(BaseHTTPRequestHandler):
                     cj = json.loads(Path(self.config_path).read_text()) \
                         if Path(self.config_path).exists() else {}
                     cj.setdefault("big_lm2", {})["ctx_size"] = int(ctx)
-                    Path(self.config_path).write_text(json.dumps(cj, indent=2) + "\n")
+                    _atomic_json(Path(self.config_path), cj)
                 except Exception as e:
                     return self._json(500, {"error": f"could not set big_lm2 ctx: {e}"})
             ctrl = LOGS_DIR / "control"

@@ -54,17 +54,21 @@ def _doc_question(row: dict) -> str:
     return topic
 
 
-def exportable_rows(db, crawl_sources: tp.Iterable[str]) -> list[dict]:
-    """Documents eligible for export: non-personal (kind not 'crawl') and whose topic is not a
-    configured crawl source (catches legacy rows written before `kind` existed)."""
+def _exportable_where(crawl_sources: tp.Iterable[str]) -> tuple[str, list]:
+    """WHERE fragment + params for export-eligible documents: non-personal (kind not
+    'crawl') and whose topic is not a configured crawl source (catches legacy rows
+    written before `kind` existed)."""
     deny = [s for s in (crawl_sources or []) if s]
-    cols = "rowid AS rowid, url, title, topic, text, digest, card_hint, fetched_at, kind"
-    sql = f"SELECT {cols} FROM documents WHERE COALESCE(kind,'research') <> 'crawl'"
+    where = "COALESCE(kind,'research') <> 'crawl'"
     params: list = []
     if deny:
-        sql += " AND topic NOT IN (%s)" % ",".join("?" * len(deny))
+        where += " AND topic NOT IN (%s)" % ",".join("?" * len(deny))
         params += deny
-    sql += " ORDER BY rowid"
+    return where, params
+
+
+def _fetch(db, cols: str, where: str, params: list) -> list[dict]:
+    sql = f"SELECT {cols} FROM documents WHERE {where} ORDER BY rowid"
     try:
         return [dict(r) for r in db.execute(sql, params).fetchall()]
     except Exception:
@@ -72,6 +76,16 @@ def exportable_rows(db, crawl_sources: tp.Iterable[str]) -> list[dict]:
         # fixture or an old snapshot may lack it) — export still works, just unhinted.
         return [dict(r) for r in db.execute(
             sql.replace(" card_hint,", ""), params).fetchall()]
+
+
+_FULL_COLS = "rowid AS rowid, url, title, topic, text, digest, card_hint, fetched_at, kind"
+
+
+def exportable_rows(db, crawl_sources: tp.Iterable[str]) -> list[dict]:
+    """Every export-eligible document, full columns (kept for callers/tests; the
+    incremental path below avoids pulling `text` for untouched questions)."""
+    where, params = _exportable_where(crawl_sources)
+    return _fetch(db, _FULL_COLS, where, params)
 
 
 def render_doc(question: str, docs: list[dict], max_source_chars: int = 40000) -> str:
@@ -166,15 +180,19 @@ def export_research(memory, folder: str, crawl_sources: tp.Iterable[str] = (), *
     if not folder:
         return {"ok": False, "error": "no export folder configured", "written": 0, "skipped": 0}
     os.makedirs(folder, exist_ok=True)
-    rows = exportable_rows(memory.db, crawl_sources)
+    # Light scan first (no `text`): group every eligible doc by question, then pull the
+    # heavy full rows only for questions actually touched this run — the hourly
+    # incremental would otherwise load the whole lifetime hoard for a no-op.
+    where, params = _exportable_where(crawl_sources)
+    light = _fetch(memory.db, "rowid AS rowid, title, topic", where, params)
 
     groups: dict[str, dict] = {}
-    for r in rows:
+    for r in light:
         q = _doc_question(r)
         if not q:
             continue
-        g = groups.setdefault(question_hash(q), {"question": q, "docs": [], "max_rowid": 0})
-        g["docs"].append(r)
+        g = groups.setdefault(question_hash(q), {"question": q, "rowids": [], "max_rowid": 0})
+        g["rowids"].append(r["rowid"])
         g["max_rowid"] = max(g["max_rowid"], r["rowid"])
 
     try:
@@ -185,15 +203,17 @@ def export_research(memory, folder: str, crawl_sources: tp.Iterable[str] = (), *
     for h, g in groups.items():
         if not full and g["max_rowid"] <= wm:
             continue
-        content = render_doc(g["question"], g["docs"], max_source_chars=max_source_chars)
+        ids = ",".join(str(i) for i in g["rowids"])
+        docs = _fetch(memory.db, _FULL_COLS, f"rowid IN ({ids})", [])
+        content = render_doc(g["question"], docs, max_source_chars=max_source_chars)
         if _write_if_changed(os.path.join(folder, h + ".md"), content):
             written += 1
         else:
             skipped += 1
-    new_wm = max((r["rowid"] for r in rows), default=wm)
+    new_wm = max((r["rowid"] for r in light), default=wm)
     try:
         memory.set_state(_WM_KEY, str(new_wm))
     except Exception:
         pass
     return {"ok": True, "folder": folder, "written": written, "skipped": skipped,
-            "questions": len(groups), "documents": len(rows), "watermark": new_wm, "full": full}
+            "questions": len(groups), "documents": len(light), "watermark": new_wm, "full": full}

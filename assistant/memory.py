@@ -40,13 +40,14 @@ import numpy as np
 # (Aho-Corasick, scoring) don't require it.
 
 try:                                    # untrusted-content defenses (prompt injection)
-    from safety import sanitize_external, wrap_untrusted
+    from safety import sanitize_external, wrap_untrusted, query_privacy
 except Exception:                       # importlib-loaded context without cwd on sys.path
     import importlib.util as _ilu
     from pathlib import Path as _Path
     _spec = _ilu.spec_from_file_location("safety", _Path(__file__).resolve().parent / "safety.py")
     _safety = _ilu.module_from_spec(_spec); _spec.loader.exec_module(_safety)
     sanitize_external, wrap_untrusted = _safety.sanitize_external, _safety.wrap_untrusted
+    query_privacy = _safety.query_privacy
 
 try:                                    # privileged people/identity store
     from people import PeopleStore
@@ -1301,6 +1302,19 @@ class MemoryStore:
         if drop:
             self.db.commit()
             self.reload()
+
+        # Table sediment: delivered notifications and long-settled research-queue rows
+        # serve no reader and grow forever.  (documents/chat_logs are deliberately kept —
+        # exports and review windows walk them.)
+        keep_s = g.get("sediment_age_days", 90) * 86400
+        stats["sediment"] = (
+            self.db.execute("DELETE FROM notifications WHERE delivered_at IS NOT NULL "
+                            "AND delivered_at < ?", (now - keep_s,)).rowcount
+            + self.db.execute("DELETE FROM research_queue WHERE status IN "
+                              "('done','failed','skipped') AND updated_at < ?",
+                              (now - keep_s,)).rowcount)
+        if stats["sediment"]:
+            self.db.commit()
         return stats
 
     # ── reflection (session end): big LM curates the store ───────────────────
@@ -1345,7 +1359,16 @@ class MemoryStore:
                 elif action in ("add", "update"):
                     e = {k: op[k] for k in ("triggers", "context_tags", "payload",
                                             "priority", "category", "expiry") if k in op}
-                    e["id"] = op.get("id") or _new_id()
+                    mid = op.get("id") or _new_id()
+                    cur = self.entries.get(mid)
+                    if cur:
+                        # Partial update: keep every field the op omitted — upsert's
+                        # setdefaults would otherwise reset triggers/tags/priority/
+                        # category/expiry (and re-embed from an empty trigger list).
+                        e = {**{k: cur[k] for k in ("triggers", "context_tags", "payload",
+                                                    "priority", "category", "expiry")
+                                if k in cur}, **e}
+                    e["id"] = mid
                     e["source"] = source
                     if perspective_issue(e.get("payload", ""), e.get("category", "")):
                         tags = list(e.get("context_tags") or [])
@@ -1501,6 +1524,17 @@ class MemoryStore:
         data = await self._chat_json(big_url, big_model, full, think=True)
         topics = [t for t in (data or {}).get("topics", [])
                   if isinstance(t, dict) and (t.get("topic") or "").strip()][:max_questions]
+        # Belt and braces on the prompt's de-personalisation rule: mechanically mask any
+        # private name/email/number that leaked into a question before it can reach the
+        # research queue (and from there the exported drop).
+        try:
+            names = self.people.private_names()
+        except Exception:
+            names = ()
+        for t in topics:
+            for k in ("topic", "query", "reason"):
+                if (t.get(k) or "").strip():
+                    _, t[k] = query_privacy(t[k], names, 300)
         # Don't re-ask what's already pending or recently answered (the same correction
         # theme tends to recur across reflection windows).
         fresh = [t for t in topics if not self._topic_queued_or_recent(t["topic"])]
@@ -2020,13 +2054,16 @@ class MemoryStore:
         progressive crawl that walks a corpus (mail/files) a batch at a time.  doc_id
         links the created memories to a stored source document (so the full substance can
         be grounded/digested when they're recalled)."""
-        if replace:
-            self.delete_by_source(source)
         full = (f"{self._voice_anchor()}{prompt or DEFAULT_INGEST_PROMPT}\n\n"
                 f"Source label: {source}\n"
                 + wrap_untrusted(sanitize_external(
                     content, self.ctx.get("ingest_chars", 6000)), "tool snapshot"))
         data = await self._chat_json(big_url, big_model, full)
+        # Wipe the old snapshot only once the LM has actually produced a replacement —
+        # deleting first meant a failed/garbled LM call left the source empty until the
+        # next refresh (calendar/RSS memories vanished for a whole cycle).
+        if replace and (data or {}).get("operations"):
+            self.delete_by_source(source)
         n = 0
         for op in (data or {}).get("operations", []):
             try:

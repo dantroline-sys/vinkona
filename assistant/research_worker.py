@@ -599,7 +599,12 @@ async def crawl_one(memory, tools, big, job, crawl_prompt, trace=None) -> int:
     list_args.setdefault("limit", batch)
     list_args["offset"] = cursor
     _tw(kind="crawl_start", source=source, tool=list_tool, offset=cursor)
-    items = _parse_items(await tools.call(list_tool, list_args))
+    raw = await tools.call(list_tool, list_args)
+    if not raw or raw.startswith("("):               # "(tool error: …)" — host down/flaky
+        _tw(kind="crawl", source=source, learned=0, offset=cursor,
+            error=(raw or "no response")[:120])
+        return 0                                     # keep the cursor; retry next cycle
+    items = _parse_items(raw)
     if not items:
         memory.set_state(key, 0)                     # exhausted → restart to catch new items
         _tw(kind="crawl", source=source, learned=0, offset=cursor, wrapped=True)
@@ -799,7 +804,10 @@ async def research_one(session, memory, task, big, source_label, synth_prompt,
     extract = _combine(parts)                        # the FULL raw union — archived, discard nothing
     via = " + ".join(label for label, _u, _t in parts)
     # Keep the raw source in the knowledge base; link every distilled snippet to it.
-    doc_id = memory.store_document(url or "", via or task["topic"], task["topic"], extract)
+    # The stored topic becomes the exported drop's question, so archive the privacy-
+    # masked form (task["topic_public"], set by the queue loop) when one was computed.
+    pub = task.get("topic_public") or task["topic"]
+    doc_id = memory.store_document(url or "", via or pub, pub, extract)
     synth = extract if synth_max_chars <= 0 else extract[:synth_max_chars]
     n = await memory.learn(task["topic"], task.get("reason", ""), synth,
                            f"{source_label}:{url or via}", big["url"], big["model"],
@@ -1106,7 +1114,11 @@ async def main():
         """Idle = no cascade session open AND quiet for idle_after seconds.  The cascade
         heartbeats on connect and every turn; a session left 'open' but silent for
         open_stale seconds is treated as crashed/abandoned so idle work isn't blocked
-        forever.  No heartbeat file ⇒ nothing's running ⇒ idle."""
+        forever.  No heartbeat file ⇒ nothing's running ⇒ idle.  An UNREADABLE file is
+        the opposite: someone is mid-write (or the disk hiccuped) — fail toward busy so
+        big-LM idle work can't start against a possibly-live session."""
+        if not activity_file.exists():
+            return True
         try:
             d = json.loads(activity_file.read_text())
             age = time.time() - d.get("ts", 0)
@@ -1114,7 +1126,7 @@ async def main():
                 return age >= open_stale
             return age >= idle_after
         except Exception:
-            return True
+            return False
 
     # Idle-work suppression: the header button (worker_state 'idle_override') plus
     # scheduled quiet hours (config research.idle.quiet_hours).  When suppressed we
@@ -1518,7 +1530,10 @@ async def main():
                 extract = _combine(parts)                # FULL raw union — archived, discard nothing
                 via = " + ".join(label for label, _u, _t in parts)
                 try:
-                    doc_id = memory.store_document(url or "", q["question"], "plan", extract)
+                    # The archived title becomes the exported drop's question — store the
+                    # privacy-MASKED form (in redact mode the raw one was just refused as
+                    # an outbound query; it must not leave via the export instead).
+                    doc_id = memory.store_document(url or "", masked, "plan", extract)
                 except Exception:
                     doc_id = None
                 synth = extract if _sc <= 0 else extract[:_sc]
@@ -1712,7 +1727,11 @@ async def main():
                             reason="privacy", private=kinds)
                 continue
             task = dict(task); task["query"] = send_q
-            trace.write(kind="research_start", topic=topic, query=masked,
+            try:                                     # masked topic for the archive/export path
+                _, _, task["topic_public"] = outbound_query(topic, memory, rcfg)
+            except Exception:
+                task["topic_public"] = topic
+            trace.write(kind="research_start", topic=task["topic_public"], query=masked,
                         reason=task.get("reason", ""))
             try:
                 _gc, _gi, _sc = _hoard_caps(rcfg)

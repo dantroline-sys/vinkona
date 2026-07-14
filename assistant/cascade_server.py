@@ -26,6 +26,7 @@ import argparse
 import asyncio
 import importlib.util
 import json
+import os
 import re
 import ssl
 import subprocess
@@ -207,8 +208,11 @@ class CascadeServer:
             return
         try:
             self._activity_path.parent.mkdir(parents=True, exist_ok=True)
-            self._activity_path.write_text(
-                json.dumps({"open": bool(open), "ts": time.time()}))
+            # Atomic replace: the idle worker treats an unreadable/torn file as "idle",
+            # so a partial write could let big-LM work start mid-conversation.
+            tmp = self._activity_path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps({"open": bool(open), "ts": time.time()}))
+            os.replace(tmp, self._activity_path)
         except Exception:
             pass
 
@@ -655,6 +659,11 @@ class _Session:
                         await t
                     except asyncio.CancelledError:
                         pass
+                    except Exception as e:
+                        # A task that already died (e.g. the client reset mid-speech)
+                        # re-raises here — swallow it or the loop aborts, the fast-LM
+                        # lease keepalive leaks, and the session is never reflected.
+                        _log(f"session task ended with error (cleanup continues): {e}")
                 self.s.mark_activity(open=False)              # session closed; idle clock starts
                 await self._reflect()
 

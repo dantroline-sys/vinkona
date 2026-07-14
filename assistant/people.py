@@ -115,25 +115,34 @@ class PeopleStore:
         return dict(r) if r else None
 
     def find(self, name: str) -> dict | None:
-        """Find a person by name or alias (case-insensitive)."""
+        """Find a person by name or alias (case-insensitive).  Aliases are compared as
+        whole entries — a substring LIKE would resolve 'Sam' to someone aliased
+        'Samantha' and attach facts to the wrong person."""
         if not name:
             return None
         r = self.db.execute(
-            "SELECT * FROM people WHERE lower(name)=lower(?) "
-            "OR (aliases<>'' AND lower(aliases) LIKE lower(?)) LIMIT 1",
-            (name, f"%{name}%")).fetchone()
-        return dict(r) if r else None
+            "SELECT * FROM people WHERE lower(name)=lower(?) LIMIT 1", (name,)).fetchone()
+        if r:
+            return dict(r)
+        want = name.strip().lower()
+        for row in self.db.execute("SELECT * FROM people WHERE aliases<>''"):
+            if want in (a.strip().lower() for a in (row["aliases"] or "").split(",")):
+                return dict(row)
+        return None
 
     def resolve(self, who: str) -> str:
         """Map a tool's `person` argument (in Vinkona's voice) to a person_id, creating an
         'other' if it's a new name.  'I/me/myself' → self; 'you/the user' → user."""
-        w = (who or "").strip().lower()
+        who = (who or "").strip()                     # LMs do emit person: null
+        if not who:                                   # decline rather than guess a subject
+            raise ValueError("no person given")
+        w = who.lower()
         if w in ("self", "me", "myself", "i", "vinkona"):
             return self.ensure_person("self", name="Vinkona")
         if w in ("user", "you", "the user"):
             return self.ensure_person("user")
         found = self.find(who)
-        return found["id"] if found else self.ensure_person("person", name=who.strip())
+        return found["id"] if found else self.ensure_person("person", name=who)
 
     # ── attributes (with history) ─────────────────────────────────────────────
     def set_attribute(self, person_id: str, facet: str, key: str, value: str, *,
