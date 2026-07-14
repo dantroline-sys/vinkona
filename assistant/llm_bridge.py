@@ -526,6 +526,7 @@ class LLMBridge:
         deliberate: tp.Optional[dict] = None,
         identity_hook: tp.Optional[tp.Callable[[bool], str]] = None,
         identity_detail_hook: tp.Optional[tp.Callable[[bool], str]] = None,
+        user_profile_hook: tp.Optional[tp.Callable[[], str]] = None,
         situation_hook: tp.Optional[tp.Callable[[], str]] = None,
         ambient_hook: tp.Optional[tp.Callable[[], str]] = None,
         rhythm_hook: tp.Optional[tp.Callable[[], str]] = None,
@@ -672,6 +673,12 @@ class LLMBridge:
         # the self-determination tools (Vinkona editing her own character / noting people).
         self.identity_hook = identity_hook
         self.identity_detail_hook = identity_detail_hook
+        # user_profile_hook() -> the LEARNED user model (domain fluency, communication
+        # patterns, action rate — user_model.get_user_context_for_lm).  Read by the big LM
+        # only (briefing + deliberation), so its direction is calibrated to who it's
+        # actually talking to: depth to expertise, format to preference.  Distinct from
+        # identity_detail_hook, which is the manually-curated people store.
+        self.user_profile_hook = user_profile_hook
         # situation_hook() -> a compact "what's coming up / salient now" block (calendar
         # proximity, etc.).  Read by the big LM only, in its latency-free briefing, so it can
         # decide — conservatively — whether to have the fast LM bring something up timely.
@@ -1905,7 +1912,7 @@ class LLMBridge:
                 "right matters. Think it through and give the best, accurate answer. Be "
                 "substantive but concise — it will be spoken aloud, so at most a few "
                 "sentences: no preamble, no lists, no markdown.\n\n"
-                f"{self._identity_detail()}"
+                f"{self._identity_detail()}{self._user_profile()}"
                 f"Conversation so far:\n{convo}\n\nAnswer this well: {question}\n\nAnswer:")
             task = asyncio.create_task(self._big_lm_consider(prompt))
             answer = await self._await_with_progress(task)
@@ -1932,6 +1939,17 @@ class LLMBridge:
             return ""
         return (f"Who's involved (keep them consistent and in character):\n{d}\n\n"
                 if d else "")
+
+    def _user_profile(self) -> str:
+        """The learned user model (domain fluency, communication patterns) as a prompt
+        block for the big LM.  Empty when no hook or nothing confident yet."""
+        if not self.user_profile_hook:
+            return ""
+        try:
+            p = self.user_profile_hook()
+        except Exception:
+            return ""
+        return f"{p}\n\n" if p else ""
 
     async def _big_lm_consider(self, prompt: str) -> str:
         """One synchronous big-LM call with thinking ON — the actual 'deeper thought'."""
@@ -2190,6 +2208,7 @@ class LLMBridge:
         messages = [
             {"role": "system", "content": "You are a concise conversation analyst."},
             {"role": "user", "content": f"{prompt}{situation}{affect}{working}\n\n{self._identity_detail()}"
+                                        f"{self._user_profile()}"
                                         f"{knowledge}{guidance}\n\nConversation:\n{conversation_text}"
                                         f"{reference}\n\nBriefing:"},
         ]

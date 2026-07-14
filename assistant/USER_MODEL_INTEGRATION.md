@@ -172,7 +172,9 @@ async def infer_domain_from_kb_results(kb_results: list[dict]) -> str | None:
    corrections idle task (memory.review_corrections) then turns fresh ones into
    generalized research questions → case/procedure cue cards via the research pipeline.
 2. **Wire record_interaction() into the follow-up/action handler** — detect when user acts on advice
-3. **Pass get_user_context_for_lm() to big LM prompts** — personalize synthesis
+3. ~~**Pass get_user_context_for_lm() to big LM prompts**~~ — DONE: `user_profile_hook` on the
+   LM bridge injects it into the big LM's briefing and deliberation (cached per session);
+   the fast voice prompt deliberately stays lean.
 4. **Add UI view in config_ui.html** — show the user their inferred profile (Settings tab)
 5. **Extend infer_domain()** — use kb_ask facets instead of keywords
 6. **Retrieval ranking** — kb_ask uses get_all_domain_fluency() to adjust result order

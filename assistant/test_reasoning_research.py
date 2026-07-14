@@ -282,6 +282,38 @@ async def _none():
     return None
 
 
+async def test_user_profile_reaches_big_lm_only():
+    # The learned user model (user_profile_hook) must land in the big LM's briefing and
+    # in deliberation, never in the fast prompt; a failing hook must be harmless.
+    captured = {}
+    async def fake_stream(url, model, messages, max_tokens, **kw):
+        captured["messages"] = messages
+        yield "Directive."
+
+    profile = "## User Profile\n\n- The user is expert in: audio engineering"
+    b = bridge.LLMBridge(server_state=types.SimpleNamespace(), fast_lm_url="http://f",
+                         big_lm_url="http://big", inject_time=False,
+                         user_profile_hook=lambda: profile, trace_hook=lambda e: None)
+    b._stream_chat = fake_stream
+    b.history = [{"role": "user", "content": "mix question"},
+                 {"role": "assistant", "content": "sure"}]
+    await b._update_big_lm_briefing()
+    check("user profile reaches the briefing", "audio engineering" in captured["messages"][-1]["content"])
+    check("profile block keeps its heading", "## User Profile" in captured["messages"][-1]["content"])
+    sys_prompt = b._system_content() if hasattr(b, "_system_content") else b.system_prompt
+    check("fast prompt does not carry the profile", "audio engineering" not in sys_prompt)
+
+    def boom():
+        raise RuntimeError("db gone")
+    b2 = bridge.LLMBridge(server_state=types.SimpleNamespace(), fast_lm_url="http://f",
+                          big_lm_url="http://big", inject_time=False,
+                          user_profile_hook=boom, trace_hook=lambda e: None)
+    check("failing hook degrades to empty", b2._user_profile() == "")
+    b3 = bridge.LLMBridge(server_state=types.SimpleNamespace(), fast_lm_url="http://f",
+                          big_lm_url="http://big", inject_time=False)
+    check("no hook, no block", b3._user_profile() == "")
+
+
 async def test_lead_levels():
     captured = {}
     async def fake_stream(url, model, messages, max_tokens):
@@ -1035,6 +1067,7 @@ async def main():
     await test_forced_answer_after_tool()
     await test_sayback_spoken_directly()
     await test_doc_grounded_briefing()
+    await test_user_profile_reaches_big_lm_only()
     await test_lead_levels()
     test_tool_result_trace()
     await test_confirm_guard()

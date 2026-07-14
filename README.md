@@ -77,15 +77,16 @@ Three composable systems (see
 
 - **User model** (`assistant/user_model.py`) — explicit, persistent tracking of
   your domain fluency, communication preferences, corrections, and whether you
-  acted on advice. Injected into the big LM's prompts so responses are tailored
-  to *you*, not a generic user.
-- **Research reflection** (`assistant/research_reflection.py`) — the assistant
-  periodically reviews its own recent research, synthesizes what it learned,
-  and adjusts its model of you and its future research direction.
-- **Retrieval confidence** (`assistant/retrieval_confidence.py`) — retrieved
-  knowledge is scored for recency, source convergence, domain fit, and
-  base-rate usefulness, so the assistant can say "I'm fairly confident" or
-  "verify this elsewhere" and mean it.
+  acted on advice. Injected into the big LM's briefing and deliberation prompts
+  so responses are tailored to *you*, not a generic user.
+- **Corrections → research** (the idle reviewer, in `memory.py` +
+  `research_worker.py`) — idle reflection spots moments you corrected the
+  assistant and banks them; fresh corrections are then framed as generalized
+  research questions whose answers come back as cue cards, so the same
+  correction doesn't need making twice.
+- **Retrieval confidence** — lives host-side: the knowledge host's fit-gate
+  scores answers against the asked situation and abstains on a clash, so
+  "topically near" never silently becomes "wrong answer".
 
 ## Design principles
 

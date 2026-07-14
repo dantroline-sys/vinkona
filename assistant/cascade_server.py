@@ -434,6 +434,7 @@ class _Session:
         self.session_id = uuid.uuid4().hex
         self.active_tags: set = set()                         # rolling conversation tags
         self._rhythm = ""                                     # usage-rhythm line (set at session open)
+        self._user_profile_cache = None                       # learned user model (per session)
         self._persona_name = default_persona
 
         v = cfg["vad"]
@@ -608,6 +609,7 @@ class _Session:
                                    else None),
             identity_hook=(self._identity_block
                            if (self.s.memory and people_cfg.get("enabled", True)) else None),
+            user_profile_hook=(self._user_profile if self.s.memory else None),
             identity_detail_hook=(self._identity_detail
                                   if (self.s.memory and people_cfg.get("enabled", True)) else None),
             situation_hook=(self._situation
@@ -1019,6 +1021,17 @@ class _Session:
     def _identity_detail(self, roleplay: bool = False) -> str:
         """Full structured self+user profile for the big LM (reasoning/continuity tier)."""
         return self.s.memory.people.identity_detail(roleplay=roleplay)
+
+    def _user_profile(self) -> str:
+        """The LEARNED user model (domain fluency, communication patterns, corrections)
+        for the big LM's briefing/deliberation.  Cached per session — several queries,
+        and the profile only moves between sessions (reflection updates it)."""
+        if self._user_profile_cache is None:
+            try:
+                self._user_profile_cache = self.s.memory.user.get_user_context_for_lm()
+            except Exception:
+                self._user_profile_cache = ""
+        return self._user_profile_cache
 
     @staticmethod
     def _rel_time(mins: int) -> str:

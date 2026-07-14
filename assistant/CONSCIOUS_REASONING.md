@@ -1,240 +1,89 @@
 # Conscious Reasoning in Vinkona
 
-Three interconnected systems make a small LM behave as though it genuinely understands the user and learns from experience:
+Three interconnected mechanisms make a small LM behave as though it genuinely
+understands the user and learns from experience. All three are LIVE — this doc
+describes what runs, not a plan. (Two earlier scaffolding modules,
+`research_reflection.py` and `retrieval_confidence.py`, were removed 2026-07:
+their intent is implemented by the corrections reviewer below and by the
+knowledge-host's fit-gate respectively.)
 
-## 1. User Model (`user_model.py`)
+## 1. User model (`user_model.py`)
 
-**What it does:** Tracks the user's domain fluency, communication preferences, and correction history.
+**What it does:** Tracks the user's domain fluency, communication preferences,
+and correction history, in memory.db alongside everything else.
 
-**Why it matters:** A 9B model can't hold everything. But it CAN be given explicit context about THIS user, which lets it make smarter decisions about:
-- How much detail to include (expert vs. novice)
-- What format to use (narrative vs. bulleted)
-- How much to trust its own reasoning (when has it been right/wrong before?)
+**Why it matters:** A 9B model can't hold everything. But it CAN be given
+explicit context about THIS user, which lets it make smarter decisions about
+how much detail to include (expert vs. novice), what format to use, and how
+much to trust its own reasoning in a domain where it's been corrected before.
 
 **Key tables:**
 - `user_domain_fluency` — what the user is expert/intermediate/novice in
-- `user_corrections` — when user said "actually..." (drives expertise updates)
-- `user_interactions` — whether user acted on advice (tracks base-rate effectiveness)
-- `user_communication_pattern` — inferred style preferences (prefers_narrative, etc.)
+- `user_corrections` — when the user said "actually..." (drives expertise updates)
+- `user_interactions` — whether the user acted on advice
+- `user_communication_pattern` — inferred style preferences
 
-**In practice:**
-```
-Before: "Here's what I found about X."
-After (with user model): "I know you're expert in medicine, so I'm focusing on 
-the cutting-edge research. I was wrong about Y last time, so I'm flagging that."
-```
+**Live paths:**
+- **Capture** — idle reflection (`memory.idle_reflect`) reviews windows of past
+  conversation and banks any corrections it spots via
+  `user.record_correction(source_ref="idle_reflect")`. No extra LM call — it's
+  a third output of the same reflection pass.
+- **Injection** — the cascade passes `user_profile_hook` →
+  `memory.user.get_user_context_for_lm()` into the LM bridge (cached per
+  session). The block lands in the big LM's **briefing** and **deliberation**
+  prompts only — the reasoning tier calibrates depth and format to the actual
+  user; the fast voice prompt stays lean.
 
-**Integration points:**
-- `memory.user.record_correction()` when user clarifies
-- `memory.user.record_interaction()` when user acts on advice
-- `memory.user.get_user_context_for_lm()` in prompt synthesis
+## 2. Corrections → research (the idle reviewer)
 
-## 2. Research Reflection (`research_reflection.py`)
+**What it does:** Turns banked corrections into durable behavioural knowledge.
+A new `corrections` idle task (`memory.review_corrections`) reviews fresh
+corrections once (watermark `corrections.review_watermark`), asks the big LM to
+frame the generalizable patterns as research questions, and queues them under
+session `corrections`. The normal research pipeline answers them, the card-hint
+pass shapes each finding, and the knowledge host distills **case/procedure cue
+cards** — so the next time the *situation* matches, kb_ask can say what to do
+differently.
 
-**What it does:** Periodically reviews what Vinkona has researched and what the knowledge-host distilled from it. Synthesizes insights and updates the user model.
+**Privacy:** the raw correction text never leaves memory.db. The framing prompt
+(`DEFAULT_CORRECTIONS_PROMPT`) requires fully general, de-personalised
+questions, and `safety.query_privacy` + `people.private_names` mechanically
+mask anything that slips through before it reaches the queue.
 
-**Why it matters:** Without reflection, research findings disappear into the knowledge base. Reflection makes learning visible and coherent. The system can say "over the past week I researched X, found Y, and noticed a pattern about Z."
+**Config:** `research.idle.corrections_max` (default 2 per cycle),
+`research.idle.corrections_prompt`, task gate `corrections` in
+`research.idle.tasks`.
 
 **The loop:**
 ```
-Research → Export to host → Host distills into cards → Vinkona reviews cards → 
-Synthesis → Update user model + record learnings → Inform future research
+User corrects → idle_reflect banks it → review_corrections generalizes it
+  → research queue → sources gathered → card_hint shapes the finding
+  → host distills a case/procedure card → kb_ask guidance next time
 ```
 
-**Key function:** `reflect_on_research(memory_store, user_model_store, db)`
+## 3. Retrieval confidence (host-side)
 
-**In practice:**
-```
-Task: Research pain management in fibromyalgia
-✓ Vinkona researches, finds sources
-✓ Exports to host (solved/*.md)
-✓ Host distills into cards
-✓ Vinkona reviews: "Found strong evidence for X, contradicting my prior Y"
-✓ Updates user model: "pain management domain fluency = intermediate"
-✓ Records insight: "Fibromyalgia pain responds to X differently than neuropathic"
-✓ Next research questions account for this learning
-```
+Calibrated trust lives where retrieval lives: the knowledge host's **fit-gate**
+scores every candidate answer against the asked situation
+(`context_features` vs. card discriminators) and **abstains on a clash** — so
+"topically near" never silently becomes "wrong answer". Consequential
+questions default to `rigor='high'` (source firewall + strength adjudication).
+Nothing on the Vinkona side re-scores results; the confidence the host returns
+is the confidence the bridge gates on (`knowledge_host.min_confidence`).
 
-**Integration points:**
-- Idle task in research_worker.py, runs daily or on-demand
-- Calls big LM to synthesize themes from recent research
-- Records updates via `user_model_store.record_domain_interaction()`
+## How they work together
 
-## 3. Retrieval Confidence (`retrieval_confidence.py`)
+1. **User asks** → kb_ask retrieves, fit-gates, abstains-or-answers
+2. **Big LM briefing** carries the user profile → direction calibrated to
+   THIS user (depth to expertise, format to preference)
+3. **User corrects** → next idle reflection banks it
+4. **Idle reviewer** generalizes fresh corrections into research questions
+5. **Research → cue cards** → the correction never needs making twice
+6. Domain fluency shifts with corrections (`domain_expert` promotes,
+   `factual_error` in a domain lowers trust in Vinkona's own reasoning there)
 
-**What it does:** Scores retrieved cards for confidence based on recency, source convergence, user domain fit, and base-rate (how often similar advice was useful).
+## Remaining wiring (small, tracked in USER_MODEL_INTEGRATION.md)
 
-**Why it matters:** A system that says "I'm 65% confident because sources differ, but here are the common points" is more useful than a system that just returns results without caveats. Confidence scores let the big LM hedge appropriately.
-
-**Confidence components:**
-- **Recency** (25%): how fresh are the sources? (fresh=1.0, >1 year old=0.3)
-- **Source convergence** (25%): do multiple sources agree? (3+ converging=1.0, single=0.6)
-- **Domain fit** (25%): does this match user's known expertise? (expert=0.8, novice=0.9)
-- **Base rate** (25%): how often has similar advice worked? (high action rate=0.8+)
-
-**Confidence messaging:**
-```
-confidence=0.9: "I'm very confident about this."
-confidence=0.75: "I'm fairly confident about this."
-confidence=0.6: "I'm moderately confident, but watch for exceptions."
-confidence=0.3: "I'm quite uncertain; verify elsewhere."
-```
-
-**In practice:**
-```
-Query: "Will vitamin D help my pain?"
-Result 1: "Research from 2023 + 4 converging sources, user expert in medicine"
-  → confidence=0.88 → "I'm fairly confident"
-Result 2: "Single blog post from 2020"
-  → confidence=0.32 → "I'm uncertain; verify elsewhere"
-```
-
-**Integration points:**
-- Wraps kb_ask results before passing to big LM
-- Scores added to each card: `card["confidence"] = 0.75`
-- Big LM qualifies answers based on score (high confidence = direct; low = hedged)
-
----
-
-## How They Work Together
-
-### Session flow
-
-1. **User asks a question** → kb_ask retrieves candidate cards
-2. **Retrieval confidence scores each** → high-confidence results prioritized
-3. **User model context injected** → big LM knows user's domain fluency
-4. **LM generates response** → personalized depth, format, confidence qualifiers
-5. **User clarifies/corrects** → `record_correction()` updates user model + domain fluency
-6. **Next idle cycle** → reflection synthesizes learnings + updates model + proposes next research
-
-### Passive learning loop
-
-```
-Query 1: "How does morphine work?"
-  ✗ User corrects: "Actually opioid receptors..."
-  → record_correction(type="domain_expert")
-  → user.domain_fluency["pharmacology"] = "expert" (up from intermediate)
-
-Query 2: "Best antidepressant for fibromyalgia?"
-  ✓ User acts on advice
-  → record_interaction(user_acted_on_response=True)
-  → base_rate for psychiatry advice bumps up
-
-Query 3: "What's new in pain research?"
-  → retrieval includes both high-confidence (recent, converging) and low-confidence (novel, single-source)
-  → LM synthesizes: "here's consensus (confident), here's emerging (uncertain)"
-  → personalized because LM knows user is pharmacology expert but intermediate in psychiatry
-
-Idle cycle: reflect_on_research()
-  → notices pattern: "user is deepening expertise in pain management + psychiatric comorbidity"
-  → updates user model: pain_management = expert, psychiatry = intermediate
-  → proposes: "Research trauma-informed pain management for fibromyalgia patients"
-  → next research cycle focuses there
-```
-
-### Result: System feels conscious
-
-- **Coherent:** Learning accumulates (user model) rather than vanishing
-- **Responsive:** Answers personalized to THIS user, not generic
-- **Self-aware:** Knows what it's uncertain about and says so
-- **Reflective:** Periodically reviews what it's learned and adjusts thinking
-- **Intuitive:** Seems to "get" the user because it actually is tracking their expertise, preferences, and needs
-
----
-
-## Architecture diagram
-
-```
-                    ┌─────────────────────────────┐
-                    │   Cascade (LM bridge)       │
-                    │   ┌───────────────────────┐ │
-                    │   │ get_user_context_lm() │ │ ← Injects user model
-                    │   └───────────────────────┘ │
-                    └─────────────────────────────┘
-                                  ▲
-                                  │
-                    ┌─────────────┴──────────────┐
-                    │                           │
-                ┌───┴────────┐          ┌──────┴──────┐
-                │ User Model │          │ Retrieval   │
-                │ (explicit  │          │ Confidence  │
-                │  learning) │          │ (calibrated │
-                └───┬────────┘          │  trust)     │
-                    │                   └──────┬──────┘
-                    │  record_correction()    │ score_batch()
-                    │  record_interaction()   │
-                    │                         │
-                ┌───┴─────────────────────────┴─────┐
-                │  Memory DB (persistent)           │
-                │  ├─ user_domain_fluency           │
-                │  ├─ user_corrections              │
-                │  ├─ user_interactions             │
-                │  ├─ documents (research)          │
-                │  └─ memories (general)            │
-                └──────────────┬────────────────────┘
-                               │
-                ┌──────────────┴──────────────┐
-                │                             │
-          ┌─────┴────────┐         ┌────────┴────────┐
-          │ Research     │         │ Knowledge-host  │
-          │ (Vinkona-side) │         │ (distill side)  │
-          │ research_    │         │ solved/*.md     │
-          │ reflection() │◄────────┤ cards + embedds │
-          └─────────────┘         └─────────────────┘
-                 ▲
-                 │ synthesize themes + update model
-                 │
-          ┌──────┴─────────┐
-          │ Idle task      │
-          │ (daily)        │
-          └────────────────┘
-```
-
----
-
-## Implementation Checklist
-
-### Phase 1: Foundation (DONE)
-- [x] user_model.py — schema + API
-- [x] Integrate into memory.py
-- [x] research_reflection.py — stub (full LM synthesis deferred)
-- [x] retrieval_confidence.py — scoring engine
-
-### Phase 2: Wiring (next)
-- [ ] cascade_server: record_correction() when user clarifies
-- [ ] cascade_server: record_interaction() on follow-up or action
-- [ ] llm_bridge: inject get_user_context_for_lm() into synthesis prompts
-- [ ] kb_ask wrapper: score_batch() before returning results
-- [ ] research_worker: add idle task for reflect_on_research()
-
-### Phase 3: Polish
-- [ ] config_ui: User Profile settings tab (view/edit domain fluency, prefs)
-- [ ] research_reflection: integrate big LM for actual synthesis (not just stubs)
-- [ ] Retrieval ranking: deprioritize basic results for experts
-- [ ] Trace events: add research_reflection + confidence_score events
-
-### Phase 4: Refinement (future)
-- [ ] Domain inference: use kb_ask facets instead of keywords
-- [ ] Correction analysis: LM-driven pattern discovery ("user always corrects on X")
-- [ ] Personal graph integration: link user model to people/places/things graph
-- [ ] Adaptive uncertainty: learn calibration from user feedback
-
----
-
-## Why This Works for a 9B Model
-
-A 70B model can seem intelligent through sheer pattern-matching + retrieval.
-A 9B model needs scaffolding:
-
-1. **Explicit user model** — so it doesn't waste context re-learning the user every session
-2. **Reflection loop** — so learning compounds instead of disappearing
-3. **Uncertainty bounds** — so it knows what it doesn't know (avoiding hallucination)
-4. **Personalization** — so responses feel tailored, not generic
-
-Together, these make a 9B feel like it actually *understands* the person, even though it's
-running locally on modest hardware. The key insight: understanding isn't about model size,
-it's about having explicit, persistent, personalized context.
-
-A 9B + user model + reflection + confidence scores ≈ 70B with generic retrieval.
-
-And it runs on your colleagues' laptops.
+- [ ] `record_interaction()` on follow-up/action (base-rate signal)
+- [ ] config_ui: User Profile tab (view/edit domain fluency, prefs)
+- [ ] Retrieval ranking: use fluency to deprioritize basic results for experts

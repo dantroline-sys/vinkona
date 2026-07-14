@@ -73,7 +73,7 @@ barge-in via VAD.
 | Voice cascade | `cascade_server.py`, `asr.py`, `rnnoise_frontend.py`, `llm_bridge.py`, `tts_server.py`, `tts_orpheus_gguf.py`, `tts_orpheus.py`, `tts_neutts.py` | — |
 | LM serving (llama.cpp) | `llm_server.py`, `serve_fast_lm.sh`, `serve_big_lm.sh`, `serve_embed.sh` | [`ENVIRONMENTS.md`](ENVIRONMENTS.md) |
 | Memory & people | `memory.py`, `people.py`, `news_store.py`, `calendar_sync.py`, `calendar_resolve.py` | [`MEMORY_CONSOLIDATION.md`](MEMORY_CONSOLIDATION.md) |
-| Conscious reasoning | `user_model.py`, `research_reflection.py`, `retrieval_confidence.py` | [`CONSCIOUS_REASONING.md`](CONSCIOUS_REASONING.md), [`USER_MODEL_INTEGRATION.md`](USER_MODEL_INTEGRATION.md) |
+| Conscious reasoning | `user_model.py` (+ the corrections idle-reviewer in `memory.py`/`research_worker.py`) | [`CONSCIOUS_REASONING.md`](CONSCIOUS_REASONING.md), [`USER_MODEL_INTEGRATION.md`](USER_MODEL_INTEGRATION.md) |
 | Research loop | `research_worker.py`, `research_export.py`, `capture.py` | [`research_loop_spec.md`](research_loop_spec.md) |
 | Tools & hosts | `tools_client.py`, `knowledge_host.py`, `safety.py`, `wsauth.py` | [`MAC_TOOLS.md`](MAC_TOOLS.md), [`KNOWLEDGE.md`](KNOWLEDGE.md), [`MUSIC.md`](MUSIC.md), [`WS_AUTH.md`](WS_AUTH.md) |
 | Awareness | `timesense.py`, `spoken_time.py`, `ambient.py` | [`NOTIFICATIONS.md`](NOTIFICATIONS.md) |
