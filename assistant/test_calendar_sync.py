@@ -305,6 +305,33 @@ def test_store_migrates_old_cache_without_self_authored_column():
     assert "self_authored" in st.all()[0]
 
 
+def test_store_renames_legacy_amiga_id_column():
+    import sqlite3
+    db = sqlite3.connect(":memory:"); db.row_factory = sqlite3.Row
+    # Pre-rename cache: amiga_id where the code now expects vinkona_id.  CREATE IF NOT
+    # EXISTS keeps the old shape, so inserts used to fail with "no column named vinkona_id".
+    db.executescript('CREATE TABLE calendar_events (uid TEXT PRIMARY KEY, amiga_id TEXT, '
+                     'title TEXT, start TEXT, "end" TEXT, start_ts REAL, location TEXT, '
+                     'source TEXT, note TEXT, hash TEXT, synced_at REAL);')
+    db.execute("INSERT INTO calendar_events (uid, amiga_id, title, start_ts) "
+               "VALUES ('K', 'old-id', 'Kept', 1.0)")
+    st = cs.CalendarStore(db)                        # renames the column in place
+    rows = st.all()
+    assert rows and rows[0]["vinkona_id"] == "old-id"   # existing rows survive the rename
+    st.replace_all([_row("A", "X", time.time() + 60)])  # and writes work again
+    assert st.all()[0]["vinkona_id"] == "mA"
+
+
+def test_store_rebuilds_unrecognisable_cache_shape():
+    import sqlite3
+    db = sqlite3.connect(":memory:"); db.row_factory = sqlite3.Row
+    # An ancient shape missing core columns entirely: rebuild (it's a snapshot cache).
+    db.executescript("CREATE TABLE calendar_events (uid TEXT PRIMARY KEY, title TEXT);")
+    st = cs.CalendarStore(db)
+    st.replace_all([_row("A", "X", time.time() + 60)])
+    assert st.all()[0]["uid"] == "A"
+
+
 # ── legacy "Amiga" data (the pre-rename assistant) ─────────────────────────────
 
 _LEGACY_NOTES = "my old note\n\n— kept in sync by Amiga [amiga-mirror:W1] —"

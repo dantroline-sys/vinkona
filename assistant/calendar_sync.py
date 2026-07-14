@@ -297,16 +297,31 @@ class CalendarStore:
         self.db = db
         self._init_db()
 
-    def _init_db(self) -> None:
-        self.db.executescript("""
+    _SCHEMA = """
         CREATE TABLE IF NOT EXISTS calendar_events (
             uid TEXT PRIMARY KEY, vinkona_id TEXT, title TEXT, start TEXT, "end" TEXT,
             start_ts REAL, location TEXT, source TEXT, note TEXT, hash TEXT, synced_at REAL);
         CREATE INDEX IF NOT EXISTS idx_calendar_start ON calendar_events(start_ts);
-        """)
+        """
+
+    def _init_db(self) -> None:
+        # Migrate BEFORE the schema script: with an old-shaped table already present,
+        # CREATE IF NOT EXISTS keeps that shape (and the index creation can even fail).
+        cols = {r[1] for r in self.db.execute("PRAGMA table_info(calendar_events)")}
+        if cols:
+            # LEGACY: a pre-rename cache carries amiga_id where the code expects vinkona_id —
+            # rename the column in place (this was the "no column named vinkona_id" sync error).
+            if "vinkona_id" not in cols and "amiga_id" in cols:
+                self.db.execute("ALTER TABLE calendar_events RENAME COLUMN amiga_id TO vinkona_id")
+                cols = (cols - {"amiga_id"}) | {"vinkona_id"}
+            if not {"uid", "vinkona_id", "start_ts", "hash", "synced_at"} <= cols:
+                # Some other ancient shape.  The table is a snapshot cache (replace_all wipes
+                # it every sync), so rebuilding it loses nothing durable.
+                self.db.execute("DROP TABLE calendar_events")
+        self.db.executescript(self._SCHEMA)
+        cols = {r[1] for r in self.db.execute("PRAGMA table_info(calendar_events)")}
         # self_authored: 1 = Vinkona's own addition (booked from conversation), 0 = mirrored from
         # an external calendar.  Idempotent ALTER so older caches gain the column in place.
-        cols = {r[1] for r in self.db.execute("PRAGMA table_info(calendar_events)")}
         if "self_authored" not in cols:
             self.db.execute("ALTER TABLE calendar_events ADD COLUMN self_authored INTEGER DEFAULT 0")
         self.db.commit()
