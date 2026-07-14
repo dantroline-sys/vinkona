@@ -373,13 +373,80 @@ async def test_idle_reflect():
                             "payload": "I find this user values quick calendar checks."}],
             "topics": [{"topic": "time management", "query": "tm", "reason": "user is busy"}]})}}]}
     _RESP["fn"] = responder
-    n, topics = await m.idle_reflect(m.recent_logs(10), "- check_calendar: read the user's calendar",
-                                     "http://big", "model", 3)
+    n, topics, ncorr = await m.idle_reflect(m.recent_logs(10),
+                                            "- check_calendar: read the user's calendar",
+                                            "http://big", "model", 3)
     check("idle_reflect applies memory operations", n == 1)
     check("idle_reflect captures a self memory", any(e["category"] == "self" for e in m.entries.values()))
     check("idle_reflect queues research topics", len(topics) == 1 and topics[0]["topic"] == "time management")
     check("idle_reflect tells the LM about current tools", "check_calendar" in seen["prompt"])
     check("idle_reflect queue source is 'idle'", m.next_research_task()["session_id"] == "idle")
+    check("idle_reflect banks no corrections when none reported", ncorr == 0)
+
+
+async def test_idle_reflect_banks_corrections():
+    m = _store()
+    m.log_turn("s", "user", "Play the second movement.")
+    m.log_turn("s", "assistant", "Playing the first movement.")
+    _RESP["fn"] = lambda url, p: {"choices": [{"message": {"content": json.dumps({
+        "operations": [], "topics": [],
+        "corrections": [
+            {"query": "play the second movement", "response": "played the first",
+             "correction": "the user wanted the SECOND movement",
+             "domain": "music", "type": "misunderstood_intent"},
+            {"query": "q", "response": "r", "correction": "c", "type": "not-a-real-type"},
+            {"query": "junk", "response": "junk", "correction": ""},   # empty → skipped
+            "not even a dict"]})}}]}
+    n, topics, ncorr = await m.idle_reflect(m.recent_logs(10), "", "http://big", "model", 3)
+    check("valid corrections are banked (bad type coerced, junk skipped)", ncorr == 2)
+    rows = m.db.execute("SELECT * FROM user_corrections ORDER BY id").fetchall()
+    check("correction lands in the user model", rows[0]["correction_type"] == "misunderstood_intent"
+          and rows[0]["domain"] == "music")
+    check("unknown correction type coerces to clarification",
+          rows[1]["correction_type"] == "clarification")
+    check("correction source is traceable", rows[0]["source_ref"] == "idle_reflect")
+
+
+async def test_review_corrections_frames_general_questions():
+    m = _store()
+    for i in range(3):
+        m.user.record_correction(f"asked {i}", f"said {i}", f"meant something else {i}",
+                                 domain="music", correction_type="misunderstood_intent")
+    seen = {}
+    def responder(url, p):
+        seen["prompt"] = p["messages"][0]["content"]
+        return {"choices": [{"message": {"content": json.dumps({"topics": [
+            {"topic": "disambiguating media requests",
+             "query": "how should a voice assistant confirm which item the user means",
+             "reason": "repeated misunderstood_intent in music"}]})}}]}
+    _RESP["fn"] = responder
+    topics = await m.review_corrections("http://big", "model", max_questions=2)
+    check("review frames a research question", len(topics) == 1)
+    check("the LM saw the corrections", "meant something else 0" in seen["prompt"])
+    task = m.next_research_task()
+    check("question is queued under the 'corrections' source",
+          task and task["session_id"] == "corrections")
+    check("watermark advanced past the batch",
+          int(m.get_state("corrections.review_watermark")) == 3)
+    # second pass: nothing new to review → no LM call, no new queue rows
+    _RESP["fn"] = lambda url, p: (_ for _ in ()).throw(AssertionError("must not call LM"))
+    check("reviewed corrections are not re-chewed",
+          await m.review_corrections("http://big", "model") == [])
+
+
+async def test_review_corrections_dedups_and_advances_on_empty():
+    m = _store()
+    m.user.record_correction("q", "r", "c", domain="d", correction_type="clarification")
+    # a same-named topic already pending → the new one is dropped
+    m.enqueue_research("idle", [{"topic": "Disambiguating Media Requests", "query": "x"}])
+    _RESP["fn"] = lambda url, p: {"choices": [{"message": {"content": json.dumps({"topics": [
+        {"topic": "disambiguating media requests", "query": "y", "reason": "z"}]})}}]}
+    topics = await m.review_corrections("http://big", "model")
+    check("duplicate of a pending topic is not re-queued", topics == [])
+    pend = m.db.execute("SELECT COUNT(*) c FROM research_queue WHERE status='pending'").fetchone()
+    check("queue still holds exactly the original topic", pend["c"] == 1)
+    check("watermark advances even when nothing generalizes",
+          int(m.get_state("corrections.review_watermark")) == 1)
 
 
 async def test_learn_frames_untrusted_source():
@@ -703,6 +770,9 @@ async def main():
     test_review_window_sweeps_back_and_wraps()
     await test_introspect()
     await test_idle_reflect()
+    await test_idle_reflect_banks_corrections()
+    await test_review_corrections_frames_general_questions()
+    await test_review_corrections_dedups_and_advances_on_empty()
     await test_learn_frames_untrusted_source()
     await test_consolidate_merge()
     await test_consolidate_split()

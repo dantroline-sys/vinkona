@@ -1257,16 +1257,34 @@ async def main():
         if _task_on("reflect"):
             rows, span = memory.next_review_window(review_window)
             if rows:
-                n, topics = await memory.idle_reflect(rows, await tools_desc(), big["url"],
-                                                      big["model"], idle_cfg.get("batch_size", 3),
-                                                      idle_cfg.get("introspect_prompt"))
+                n, topics, ncorr = await memory.idle_reflect(
+                    rows, await tools_desc(), big["url"], big["model"],
+                    idle_cfg.get("batch_size", 3), idle_cfg.get("introspect_prompt"))
                 trace.write(kind="introspect", count=len(topics), learned=n,
+                            corrections=ncorr,
                             window={"from": span[0], "to": span[1], "turns": len(rows)},
                             topics=[{"topic": t.get("topic"), "reason": t.get("reason", "")}
                                     for t in topics])
                 _log(f"idle reflect over turns {span[0]}–{span[1]} ({len(rows)}): "
-                     f"{n} memory op(s), queued {len(topics)} topic(s)"
+                     f"{n} memory op(s), queued {len(topics)} topic(s), "
+                     f"{ncorr} correction(s)"
                      + (": " + ", ".join(t.get("topic", "?") for t in topics) if topics else ""))
+        # Corrections → research (the idle reviewer): fresh user-model corrections become
+        # general "how should I do this better" questions; the normal research → export →
+        # distill pipeline then shapes the answers into case/procedure cue cards.
+        if _task_on("corrections"):
+            try:
+                ctopics = await memory.review_corrections(
+                    big["url"], big["model"], idle_cfg.get("corrections_max", 2),
+                    idle_cfg.get("corrections_prompt"))
+                if ctopics:
+                    trace.write(kind="corrections_review", count=len(ctopics),
+                                topics=[{"topic": t.get("topic"), "reason": t.get("reason", "")}
+                                        for t in ctopics])
+                    _log("corrections review queued: "
+                         + ", ".join(t.get("topic", "?") for t in ctopics))
+            except Exception as e:
+                _log(f"corrections review failed (continuing): {e}")
         # Work through open learning plans — answer a few research questions per cycle so
         # accumulated plans get finished over time.  Runs INDEPENDENTLY of the reflect window
         # above (previously an empty window returned early and starved the plans).

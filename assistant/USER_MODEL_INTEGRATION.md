@@ -167,11 +167,12 @@ async def infer_domain_from_kb_results(kb_results: list[dict]) -> str | None:
 
 ## Next Steps
 
-1. **Wire record_correction() into cascade_server** — detect user contradictions and log them
+1. ~~**Wire record_correction()**~~ — DONE: idle reflection (memory.idle_reflect) now spots
+   corrections in each review window and banks them (source_ref="idle_reflect"); the
+   corrections idle task (memory.review_corrections) then turns fresh ones into
+   generalized research questions → case/procedure cue cards via the research pipeline.
 2. **Wire record_interaction() into the follow-up/action handler** — detect when user acts on advice
 3. **Pass get_user_context_for_lm() to big LM prompts** — personalize synthesis
 4. **Add UI view in config_ui.html** — show the user their inferred profile (Settings tab)
 5. **Extend infer_domain()** — use kb_ask facets instead of keywords
 6. **Retrieval ranking** — kb_ask uses get_all_domain_fluency() to adjust result order
-
-All of these are lightweight and pluggable. Start with #1-3, then add analytics UI.

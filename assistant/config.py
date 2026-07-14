@@ -829,8 +829,8 @@ DEFAULTS: dict = {
             # gates one task; a task runs when its value is True or absent (still subject to its own
             # enabled flag).  Set the others False to focus, e.g. {"research_queue": True} + the rest
             # False to isolate research.  Tasks: reembed, rhythms, calendar_sync, consolidate,
-            # perspective_audit, synthesis, reconcile, affect, reflect, plans, research_queue,
-            # crawl, ingest, garden.
+            # perspective_audit, synthesis, reconcile, affect, reflect, corrections, plans,
+            # research_queue, crawl, ingest, garden.
             "tasks": {},
             # Quiet hours: windows (local time) where idle work is suppressed so the fast/big
             # LMs are free (e.g. for the knowledge host to distill uninterrupted).  Each entry
@@ -850,6 +850,12 @@ DEFAULTS: dict = {
             "consolidate_sim": 0.82,         # cosine ≥ this groups world-knowledge for merge review
             "introspect_prompt": None,       # None → memory.DEFAULT_INTROSPECT_PROMPT
             "consolidate_prompt": None,      # None → memory.DEFAULT_CONSOLIDATE_PROMPT
+            # Corrections → research (the idle reviewer): reflection banks moments the user
+            # corrected her; this step turns fresh ones into GENERAL research questions whose
+            # answers come back as case/procedure cue cards.  Only the de-personalised
+            # question leaves memory.db.
+            "corrections_max": 2,            # correction-driven questions queued per cycle
+            "corrections_prompt": None,      # None → memory.DEFAULT_CORRECTIONS_PROMPT
             "perspective_audit": True,       # fix memories with "I"/"you" swapped (self vs user)
             "perspective_max": 12,           # most-suspect memories repaired per idle cycle
             "perspective_prompt": None,      # None → memory.DEFAULT_PERSPECTIVE_AUDIT_PROMPT

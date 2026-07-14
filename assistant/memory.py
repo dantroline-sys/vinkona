@@ -418,7 +418,7 @@ away, on a slice of your past interactions — often older ones you now see with
 eyes and new abilities. You're given the conversation slice, a digest of what you
 already know, and the tools you can use now.
 
-Do two things:
+Do three things:
 1) INTROSPECT on how it went: what did you learn about the user, and about how to
    relate to and help them — tone, humour, preferences, the texture of the
    relationship? Capture only durable, high-confidence insights as memory operations.
@@ -426,15 +426,47 @@ Do two things:
 2) Consider what to LEARN or DO BETTER NOW: external topics worth researching, and —
    given the tools now available — anything in these past exchanges you could now
    handle better (note it, or queue research for it).
+3) Spot CORRECTIONS: moments where the user corrected you, re-explained what they
+   actually meant, fixed something you got wrong, or clearly knew the subject better
+   than your answer assumed. Capture each as a correction record.
 
 Reply with ONLY JSON: {
   "operations": [ {"action":"add|update|delete","triggers":[...],"context_tags":[...],
      "payload":"...","priority":1-10,
      "category":"profile|task|appointment|fact|preference|self","id":"<for update/delete>"} ],
-  "topics": [ {"topic":"...","query":"...","reason":"..."} ]
+  "topics": [ {"topic":"...","query":"...","reason":"..."} ],
+  "corrections": [ {"query":"what was asked","response":"what you said or did",
+     "correction":"what the user corrected it to","domain":"one-or-two-word area",
+     "type":"clarification|wrong_domain|factual_error|misunderstood_intent|domain_expert"} ]
 }
 Be conservative and NON-REPETITIVE — skip anything already in the digest; prefer
 updating an existing memory over adding a duplicate. Empty lists are fine.\
+"""
+
+# Corrections → research (the "idle reviewer" lane): fresh user-model corrections are
+# reviewed in batch and the generalizable ones become research questions — whose
+# answers come back as case/procedure cue cards via the normal research → export →
+# distill pipeline.  The raw correction text stays in memory.db; only the GENERALIZED
+# question ever leaves for the (non-personal) knowledge base, so the prompt insists on
+# de-personalised framing.  (Overridable via config research.idle.corrections_prompt.)
+DEFAULT_CORRECTIONS_PROMPT = """\
+You are a voice assistant (Vinkona) reviewing recent moments where the user corrected
+you — re-explained what they meant, fixed an error, or knew the subject better than
+your answer assumed. For the patterns worth fixing durably, frame research questions
+whose answers would teach you what to do or say differently next time.
+
+Rules:
+- GENERALIZE: each question must be about how an assistant should act in that KIND of
+  situation. NEVER include the user's name, personal details, or verbatim quotes —
+  the question travels to a shared, non-personal knowledge base.
+- Prefer recurring or consequential patterns; skip one-off slips, typos, and pure
+  preference statements (those are already remembered directly).
+- Frame questions so the answer is actionable: "how should …", "what is the best way
+  to …", "when X, what should an assistant do".
+
+Reply with ONLY JSON: {"topics": [ {"topic":"short subject line",
+  "query":"the full research question","reason":"which correction pattern this addresses"} ]}
+An empty list is fine when nothing generalizes.\
 """
 
 # Idle memory consolidation: the big LM reviews a small group of related
@@ -1397,12 +1429,13 @@ class MemoryStore:
 
     async def idle_reflect(self, logs: list[dict], tools_desc: str, big_url: str,
                            big_model: str, max_topics: int,
-                           prompt: str | None = None) -> tuple[int, list[dict]]:
+                           prompt: str | None = None) -> tuple[int, list[dict], int]:
         """Reflect on a window of past interactions: capture self/relational + user
-        memories AND queue research topics, re-evaluating old exchanges against the
-        tools available now.  Returns (memory_ops_applied, topics_queued)."""
+        memories, queue research topics, and record moments the user corrected her
+        (fuel for review_corrections), re-evaluating old exchanges against the tools
+        available now.  Returns (memory_ops_applied, topics_queued, corrections)."""
         if len(logs) < 2:
-            return 0, []
+            return 0, [], 0
         convo = "\n".join(f"{r['role'].upper()}: {r['text']}" for r in logs)
         tools_block = ("Tools you can use now:\n" + tools_desc) if tools_desc \
             else "Tools you can use now: (none beyond your own knowledge)."
@@ -1414,7 +1447,76 @@ class MemoryStore:
         topics = [t for t in (data or {}).get("topics", []) if t.get("topic")][:max_topics]
         if topics:
             self.enqueue_research("idle", topics)
-        return n, topics
+        ncorr = self._record_corrections((data or {}).get("corrections", []))
+        return n, topics, ncorr
+
+    def _record_corrections(self, items: list) -> int:
+        """Bank correction records from a reflection pass into the user model
+        (fail-soft per item — a malformed one is skipped, never fatal)."""
+        n = 0
+        for c in items or []:
+            if not (isinstance(c, dict) and (c.get("correction") or "").strip()):
+                continue
+            ctype = (c.get("type") or "clarification").strip()
+            if ctype not in ("clarification", "wrong_domain", "factual_error",
+                             "misunderstood_intent", "domain_expert"):
+                ctype = "clarification"
+            try:
+                self.user.record_correction(
+                    (c.get("query") or "").strip(), (c.get("response") or "").strip(),
+                    c["correction"].strip(), domain=(c.get("domain") or "").strip() or None,
+                    correction_type=ctype, source_ref="idle_reflect")
+                n += 1
+            except Exception:
+                continue
+        return n
+
+    _CORR_WM_KEY = "corrections.review_watermark"
+
+    async def review_corrections(self, big_url: str, big_model: str, max_questions: int = 2,
+                                 prompt: str | None = None) -> list[dict]:
+        """Idle reviewer: turn fresh user-model corrections into GENERAL research
+        questions (queued like any other topic; the answers come back as case/procedure
+        cue cards via the research → export → distill pipeline).  Each correction is
+        reviewed once — a watermark advances whether or not it generalized — and the
+        raw correction text never leaves memory.db, only the de-personalised question.
+        Returns the topics queued."""
+        try:
+            wm = int(self.get_state(self._CORR_WM_KEY) or 0)
+        except (TypeError, ValueError):
+            wm = 0
+        rows = self.db.execute(
+            "SELECT id, query, vinkona_response, user_correction, domain, correction_type "
+            "FROM user_corrections WHERE id > ? ORDER BY id LIMIT 20", (wm,)).fetchall()
+        if not rows:
+            return []
+        listing = "\n\n".join(
+            f"- [{r['correction_type']}{' · ' + r['domain'] if r['domain'] else ''}]\n"
+            f"  asked: {r['query'] or '(unknown)'}\n"
+            f"  you said/did: {r['vinkona_response'] or '(unknown)'}\n"
+            f"  user's correction: {r['user_correction']}"
+            for r in rows)
+        full = (f"{prompt or DEFAULT_CORRECTIONS_PROMPT}\n\n"
+                f"At most {max_questions} question(s).\n\nThe corrections:\n{listing}")
+        data = await self._chat_json(big_url, big_model, full, think=True)
+        topics = [t for t in (data or {}).get("topics", [])
+                  if isinstance(t, dict) and (t.get("topic") or "").strip()][:max_questions]
+        # Don't re-ask what's already pending or recently answered (the same correction
+        # theme tends to recur across reflection windows).
+        fresh = [t for t in topics if not self._topic_queued_or_recent(t["topic"])]
+        if fresh:
+            self.enqueue_research("corrections", fresh)
+        # Reviewed is reviewed: advance past this batch even when nothing generalized,
+        # so the same corrections aren't re-chewed every idle cycle.
+        self.set_state(self._CORR_WM_KEY, str(rows[-1]["id"]))
+        return fresh
+
+    def _topic_queued_or_recent(self, topic: str, within_s: float = 14 * 86400) -> bool:
+        row = self.db.execute(
+            "SELECT 1 FROM research_queue WHERE lower(topic)=lower(?) AND "
+            "(status='pending' OR (status='done' AND updated_at > ?)) LIMIT 1",
+            (topic, time.time() - within_s)).fetchone()
+        return row is not None
 
     async def reflect_affect(self, big_url: str, big_model: str, objective: str,
                              prompt: str | None = None, recent_turns: int = 30,
