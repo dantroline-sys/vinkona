@@ -52,6 +52,31 @@ def _log(msg: str) -> None:
     print(f"[{time.strftime('%H:%M:%S')}] [cascade] {msg}", flush=True)
 
 
+def _payload_lines(pay, max_lines: int = 6) -> list:
+    """Flatten a typed-card payload (the host's `criteria` JSON — diagnostic criteria,
+    requirements, decision, playbook, case…) into compact 'key: value' guidance lines.
+    Generic over shapes so future card types relay without new formatting code."""
+    def flat(v):
+        if isinstance(v, dict):
+            if set(v) <= {"feature", "value"} and v.get("value") is not None:
+                # the host's discriminator idiom — read it as feature=value
+                return f"{v.get('feature', '?')}={v['value']}" if v.get("feature") \
+                    else str(v["value"])
+            return ", ".join(f"{str(k).replace('_', ' ')}={flat(x)}"
+                             for k, x in v.items() if x not in (None, "", [], {}))
+        if isinstance(v, (list, tuple)):
+            return "; ".join(flat(x) for x in v if x not in (None, "", [], {}))
+        return str(v).strip()
+    out = []
+    for k, v in (pay or {}).items() if isinstance(pay, dict) else []:
+        if v in (None, "", [], {}):
+            continue
+        out.append(f"{str(k).replace('_', ' ')}: {flat(v)}"[:220])
+        if len(out) >= max_lines:
+            break
+    return out
+
+
 def _parse_iso(s):
     """Parse an ISO-8601 datetime (tolerating a trailing 'Z') → unix seconds, or None."""
     import datetime
@@ -906,25 +931,36 @@ class _Session:
             if not res or res.get("abstain") or float(res.get("confidence") or 0) < min_conf:
                 self._trace_kb("kb_ask", query, live, res)
                 return None
-            picks = [it for it in (res.get("items") or []) if (it.get("text") or "").strip()][:n]
+            # A typed card (criteria/requirements/decision/playbook/case) may have an empty
+            # text (no goal) — its substance is the criteria payload, so it still counts.
+            picks = [it for it in (res.get("items") or [])
+                     if ((it.get("text") or "").strip() or it.get("criteria")
+                         or it.get("steps"))][:n]
             if live:
                 it = picks[0] if picks else {}
                 label, t = (it.get("label") or "").strip(), (it.get("text") or "").strip()
-                block = f"{label}: {t}" if label else t
+                block = f"{label}: {t}" if (label and t) else (t or label)
                 steps = it.get("steps") or []
                 if steps:                       # one step inline keeps it a single directive
                     s = (steps[0] if isinstance(steps[0], str) else str(steps[0])).strip()
                     if s:
                         block += f" → {s}"
+                elif it.get("criteria"):        # typed card: its first payload line instead
+                    pl = _payload_lines(it["criteria"], max_lines=1)
+                    if pl:
+                        block += f" → {pl[0]}"
             else:
                 lines = []
                 for it in picks:
                     label = (it.get("label") or "").strip()
-                    lines.append(f"- {label}: {it['text'].strip()}" if label else f"- {it['text'].strip()}")
+                    t = (it.get("text") or "").strip()
+                    lines.append(f"- {label}: {t}" if (label and t) else f"- {t or label}")
                     for step in (it.get("steps") or [])[:5]:
                         s = (step if isinstance(step, str) else str(step)).strip()
                         if s:
                             lines.append(f"    • {s}")
+                    for pl in _payload_lines(it.get("criteria"), max_lines=6):
+                        lines.append(f"    • {pl}")
                 block = "\n".join(lines)
         block = block.strip()
         self._trace_kb(kc.get("tool", "kb_ask"), query, live, res, block)

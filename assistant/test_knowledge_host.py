@@ -29,6 +29,20 @@ STATE = {"mode": "ok"}                 # ok | raise | non200 | notok | badjson
 
 def _payload_for(name, args):
     if name == "kb_ask":
+        if STATE.get("typed"):
+            # a typed card: empty text (no goal) — its substance is the criteria payload
+            return {"query": args.get("query"), "confidence": 0.72, "abstain": False,
+                    "grounding": "strong",
+                    "items": [
+                        {"kind": "card", "card_type": "criteria", "text": "",
+                         "label": "Multiple Drug Use Withdrawal State",
+                         "criteria": {
+                             "target": "multiple substance withdrawal",
+                             "required": [{"feature": "substances",
+                                           "value": "three or more, none predominant"}],
+                             "supportive": [{"feature": "onset",
+                                             "value": "within days of cessation"}]}},
+                    ]}
         return {"query": args.get("query"), "confidence": 0.72, "abstain": False,
                 "grounding": "strong",
                 "items": [
@@ -183,6 +197,31 @@ def test_guidance_formats_kb_search():
     asyncio.run(run())
 
 
+def test_guidance_relays_typed_card_payload():
+    async def run():
+        CALLS.clear(); STATE["mode"] = "ok"; STATE["typed"] = True
+        try:
+            sh = _shim(tool="kb_ask")
+            block = await sh._guidance("USER: how do I classify multiple substance withdrawal?")
+            # empty-text card must survive the picks filter (its substance is the payload)
+            check("typed card with empty text is not dropped",
+                  block is not None and "Multiple Drug Use Withdrawal State" in block)
+            check("criteria payload lines are relayed",
+                  block and "target: multiple substance withdrawal" in block)
+            check("nested feature values flatten readably",
+                  block and "substances=three or more, none predominant" in block)
+            # live: a single line, label plus the FIRST payload line
+            lblock = await sh._guidance("how do I classify multiple substance withdrawal?",
+                                        live=True)
+            check("live typed card gives label → first payload line",
+                  lblock == "Multiple Drug Use Withdrawal State → "
+                            "target: multiple substance withdrawal")
+            check("live typed line stays single-line", lblock and "\n" not in lblock)
+        finally:
+            STATE["typed"] = False
+    asyncio.run(run())
+
+
 def test_guidance_gate_and_disabled():
     async def run():
         STATE["mode"] = "ok"
@@ -221,6 +260,7 @@ def main():
     test_client_fail_soft()
     test_guidance_formats_kb_ask()
     test_guidance_formats_kb_search()
+    test_guidance_relays_typed_card_payload()
     test_guidance_gate_and_disabled()
     test_guidance_live_mode()
     print(f"\n{PASS} passed, {FAIL} failed")
