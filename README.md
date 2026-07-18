@@ -138,6 +138,23 @@ To run the knowledge host too, clone [Vinur](https://github.com/dantroline-sys/v
 it there (or wherever `$VINUR_DIR` points) and manage it alongside the
 assistant. Vinur is also entirely usable on its own.
 
+**Vinur on a different machine** (say, a big-VRAM box serving its own LMs via
+its `./vinur.sh` — see its README): pick *assistant only* here, and point
+three things in `config/config.json` at that box, using the `auth_token` its
+config sets (Vinur refuses a LAN bind without one):
+
+```json
+{
+  "knowledge":      {"enabled": true, "tool_url": "http://kb-box:8771", "auth_token": "<token>"},
+  "knowledge_host": {"enabled": true, "url": "http://kb-box:8771", "token": "<token>"},
+  "research": {"export": {"enabled": true, "folder": "http://kb-box:8771", "token": "<token>"}}
+}
+```
+
+The third line switches the research hand-off from a shared folder to Vinur's
+`/drop` route, so solved research reaches the remote knowledge base with no
+network mount.
+
 The top-level installer drives one installer per component (each also usable
 directly, with its own uninstall):
 

@@ -806,9 +806,13 @@ DEFAULTS: dict = {
         # <hash>.md drops the standalone knowledge-host ingests (chunk→embed→distill→cards→kb_ask).
         # Point the host's `sources` at this folder.  Personal crawled mail/files are never exported.
         # Incremental on a cadence; the web UI's "Re-export" button forces a full rebuild.
+        # Vinur on ANOTHER machine: set folder to its base URL ("http://box:8771") and
+        # token to its auth_token — drops then POST to its /drop route instead of a
+        # shared directory (the host writes them into its research_solved_dir).
         "export": {
             "enabled": False,
-            "folder": "",                         # shared hand-off dir, e.g. "~/Vinkona/research/solved"
+            "folder": "",                         # hand-off dir, or a remote host base URL
+            "token": "",                          # Bearer for the remote /drop lane only
             "interval_s": 3600,
             "max_source_chars": 40000,            # per-source cap written into each drop
         },

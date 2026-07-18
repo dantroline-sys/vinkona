@@ -151,6 +151,26 @@ def _pick_hint(docs: list[dict]) -> dict:
     return {}
 
 
+def _post_drop(base_url: str, token: str, name: str, content: str,
+               timeout: float = 30.0) -> bool:
+    """POST one drop to a remote knowledge host's /drop route (Vinur on another
+    machine).  The host byte-compares and answers {ok, changed} — same no-op
+    semantics as _write_if_changed.  Returns True if the host wrote it."""
+    import urllib.request
+    headers = {"Content-Type": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(base_url.rstrip("/") + "/drop",
+                                 data=json.dumps({"name": name, "content": content},
+                                                 ensure_ascii=False).encode("utf-8"),
+                                 headers=headers, method="POST")
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        res = json.loads(r.read().decode("utf-8", "replace"))
+    if not res.get("ok"):
+        raise RuntimeError(str(res.get("error") or "drop rejected"))
+    return bool(res.get("changed"))
+
+
 def _write_if_changed(path: str, content: str) -> bool:
     """Write only when the file is absent or differs — a byte-identical drop is a host no-op.
     Returns True if written."""
@@ -170,16 +190,25 @@ def _write_if_changed(path: str, content: str) -> bool:
 
 
 def export_research(memory, folder: str, crawl_sources: tp.Iterable[str] = (), *,
-                    full: bool = False, max_source_chars: int = 40000) -> dict:
+                    full: bool = False, max_source_chars: int = 40000,
+                    token: str = "") -> dict:
     """Write the research hoard out as `<hash>.md` drops under `folder`.
+
+    `folder` may also be a remote knowledge host's base URL ("http://box:8771"):
+    drops then POST to its /drop route (Bearer `token`) instead of the filesystem —
+    same idempotent no-op on byte-identical content, host-side.
 
     Incremental (full=False): only questions with a document newer than the saved rowid watermark.
     Full (full=True): every question — repairs files deleted from the folder and re-syncs content.
     Byte-identical files are skipped.  Returns a summary dict for the trace/UI."""
-    folder = os.path.expanduser((folder or "").strip())
+    folder = (folder or "").strip()
+    remote = folder.startswith(("http://", "https://"))
+    if not remote:
+        folder = os.path.expanduser(folder)
     if not folder:
         return {"ok": False, "error": "no export folder configured", "written": 0, "skipped": 0}
-    os.makedirs(folder, exist_ok=True)
+    if not remote:
+        os.makedirs(folder, exist_ok=True)
     # Light scan first (no `text`): group every eligible doc by question, then pull the
     # heavy full rows only for questions actually touched this run — the hourly
     # incremental would otherwise load the whole lifetime hoard for a no-op.
@@ -206,7 +235,18 @@ def export_research(memory, folder: str, crawl_sources: tp.Iterable[str] = (), *
         ids = ",".join(str(i) for i in g["rowids"])
         docs = _fetch(memory.db, _FULL_COLS, f"rowid IN ({ids})", [])
         content = render_doc(g["question"], docs, max_source_chars=max_source_chars)
-        if _write_if_changed(os.path.join(folder, h + ".md"), content):
+        if remote:
+            try:
+                changed = _post_drop(folder, token, h + ".md", content)
+            except Exception as e:
+                # Abort WITHOUT advancing the watermark — the next run retries
+                # everything from here (byte-identical re-posts are host no-ops).
+                return {"ok": False, "error": f"remote drop failed: {e}", "folder": folder,
+                        "written": written, "skipped": skipped, "questions": len(groups),
+                        "documents": len(light), "full": full}
+        else:
+            changed = _write_if_changed(os.path.join(folder, h + ".md"), content)
+        if changed:
             written += 1
         else:
             skipped += 1

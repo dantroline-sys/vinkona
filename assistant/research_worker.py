@@ -1389,7 +1389,8 @@ async def main():
             return {"ok": False, "error": "no export folder configured"}
         crawl_sources = [c.get("source") for c in ingest_cfg.get("crawls", []) if c.get("source")]
         res = rexport.export_research(memory, folder, crawl_sources, full=full,
-                                      max_source_chars=int(export_cfg.get("max_source_chars", 40000)))
+                                      max_source_chars=int(export_cfg.get("max_source_chars", 40000)),
+                                      token=export_cfg.get("token") or "")
         trace.write(kind="research_export", full=full, **{k: res.get(k) for k in
                     ("ok", "folder", "written", "skipped", "questions", "documents", "error")})
         _log(f"research export ({'full' if full else 'incremental'}): {res.get('written', 0)} "
