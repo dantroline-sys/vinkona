@@ -653,6 +653,13 @@ DEFAULTS: dict = {
         # instead of guessing.  Offered only if sympy is importable; safe-parsed (never eval),
         # bounded by a short timeout so a pathological input can't stall the turn.
         "calculator": True,
+        # Built-in ONLINE `search_wikipedia` tool (keyless Wikipedia REST, direct HTTPS).
+        # "auto" = offered exactly when `enabled` above is false — a minimal box with no
+        # tool host (e.g. a Mac mini) still gets live reference lookup, and a real host's
+        # richer web/wikipedia tools take over as soon as one is configured.  true/false
+        # force it either way.  Results are fenced as untrusted data like any tool result.
+        "wikipedia": "auto",
+        "wikipedia_lang": "en",             # xx.wikipedia.org language code
         # The Mac tool host stays bound to 127.0.0.1:8765 (never on the LAN); reach it
         # over SSH.  Run ./serve_tunnel.sh — it forwards local 8765 → the Mac's
         # 127.0.0.1:8765, so tools.url above resolves to it securely.

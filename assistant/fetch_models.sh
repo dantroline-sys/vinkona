@@ -94,6 +94,8 @@ if [ "$PROFILE" = small ]; then
     echo "chatterbox TTS needs its venv once:  ./install.sh tts chatterbox"
     echo "(running the knowledge host on this machine too? point vinur's LM"
     echo " endpoints at the fast/big tiers above — small models, same ports)"
+    echo "(no tool host configured? the built-in ONLINE Wikipedia search is"
+    echo " offered to the assistant automatically — see tools.wikipedia)"
 fi
 
 echo ""

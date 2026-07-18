@@ -580,6 +580,8 @@ class _Session:
             working_memory=bool(self.cfg.get("working_memory", {}).get("enabled", True)),
             working_memory_max=int(self.cfg.get("working_memory", {}).get("max_items", 12)),
             calculator=bool(self.cfg.get("tools", {}).get("calculator", True)),
+            wikipedia=self.s._bridge_mod.resolve_wikipedia_flag(self.cfg.get("tools", {})),
+            wikipedia_lang=self.cfg.get("tools", {}).get("wikipedia_lang", "en"),
             capture=capture,
             briefing_prompt=big.get("briefing_prompt"),
             lead=big.get("lead", 1),

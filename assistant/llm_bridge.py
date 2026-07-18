@@ -26,6 +26,7 @@ import json
 import re
 import time
 import typing as tp
+import urllib.parse
 
 import aiohttp
 
@@ -213,6 +214,75 @@ CALCULATE_TOOL = {
             "required": ["expression"]},
     },
 }
+
+SEARCH_WIKIPEDIA_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "search_wikipedia",
+        "description": (
+            "Look a topic up on Wikipedia (live, online) and return the article summary. "
+            "Use for factual/reference questions — people, places, events, concepts — when "
+            "you don't confidently know the answer or it may have changed. Give the topic "
+            "itself, not a sentence: 'Marie Curie', 'CRISPR', 'Battle of Hastings'."),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string",
+                          "description": "The topic to look up, as a short noun phrase."}},
+            "required": ["query"]},
+    },
+}
+
+
+def resolve_wikipedia_flag(tools_cfg: dict) -> bool:
+    """tools.wikipedia: "auto" (default) offers the built-in ONLINE Wikipedia
+    lookup exactly when no tool host is enabled — the minimal setup (e.g. a Mac
+    mini with no Mac tool host) keeps live reference search, while a real host's
+    richer web/wikipedia tools take over as soon as one is configured.  Explicit
+    true/false override either way."""
+    flag = tools_cfg.get("wikipedia", "auto")
+    if flag in ("auto", None, ""):
+        return not bool(tools_cfg.get("enabled"))
+    return bool(flag)
+
+
+async def wiki_lookup(query: str, lang: str = "en", timeout_s: float = 8.0,
+                      api_base: str | None = None, summary_base: str | None = None) -> str:
+    """One online Wikipedia lookup: opensearch for the best title, REST summary
+    for its extract.  Keyless, two small GETs.  Returns display text for the
+    fast LM; the caller fences it as untrusted data (sanitize_external), like
+    every other tool result.  api_base/summary_base exist for tests."""
+    api = api_base or f"https://{lang}.wikipedia.org/w/api.php"
+    summary = summary_base or f"https://{lang}.wikipedia.org/api/rest_v1/page/summary/"
+    ua = {"User-Agent": "Vinkona/1.0 (local personal assistant)"}
+    tmo = aiohttp.ClientTimeout(total=timeout_s)
+    async with aiohttp.ClientSession(timeout=tmo) as session:
+        async with session.get(api, headers=ua, params={
+                "action": "opensearch", "search": query, "limit": "4",
+                "namespace": "0", "format": "json"}) as r:
+            if r.status != 200:
+                return f"(Wikipedia search failed: HTTP {r.status})"
+            data = await r.json(content_type=None)
+        titles = list(data[1]) if isinstance(data, list) and len(data) > 1 else []
+        if not titles:
+            return f"(Wikipedia has no article matching '{query}')"
+        top = titles[0]
+        async with session.get(summary + urllib.parse.quote(top, safe=""),
+                               headers=ua) as r:
+            if r.status != 200:
+                return (f"(found the article '{top}' but couldn't fetch its "
+                        f"summary: HTTP {r.status})")
+            s = await r.json(content_type=None)
+    extract = (s.get("extract") or "").strip()
+    desc = (s.get("description") or "").strip()
+    out = f"Wikipedia — {s.get('title', top)}"
+    if desc:
+        out += f" ({desc})"
+    out += f":\n{extract}" if extract else ":\n(article has no summary text)"
+    others = [t for t in titles[1:] if t != top][:3]
+    if others:
+        out += "\nOther matching articles: " + "; ".join(others)
+    return out
 
 
 def _sympy_eval(expr: str) -> str:
@@ -488,6 +558,8 @@ class LLMBridge:
         working_memory: bool = False,
         working_memory_max: int = 12,
         calculator: bool = False,
+        wikipedia: bool = False,
+        wikipedia_lang: str = "en",
         capture: tp.Optional[tp.Any] = None,
         system_prompt: tp.Optional[str] = None,
         greeting: tp.Optional[str] = None,
@@ -651,6 +723,10 @@ class LLMBridge:
         self._working_memory: dict[str, str] = {}
         # In-process sympy calculator tool — offered only if sympy is actually importable.
         self.calculator_on = bool(calculator) and _SYMPY_OK
+        # Built-in ONLINE Wikipedia lookup (keyless REST) — the no-tool-host fallback so a
+        # minimal box still has live reference search (cascade resolves the "auto" flag).
+        self.wikipedia_on = bool(wikipedia)
+        self.wikipedia_lang = (wikipedia_lang or "en").strip() or "en"
         # Durable orchestration-trace capture for the future skill-LoRA loop (or None).
         # _turn_tool_calls accumulates the tool calls the 9B made this turn, for the record.
         self.capture = capture
@@ -1099,6 +1175,8 @@ class LLMBridge:
                 tools.append(NOTE_PERSON_TOOL)      # built-in, remember a person
             if self.calculator_on:
                 tools.append(CALCULATE_TOOL)        # built-in, in-process sympy math
+            if self.wikipedia_on:
+                tools.append(SEARCH_WIKIPEDIA_TOOL)  # built-in, live online lookup
 
         # Build the fast LM system message in two bands so llama.cpp's prompt cache pays
         # off.  Everything STABLE across a session goes first (persona, identity anchor,
@@ -1756,6 +1834,18 @@ class LLMBridge:
         enqueues a Tier-3 topic); everything else goes to the Mac tool host."""
         if name == "calculate" and self.calculator_on:
             return await self._calculate(args)
+        if name == "search_wikipedia" and self.wikipedia_on:
+            query = (args.get("query") or "").strip()
+            if not query:
+                return "(no topic given to look up)"
+            if len(query) > 300:
+                return "(that query is too long for a Wikipedia lookup)"
+            try:
+                return await wiki_lookup(query, lang=self.wikipedia_lang)
+            except asyncio.TimeoutError:
+                return "(Wikipedia took too long to answer — try again or rephrase)"
+            except Exception as exc:
+                return f"(couldn't reach Wikipedia: {exc})"
         if name == "queue_research" and self.research_enqueue:
             topic = (args.get("topic") or "").strip()
             if not topic:

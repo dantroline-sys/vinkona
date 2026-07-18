@@ -207,6 +207,13 @@ venv once with `./install.sh tts chatterbox`). Force either set with
 `--full` / `--small`. An existing config is never modified — the script
 prints the fragment to merge instead.
 
+Minimal setups keep live reference lookup: when no tool host is configured
+(`tools.enabled` false), the assistant automatically offers a built-in
+**online Wikipedia search** tool to the fast LM (keyless REST, results
+fenced as untrusted data). It steps aside as soon as a real tool host with
+richer web tools is enabled; `tools.wikipedia` (`"auto"`/true/false) and
+`tools.wikipedia_lang` control it.
+
 **Windows** is planned: the Python layer (uv + one lockfile) and the process
 supervisor (`assistant/supervisor.py`, stdlib Python) are already portable in
 design; what remains is the supervisor's Windows process-control branch and
