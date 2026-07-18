@@ -484,6 +484,65 @@ def stale_cleanup():
         print(f"cleaned up a stale run (killed: {', '.join(killed)})")
 
 
+def missing_models():
+    """[(tier, resolved_path)] for enabled LM tiers whose GGUF is absent — the
+    start preflight.  Resolution goes through config.py's MERGED view (what
+    llm_server.py actually uses: defaults + the user overlay, big_lm2
+    inheriting big_lm), so the listed path is exactly where the service will
+    look — a wrong models_dir shows itself here as an absolute path."""
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("vinkona_config",
+                                                      str(DIR / "config.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        cfg = mod.load_config()
+    except Exception as e:
+        print(f"(model preflight skipped: {e})", file=sys.stderr)
+        return []
+    models_dir = Path(str(cfg.get("models_dir", "Models")))
+    if not models_dir.is_absolute():
+        models_dir = DIR / models_dir
+    tiers = ["fast_lm", "big_lm", "big_lm2", "embed_lm"]
+    if tts_engine(cfg) == "orpheus_gguf":
+        tiers.append("tts_lm")
+    out = []
+    for tier in tiers:
+        block = dict(cfg.get(tier) or {})
+        if tier == "big_lm2":
+            block = {**dict(cfg.get("big_lm") or {}), **block}
+        if not block.get("url") or not block.get("model"):
+            continue
+        model = Path(str(block["model"]))
+        path = model if model.is_absolute() else models_dir / model
+        if not path.exists():
+            out.append((tier, str(path)))
+    return out
+
+
+def preflight_models() -> None:
+    miss = missing_models()
+    if not miss:
+        return
+    print("model files missing for enabled tiers (services will refuse to serve):")
+    for tier, p in miss:
+        print(f"  {tier:<9} {p}")
+    if sys.stdin.isatty():
+        try:
+            ans = input("fetch the default set now (fetch_models.sh, RAM-sized)? "
+                        "[Y/n] ").strip().lower()
+        except EOFError:
+            ans = "n"
+        if ans not in ("n", "no"):
+            subprocess.run(["bash", str(DIR / "fetch_models.sh")], cwd=str(DIR))
+            for tier, p in missing_models():
+                print(f"  still missing: {tier}  {p}  — the config names a "
+                      f"model the fetch set doesn't include; fix the tier's "
+                      f"'model' (config web UI) or fetch it manually")
+    else:
+        print("  → ./vinkona.sh models   (or: cd assistant && ./fetch_models.sh)")
+
+
 def cmd_start(args: list[str]) -> int:
     mode = None
     topo = load_topo()
@@ -507,6 +566,7 @@ def cmd_start(args: list[str]) -> int:
         print("supervisor is already running — use './vinkona.sh restart' or 'status'.")
         return 0
     stale_cleanup()
+    preflight_models()
     if os.name != "posix":
         print("the supervisor's process control is POSIX-only for now "
               "(Windows lands with the platform port)", file=sys.stderr)

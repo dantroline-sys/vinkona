@@ -15,6 +15,7 @@
 #   ./vinkona.sh restart [svc]    # restart everything, or one service (incl. kb)
 #   ./vinkona.sh status           # what's up
 #   ./vinkona.sh logs [svc]       # follow service logs (Ctrl-C detaches)
+#   ./vinkona.sh models [--small|--full]  # fetch the GGUF set (RAM-sized by default)
 #   ./vinkona.sh services         # change what this machine runs / re-ask
 #
 # Everything runs under one process supervisor (assistant/supervisor.py) —
@@ -121,6 +122,7 @@ case "$cmd" in
         sup status
         ;;
     logs)     sup logs "$@" ;;
+    models)   (cd "$ROOT/assistant" && ./fetch_models.sh "$@") ;;
     attach)   echo "(tmux is gone — the supervisor writes logs/<name>.log; following)"
               sup logs "$@" ;;
     services)
