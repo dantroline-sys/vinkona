@@ -16,6 +16,10 @@ Personas live in their own file (config/personas.json) so the web UI can edit
 prompts independently; its path is config.personas_path.
 """
 
+# Runs under the SYSTEM python3 in some deployments (macOS = 3.9): keep
+# annotations lazy and the file 3.9-clean (test_supervisor_compat.py gates it).
+from __future__ import annotations
+
 import copy
 import json
 import re

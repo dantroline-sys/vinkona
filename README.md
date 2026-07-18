@@ -181,6 +181,15 @@ back via a brewed libomp. One caveat:
 faster-whisper runs CPU-only on macOS (CTranslate2 has no Metal backend), which
 is fine for the small ASR models the cascade uses.
 
+**Small machines** (≤20 GB RAM, e.g. a 16 GB Mac mini): `./fetch_models.sh`
+detects installed RAM and fetches the *small* set (fast 3B + big 7B + embed)
+instead of the 32B default, and — when you have no `config/config.json` yet —
+writes a sparse profile overlay selecting the 7B big LM, a trimmed context,
+and the chatterbox TTS engine (~0.5B, no extra `tts_lm` server; install its
+venv once with `./install.sh tts chatterbox`). Force either set with
+`--full` / `--small`. An existing config is never modified — the script
+prints the fragment to merge instead.
+
 **Windows** is planned: the Python layer (uv + one lockfile) and the process
 supervisor (`assistant/supervisor.py`, stdlib Python) are already portable in
 design; what remains is the supervisor's Windows process-control branch and

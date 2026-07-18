@@ -27,6 +27,10 @@ seconds the model takes to reload.  Set recycle_rss_mb to 0 to disable and get
 the plain exec behaviour back.
 """
 
+# Runs under the SYSTEM python3 in some deployments (macOS = 3.9): keep
+# annotations lazy and the file 3.9-clean (test_supervisor_compat.py gates it).
+from __future__ import annotations
+
 import argparse
 import http.client
 import http.server

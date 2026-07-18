@@ -1,16 +1,20 @@
-"""Bootstrap-compatibility gate for supervisor.py.
+"""Compatibility gate for the SYSTEM-python surface.
 
-vinkona.sh runs the supervisor with the SYSTEM python3 — on macOS that is
-3.9 — so this file must never grow syntax or imports that need more.  The
-2026-07 Mac mini failure mode: a bare `int | None` annotation evaluates
-eagerly before 3.10 and crashes at import.  This gate keeps it structural:
-future-import present, no match statements, no runtime PEP-604 unions, and
-stdlib-only imports (the supervisor runs before any env exists)."""
+vinkona.sh runs the supervisor with the system python3, and the supervisor
+launches the LM services through serve_*.sh whose bare `python3` is ALSO the
+system interpreter — on macOS that is 3.9.  Every file on that path (and its
+import closure: llm_server loads config.py in-process) must never grow syntax
+or imports needing more.  Two Mac mini failures shipped before this gate:
+bare `X | Y` annotations evaluate eagerly before 3.10 and crash at import.
+Structural checks per file: future-import first, no match statements, no
+runtime PEP-604 unions, stdlib-only imports (these files run before/without
+any env)."""
 import ast
 import sys
 from pathlib import Path
 
-SUP = Path(__file__).resolve().parent / "supervisor.py"
+HERE = Path(__file__).resolve().parent
+FILES = ["supervisor.py", "llm_server.py", "config.py"]
 FAILED = []
 
 
@@ -20,15 +24,15 @@ def check(label, cond):
         FAILED.append(label)
 
 
-def main():
-    tree = ast.parse(SUP.read_text())
+def gate(fname):
+    tree = ast.parse((HERE / fname).read_text())
     body = tree.body
     first = body[1] if isinstance(body[0], ast.Expr) else body[0]
-    check("`from __future__ import annotations` is the first statement",
+    check(f"{fname}: `from __future__ import annotations` before other imports",
           isinstance(first, ast.ImportFrom) and first.module == "__future__"
           and any(a.name == "annotations" for a in first.names))
 
-    check("no match statements (3.10+)",
+    check(f"{fname}: no match statements (3.10+)",
           not any(isinstance(n, ast.Match) for n in ast.walk(tree)))
 
     # Runtime PEP-604 unions (isinstance(x, A | B), aliases) crash on 3.9 even
@@ -46,7 +50,8 @@ def main():
                       and any(isinstance(x, ast.Name) and x.id in
                               ("int", "str", "float", "dict", "list", "None",
                                "Path", "bool") for x in ast.walk(n))]
-    check("no runtime type unions outside annotations", runtime_unions == [])
+    check(f"{fname}: no runtime type unions outside annotations",
+          runtime_unions == [])
 
     stdlib = getattr(sys, "stdlib_module_names", None)
     roots = set()
@@ -57,11 +62,15 @@ def main():
             roots.add(n.module.split(".")[0])
     foreign = sorted(r for r in roots
                      if r != "__future__" and stdlib and r not in stdlib)
-    check("supervisor imports stdlib only (runs before any env exists)",
+    check(f"{fname}: imports stdlib only (runs before/without any env)",
           not stdlib or foreign == [])
     if foreign:
         print("   foreign imports:", ", ".join(foreign))
 
+
+def main():
+    for f in FILES:
+        gate(f)
     if FAILED:
         print(f"\n{len(FAILED)} FAILED")
         raise SystemExit(1)
