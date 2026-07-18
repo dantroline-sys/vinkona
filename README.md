@@ -171,10 +171,13 @@ everything runs directly on the host — `vinkona.sh` detects the missing
 container and places services accordingly.
 
 **macOS** works host-only: llama.cpp uses Metal automatically (`./install.sh
-llama` builds it in-tree), uv downloads any Python it needs, and the CUDA/
-container logic simply never engages. You'll want Homebrew for the handful of
-system tools (cmake, autotools for the optional rnnoise build) — the
-installers name the exact packages and offer to install them. One caveat:
+llama` builds it in-tree with OpenMP and curl/OpenSSL disabled — Metal +
+Accelerate make OpenMP pointless there, and the URL-download feature is never
+used, so the build needs no Homebrew *libraries*). You'll want Homebrew for
+the handful of system *tools* (cmake, autotools for the optional rnnoise
+build) — the installers name the exact packages and offer to install them;
+`VINKONA_LLAMA_CMAKE_EXTRA` appends custom cmake flags if you want OpenMP
+back via a brewed libomp. One caveat:
 faster-whisper runs CPU-only on macOS (CTranslate2 has no Metal backend), which
 is fine for the small ASR models the cascade uses.
 

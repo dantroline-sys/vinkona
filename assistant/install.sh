@@ -184,9 +184,15 @@ step_llama() {
         ok "llama-server already on PATH: $(command -v llama-server) — skipping build (run './install.sh llama --force' to build in-tree anyway)"
         [ "${1:-}" = "--force" ] || return 0
     fi
+    local platform_flags=""
     if [ "$(uname -s)" = Darwin ]; then
         # clang + make ship with the Xcode Command Line Tools; llama.cpp turns
         # Metal on by default on Apple hardware — no GPU probing needed.
+        # Apple clang has no bundled OpenMP (cmake's find fails without a brew
+        # libomp) and it buys ~nothing next to Metal+Accelerate — off, so the
+        # build needs no Homebrew libraries at all (brew stays the tool manager
+        # for git/cmake via vk_require_tools, nothing more).
+        platform_flags="-DGGML_OPENMP=OFF"
         command -v cc >/dev/null 2>&1 \
             || die "no C compiler — install the Xcode Command Line Tools first:  xcode-select --install"
         vk_require_tools git cmake || die "building llama.cpp needs git + cmake (see above)"
@@ -289,9 +295,15 @@ step_llama() {
         git clone --depth 1 https://github.com/ggml-org/llama.cpp "$src"
     fi
     say "llama: building llama-server ($cuda_flag${nvcc:+, nvcc: $nvcc}${ccbin:+, host: $ccbin}${cuda_extra:+, forced: $cuda_extra}) — this takes a while"
-    cmake -S "$src" -B "$src/build" $cuda_flag ${nvcc:+-DCMAKE_CUDA_COMPILER="$nvcc"} \
+    # LLAMA_CURL=OFF: llama-server's URL-download path is never used (models
+    # come via fetch_models.sh) and it is what drags curl/OpenSSL probing into
+    # the build.  VINKONA_LLAMA_CMAKE_EXTRA appends ad-hoc flags without edits.
+    # shellcheck disable=SC2086
+    cmake -S "$src" -B "$src/build" $cuda_flag $platform_flags ${nvcc:+-DCMAKE_CUDA_COMPILER="$nvcc"} \
           ${ccbin:+-DCMAKE_CUDA_HOST_COMPILER="$ccbin"} ${cuda_extra:+-DCMAKE_CUDA_FLAGS="$cuda_extra"} \
-          -DBUILD_SHARED_LIBS=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=ON >/dev/null
+          -DLLAMA_CURL=OFF \
+          -DBUILD_SHARED_LIBS=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=ON \
+          ${VINKONA_LLAMA_CMAKE_EXTRA:-} >/dev/null
     cmake --build "$src/build" --target llama-server -j"$(vk_ncpu)"
     mkdir -p bin
     cp "$src/build/bin/llama-server" bin/
