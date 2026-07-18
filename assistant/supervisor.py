@@ -622,6 +622,24 @@ def svc_check(name: str, cfg: dict, topo: dict, child_alive: bool) -> str:
     return "up            (process)" if child_alive else "not running"
 
 
+def _last_log_line(name: str) -> str:
+    """The most reason-looking recent line of logs/<name>.log — shown under a
+    non-up service so 'not answering' carries its own diagnosis (the LM
+    launcher's preflights exit with exactly these one-liners)."""
+    try:
+        data = (LOGS / f"{name}.log").read_bytes()[-4096:].decode("utf-8", "replace")
+    except OSError:
+        return ""
+    lines = [ln.strip() for ln in data.splitlines() if ln.strip()]
+    for ln in reversed(lines):
+        low = ln.lower()
+        if any(k in low for k in ("error", "not found", "missing", "failed",
+                                  "died", "exited", "no such", "traceback",
+                                  "killed", "oom")):
+            return ln[:140]
+    return lines[-1][:140] if lines else ""
+
+
 def cmd_status() -> int:
     pid = supervisor_pid()
     if not pid:
@@ -636,7 +654,12 @@ def cmd_status() -> int:
     print(f"supervisor up (pid {pid}, mode: {state.get('mode', read_mode())}, {boxinfo})")
     for name, info in (state.get("services") or {}).items():
         alive = info.get("exited") is None and pid_alive(info.get("pid", -1))
-        print(f"  {name:<9} {svc_check(name, cfg, topo, alive)}")
+        line = svc_check(name, cfg, topo, alive)
+        print(f"  {name:<9} {line}")
+        if not line.startswith("up") and "fine if" not in line:
+            hint = _last_log_line(name)
+            if hint:
+                print(f"  {'':<9} ↳ {hint}")
     return 0
 
 
