@@ -30,6 +30,12 @@ Usage (normally via ./vinkona.sh, which is a thin shim over this):
   supervisor.py logs [svc]      # follow one log, or all multiplexed
 """
 
+# This file is the bootstrap: vinkona.sh runs it with the SYSTEM python3,
+# before any env exists.  It must stay stdlib-only and 3.9-compatible — the
+# macOS system python3 is 3.9, where `int | None` annotations evaluate eagerly
+# (test_supervisor_compat.py gates this).
+from __future__ import annotations
+
 import json
 import os
 import shlex
@@ -40,6 +46,10 @@ import sys
 import time
 import urllib.request
 from pathlib import Path
+
+if sys.version_info < (3, 9):
+    sys.exit("vinkona supervisor needs Python 3.9+ (this python3 is %d.%d)"
+             % sys.version_info[:2])
 
 DIR = Path(__file__).resolve().parent
 LOGS = DIR / "logs"
