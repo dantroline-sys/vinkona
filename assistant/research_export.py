@@ -151,6 +151,144 @@ def _pick_hint(docs: list[dict]) -> dict:
     return {}
 
 
+def _hash16(content: str) -> str:
+    """Drop-content fingerprint — a cross-repo contract with the knowledge
+    host's research.drop_inventory (sha256[:16]); change both or neither."""
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
+
+
+_LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1", "0.0.0.0", ""}
+
+
+def _is_local_url(url: str) -> bool:
+    from urllib.parse import urlparse
+    try:
+        return (urlparse(url).hostname or "").lower() in _LOCAL_HOSTS
+    except ValueError:
+        return False
+
+
+def resolve_export_target(cfg: dict) -> dict:
+    """Where should research drops go so they are actually READ?
+
+    The old contract made the operator route by hand (research.export.folder =
+    path or URL) — and a path plus a REMOTE knowledge host quietly wrote drops
+    into a local outbox nothing ever mines.  Resolution now follows the
+    knowledge itself:
+
+      folder is a URL                → http to it (explicit routing wins)
+      transport pinned folder/http   → as pinned
+      knowledge_host REMOTE          → http to it (a local outbox is a black
+                                       hole; the configured folder is kept as
+                                       a fallback for when the host is down)
+      folder set (host local/absent) → the folder (the host mines it there)
+      no folder, knowledge_host set  → http to it (its /drop writes the
+                                       host's own solved dir — local or not)
+      neither                        → off
+
+    Returns {mode: http|folder|off, dest, token, reason[, fallback_folder]}.
+    The token falls back to knowledge_host.token — same host, same secret."""
+    rcfg = (cfg.get("research") or {}).get("export") or {}
+    kh = cfg.get("knowledge_host") or {}
+    folder = str(rcfg.get("folder") or "").strip()
+    transport = str(rcfg.get("transport") or "auto").strip().lower()
+    token = str(rcfg.get("token") or kh.get("token") or "")
+    kh_url = str(kh.get("url") or "").strip() if kh.get("enabled") else ""
+
+    if folder.startswith(("http://", "https://")):
+        return {"mode": "http", "dest": folder, "token": token,
+                "reason": "export folder is a URL"}
+    if transport == "folder":
+        if folder:
+            return {"mode": "folder", "dest": os.path.expanduser(folder), "token": "",
+                    "reason": "transport pinned to folder"}
+        return {"mode": "off", "dest": "", "token": "",
+                "reason": "transport pinned to folder but no folder configured"}
+    if transport == "http":
+        if kh_url:
+            return {"mode": "http", "dest": kh_url, "token": token,
+                    "reason": "transport pinned to http"}
+        return {"mode": "off", "dest": "", "token": "",
+                "reason": "transport pinned to http but no knowledge_host configured"}
+    if kh_url and not _is_local_url(kh_url):
+        out = {"mode": "http", "dest": kh_url, "token": token,
+               "reason": "knowledge host is remote — a local outbox would never be read"}
+        if folder:
+            out["fallback_folder"] = os.path.expanduser(folder)
+        return out
+    if folder:
+        return {"mode": "folder", "dest": os.path.expanduser(folder), "token": "",
+                "reason": "local folder outbox"}
+    if kh_url:
+        return {"mode": "http", "dest": kh_url, "token": token,
+                "reason": "no folder configured — delivering straight to the knowledge host"}
+    return {"mode": "off", "dest": "", "token": "",
+            "reason": "no export folder and no knowledge_host configured"}
+
+
+def negotiate_drop(base_url: str, token: str, timeout: float = 10.0):
+    """GET /drop — the server-server handshake.  Returns (status, payload):
+      ("ok", {accepts, drops, ...})  the host answered — deliver accordingly
+      ("denied", None)               reachable but the token was refused
+      ("no-route", None)             reachable, but an older host without the
+                                     handshake — POSTing blind still works
+      ("down", None)                 unreachable — don't burn the outbox on it
+    """
+    import urllib.error
+    import urllib.request
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    req = urllib.request.Request(base_url.rstrip("/") + "/drop", headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            res = json.loads(r.read().decode("utf-8", "replace"))
+        return ("ok", res) if res.get("ok") else ("no-route", None)
+    except urllib.error.HTTPError as e:
+        return ("denied", None) if e.code in (401, 403) else ("no-route", None)
+    except Exception:
+        return ("down", None)
+
+
+def run_export(memory, cfg: dict, crawl_sources: tp.Iterable[str] = (), *,
+               full: bool = False) -> dict:
+    """The smart lane: resolve where the knowledge host actually reads,
+    handshake with it, then export only what it doesn't already hold.
+    This is what the research worker calls; export_research stays the
+    lower-level engine (and the fixed-destination API)."""
+    target = resolve_export_target(cfg)
+    rcfg = (cfg.get("research") or {}).get("export") or {}
+    max_chars = int(rcfg.get("max_source_chars", 40000))
+    base = {"transport": target["mode"], "dest": target["dest"],
+            "route_reason": target["reason"]}
+    if target["mode"] == "off":
+        return {"ok": False, "error": target["reason"], "written": 0, "skipped": 0, **base}
+    if target["mode"] == "folder":
+        res = export_research(memory, target["dest"], crawl_sources, full=full,
+                              max_source_chars=max_chars)
+        return {**res, **base}
+    status, hs = negotiate_drop(target["dest"], target["token"])
+    if status == "denied":
+        return {"ok": False, "error": f"knowledge host at {target['dest']} refused the "
+                "token — check research.export.token / knowledge_host.token",
+                "written": 0, "skipped": 0, **base}
+    if status == "ok" and not hs.get("accepts", True):
+        return {"ok": False, "error": f"knowledge host can't store drops: "
+                f"{hs.get('reason') or 'no reason given'}",
+                "written": 0, "skipped": 0, **base}
+    if status == "down":
+        if target.get("fallback_folder"):
+            res = export_research(memory, target["fallback_folder"], crawl_sources,
+                                  full=full, max_source_chars=max_chars)
+            return {**res, **base, "transport": "folder",
+                    "route_reason": "host unreachable — fell back to the folder outbox"}
+        return {"ok": False, "error": f"knowledge host at {target['dest']} is "
+                "unreachable — will retry next cycle", "written": 0, "skipped": 0, **base}
+    inventory = (hs or {}).get("drops") if status == "ok" else None
+    res = export_research(memory, target["dest"], crawl_sources, full=full,
+                          max_source_chars=max_chars, token=target["token"],
+                          inventory=inventory)
+    return {**res, **base}
+
+
 def _post_drop(base_url: str, token: str, name: str, content: str,
                timeout: float = 30.0) -> bool:
     """POST one drop to a remote knowledge host's /drop route (Vinur on another
@@ -191,7 +329,7 @@ def _write_if_changed(path: str, content: str) -> bool:
 
 def export_research(memory, folder: str, crawl_sources: tp.Iterable[str] = (), *,
                     full: bool = False, max_source_chars: int = 40000,
-                    token: str = "") -> dict:
+                    token: str = "", inventory: tp.Optional[dict] = None) -> dict:
     """Write the research hoard out as `<hash>.md` drops under `folder`.
 
     `folder` may also be a remote knowledge host's base URL ("http://box:8771"):
@@ -236,6 +374,12 @@ def export_research(memory, folder: str, crawl_sources: tp.Iterable[str] = (), *
         docs = _fetch(memory.db, _FULL_COLS, f"rowid IN ({ids})", [])
         content = render_doc(g["question"], docs, max_source_chars=max_source_chars)
         if remote:
+            # Handshake inventory (run_export): the host told us what it holds —
+            # a matching fingerprint means this drop is already there, skip the
+            # bytes entirely (the full re-export becomes near-free over the wire).
+            if inventory is not None and inventory.get(h + ".md") == _hash16(content):
+                skipped += 1
+                continue
             try:
                 changed = _post_drop(folder, token, h + ".md", content)
             except Exception as e:

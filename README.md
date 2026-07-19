@@ -152,14 +152,20 @@ config sets (Vinur refuses a LAN bind without one):
 {
   "knowledge":      {"enabled": true, "tool_url": "http://kb-box:8771", "auth_token": "<token>"},
   "knowledge_host": {"enabled": true, "url": "http://kb-box:8771", "token": "<token>"},
-  "research": {"export": {"enabled": true, "folder": "http://kb-box:8771", "token": "<token>"}},
+  "research": {"export": {"enabled": true}},
   "big_lm": {"remote": true, "url": "http://kb-box:11438", "model": "big"}
 }
 ```
 
-The third line switches the research hand-off from a shared folder to Vinur's
-`/drop` route, so solved research reaches the remote knowledge base with no
-network mount.
+The third line just turns the research hand-off on — its **routing is
+automatic**: because `knowledge_host` points at another machine, drops are
+negotiated over Vinur's `/drop` route (a `GET /drop` handshake first asks
+what the host already holds, so unchanged drops never re-ship; the token is
+borrowed from `knowledge_host.token`). A local outbox folder is never
+silently filled that nothing reads — if one is configured it serves only as
+the fallback while the host is down. Local setups keep writing the shared
+folder as before; `research.export.transport` pins `http`/`folder` if you
+ever want to override the choice.
 
 The fourth line is optional: the assistant's background reasoning tier can be
 a model the box serves instead of a local llama-server. `remote: true` skips

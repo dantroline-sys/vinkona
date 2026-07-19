@@ -822,13 +822,18 @@ DEFAULTS: dict = {
         # <hash>.md drops the standalone knowledge-host ingests (chunk→embed→distill→cards→kb_ask).
         # Point the host's `sources` at this folder.  Personal crawled mail/files are never exported.
         # Incremental on a cadence; the web UI's "Re-export" button forces a full rebuild.
-        # Vinur on ANOTHER machine: set folder to its base URL ("http://box:8771") and
-        # token to its auth_token — drops then POST to its /drop route instead of a
-        # shared directory (the host writes them into its research_solved_dir).
+        # ROUTING IS AUTOMATIC (research_export.resolve_export_target): drops go where
+        # the knowledge actually gets read.  A REMOTE knowledge_host (non-loopback url)
+        # receives them over its authed /drop route — after a GET /drop handshake that
+        # also returns what the host already holds, so unchanged drops never re-ship —
+        # and a local outbox is never silently filled that nothing mines (a configured
+        # folder remains the fallback while the host is down).  folder may still be a
+        # path (local setups) or an explicit base URL ("http://box:8771", forces http).
         "export": {
             "enabled": False,
             "folder": "",                         # hand-off dir, or a remote host base URL
-            "token": "",                          # Bearer for the remote /drop lane only
+            "token": "",                          # Bearer for /drop; falls back to knowledge_host.token
+            "transport": "auto",                  # auto | http | folder — pin to override routing
             "interval_s": 3600,
             "max_source_chars": 40000,            # per-source cap written into each drop
         },

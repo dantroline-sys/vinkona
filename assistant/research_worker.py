@@ -1387,20 +1387,21 @@ async def main():
 
     def do_export(full=False):
         """Write the non-personal research hoard out as <hash>.md drops for the knowledge host to
-        ingest.  Incremental by default (rowid watermark); full re-writes everything (repairs any
-        file removed from the folder).  Personal crawl documents are excluded by kind + topic."""
-        folder = export_cfg.get("folder")
-        if not folder:
-            return {"ok": False, "error": "no export folder configured"}
+        ingest.  Routing is resolved (research_export.resolve_export_target): a remote knowledge
+        host gets the drops over its /drop route after a handshake — never a local outbox nothing
+        reads — a local setup keeps the folder.  Incremental by default (rowid watermark); full
+        re-writes everything (the handshake inventory makes that near-free over the wire).
+        Personal crawl documents are excluded by kind + topic."""
         crawl_sources = [c.get("source") for c in ingest_cfg.get("crawls", []) if c.get("source")]
-        res = rexport.export_research(memory, folder, crawl_sources, full=full,
-                                      max_source_chars=int(export_cfg.get("max_source_chars", 40000)),
-                                      token=export_cfg.get("token") or "")
+        res = rexport.run_export(memory, cfg, crawl_sources, full=full)
         trace.write(kind="research_export", full=full, **{k: res.get(k) for k in
-                    ("ok", "folder", "written", "skipped", "questions", "documents", "error")})
+                    ("ok", "folder", "transport", "dest", "route_reason",
+                     "written", "skipped", "questions", "documents", "error")})
         _log(f"research export ({'full' if full else 'incremental'}): {res.get('written', 0)} "
              f"written, {res.get('skipped', 0)} unchanged, {res.get('questions', 0)} question(s) "
-             f"-> {res.get('folder', export_cfg.get('folder'))}")
+             f"-> {res.get('dest') or res.get('folder') or 'nowhere'} "
+             f"[{res.get('transport', '?')}: {res.get('route_reason', '')}]"
+             + (f" — ERROR: {res['error']}" if res.get("error") else ""))
         return res
 
     rss_cfg = rcfg.get("rss", {})
@@ -1594,7 +1595,8 @@ async def main():
     digest_interval = (digest_cfg.get("interval_s", 86400)
                        if (rss_cfg.get("enabled") and digest_cfg.get("enabled", True)) else 0)
     export_interval = (export_cfg.get("interval_s", 3600)
-                       if (export_cfg.get("enabled") and export_cfg.get("folder")) else 0)
+                       if (export_cfg.get("enabled")
+                           and rexport.resolve_export_target(cfg)["mode"] != "off") else 0)
     last_garden = last_ingest = time.time()
     last_idle = 0.0
     last_crawl = 0.0                                 # 0 ⇒ start background reading soon
