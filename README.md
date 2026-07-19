@@ -167,6 +167,11 @@ the local launch (status shows the tier's remote reachability instead), and
 `model` becomes the *name* sent in requests — vLLM validates it, so give the
 box's entry a stable alias (`served_model_name = "big"`) and send that;
 llama-server ignored the name, which is why this never mattered before.
+As a safety net the assistant asks a remote server what it serves
+(`/v1/models`) at startup: a stale name — often one nobody typed, inherited
+from the built-in defaults — is adopted automatically when the server hosts
+exactly one model (logged), and logged with the real names when it hosts
+several.
 
 The top-level installer drives one installer per component (each also usable
 directly, with its own uninstall):

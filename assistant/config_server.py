@@ -148,6 +148,11 @@ class MemoryAdmin:
         self.m = cfg["memory"]
         self.e = cfg["embed_lm"]
         self.path = self.m["db_path"]
+        if self.e.get("remote"):     # remote embed tier: agree on the model NAME
+            try:
+                CFGMOD.resolve_remote_lms(cfg)
+            except Exception:
+                pass
 
     # Matches memory.py's schema, so the UI can seed entries before the cascade
     # (which owns the store) has ever created the DB.

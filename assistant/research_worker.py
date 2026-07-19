@@ -1040,11 +1040,16 @@ async def main():
                     help="run one FULL research export (documents -> solved/*.md) and exit")
     args = ap.parse_args()
 
-    cfg = _load("config").load_config(args.config)
+    cfgmod = _load("config")      # kept: resolve_remote_lms memoizes module-wide
+    cfg = cfgmod.load_config(args.config)
     rcfg = cfg.get("research", {})
     if not rcfg.get("enabled"):
         _log("research.enabled is false in config — nothing to do. Exiting.")
         return
+    try:      # remote tiers: agree on the model NAME with the serving box
+        cfgmod.resolve_remote_lms(cfg, log=_log)
+    except Exception as e:
+        _log(f"remote LM name resolution skipped: {e}")
     big = cfg["big_lm"]
     if not big.get("url"):
         _log("big_lm.url not set — research needs the big LM for synthesis. Exiting.")
@@ -1621,6 +1626,14 @@ async def main():
                 _log(f"startup idle cycle failed (continuing): {e}")
             last_idle = time.time()
         while True:
+            # Remote tiers: keep the model NAME reconciled with the serving box.
+            # Memoized with a TTL + down-server backoff, so this is almost always
+            # free — but it means a box that finished loading after our startup
+            # probe (or swapped what it serves) heals without a worker restart.
+            try:
+                cfgmod.resolve_remote_lms(cfg, log=_log)
+            except Exception:
+                pass
             # Manual "Reconcile now" from the Memory tab: a worker_state flag the config
             # server sets.  Honoured regardless of idle gating — the user asked for it.
             req = memory.get_state("reconcile_request")

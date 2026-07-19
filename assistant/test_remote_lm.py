@@ -110,4 +110,90 @@ assert rem and rem[0]["up"] is False and "remote" in rem[0]["detail"], payload
 assert rem[0]["pid"] is None
 ok("status --json: remote tier listed for the launcher (up=false, detail)")
 
+# ── resolve_remote_lms: reconcile names with what the server serves ──────────
+import config as cfgmod
+
+
+class _Models(http.server.BaseHTTPRequestHandler):
+    served = ["served-big"]
+    hits = [0]
+
+    def do_GET(self):
+        type(self).hits[0] += 1
+        body = json.dumps({"data": [{"id": i} for i in self.served]}).encode()
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *a):
+        pass
+
+
+msrv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Models)
+threading.Thread(target=msrv.serve_forever, daemon=True).start()
+murl = f"http://127.0.0.1:{msrv.server_address[1]}"
+logs = []
+
+cfgmod._REMOTE_MODEL_CACHE.clear()
+cfgmod._REMOTE_PROBE_FAILED.clear()
+c = {"big_lm": {"remote": True, "url": murl, "model": "stale-gguf-name"}}
+cfgmod.resolve_remote_lms(c, log=logs.append)
+assert c["big_lm"]["model"] == "served-big", c
+assert logs and "served-big" in logs[0] and "stale-gguf-name" in logs[0], logs
+ok("resolve_remote_lms: single served id adopted (logged with both names)")
+
+hits_before = _Models.hits[0]
+c2 = {"big_lm": {"remote": True, "url": murl, "model": "stale-gguf-name"}}
+cfgmod.resolve_remote_lms(c2, log=logs.append)
+assert c2["big_lm"]["model"] == "served-big" and _Models.hits[0] == hits_before
+ok("memoized: per-connection reloads cost zero HTTP after the first")
+
+cfgmod._REMOTE_MODEL_CACHE.clear()
+c3 = {"big_lm": {"remote": True, "url": murl, "model": "served-big"}}
+cfgmod.resolve_remote_lms(c3, log=logs.append)
+assert c3["big_lm"]["model"] == "served-big"
+ok("configured name already served: kept")
+
+cfgmod._REMOTE_MODEL_CACHE.clear()
+_Models.served = ["model-a", "model-b"]
+logs.clear()
+c4 = {"big_lm": {"remote": True, "url": murl, "model": "stale-gguf-name"}}
+cfgmod.resolve_remote_lms(c4, log=logs.append)
+assert c4["big_lm"]["model"] == "stale-gguf-name"
+assert logs and "model-a" in logs[0] and "model-b" in logs[0], logs
+cfgmod.resolve_remote_lms(dict(c4), log=logs.append)
+assert len(logs) == 1, logs
+ok("several served ids: name kept, servers listed, warned once")
+
+# TTL re-validation: the box changes what it serves; a stale cache heals.
+cfgmod._REMOTE_MODEL_CACHE.clear()
+cfgmod._REMOTE_PROBE_FAILED.clear()
+_Models.served = ["new-big"]
+key = (murl, "stale-gguf-name")
+cfgmod._REMOTE_MODEL_CACHE[key] = ("old-big", 0.0)          # long expired
+c6 = {"big_lm": {"remote": True, "url": murl, "model": "stale-gguf-name"}}
+cfgmod.resolve_remote_lms(c6, log=logs.append)
+assert c6["big_lm"]["model"] == "new-big", c6
+ok("TTL: expired cache re-probes and adopts the box's new single model")
+
+_Models.served = ["old-big", "other"]
+cfgmod._REMOTE_MODEL_CACHE[key] = ("old-big", 0.0)          # adopted, expired
+c7 = {"big_lm": {"remote": True, "url": murl, "model": "stale-gguf-name"}}
+cfgmod.resolve_remote_lms(c7, log=logs.append)
+assert c7["big_lm"]["model"] == "old-big", c7
+ok("TTL: adopted name still served among several -> kept, no regression")
+
+msrv.shutdown()
+cfgmod._REMOTE_MODEL_CACHE.clear()
+cfgmod._REMOTE_PROBE_FAILED.clear()
+c5 = {"big_lm": {"remote": True, "url": "http://127.0.0.1:1", "model": "x"},
+      "fast_lm": {"url": "http://127.0.0.1:11435", "model": "y"}}
+cfgmod.resolve_remote_lms(c5, log=logs.append)
+assert c5["big_lm"]["model"] == "x" and c5["fast_lm"]["model"] == "y"
+assert "http://127.0.0.1:1" in cfgmod._REMOTE_PROBE_FAILED, "down server backs off"
+assert "http://127.0.0.1:11435" not in cfgmod._REMOTE_PROBE_FAILED, \
+    "local (non-remote) tier must never be probed"
+ok("unreachable server: names untouched, backoff set; local tiers ignored")
+
 print(f"test_remote_lm: {N[0]} checks OK")

@@ -302,6 +302,9 @@ DEFAULTS: dict = {
         # model file isn't preflighted, and `model` below becomes the NAME sent
         # in requests — vLLM validates it (404 on a mismatch; llama-server never
         # cared), so match the box's served_model_name.  Works on any LM tier.
+        # Safety net: at service start the name is reconciled against the
+        # server's /v1/models (resolve_remote_lms) — a stale name is adopted
+        # when the server hosts exactly one model, warned about otherwise.
         "remote": False,
         "model": "Qwen2.5-32B-Instruct-Q4_K_M.gguf",
         "gpu": 0,                            # 3090 (dedicated; never on Ollama's 11434)
@@ -1140,6 +1143,83 @@ def lm_bind(url: str) -> tuple[str, int]:
     """(host, port) a llama-server should bind for a tier whose clients use `url`."""
     p = urlparse(url)
     return p.hostname or "127.0.0.1", p.port or 8080
+
+
+# resolve_remote_lms memo: (url, configured_name) -> (resolved name, when).
+# Entries re-validate after _REMOTE_MODEL_TTL_S so a box that changes what it
+# serves heals without a restart; _REMOTE_PROBE_FAILED is a short backoff so
+# a down box doesn't add its probe timeout to every connection.
+_REMOTE_MODEL_CACHE: dict = {}
+_REMOTE_MODEL_TTL_S = 600.0
+_REMOTE_PROBE_FAILED: dict = {}
+_REMOTE_PROBE_RETRY_S = 60.0
+
+
+def served_model_ids(url: str, timeout: float = 3.0) -> list:
+    """Model ids a /v1-compatible server reports (GET /v1/models), [] on any
+    failure.  Both llama-server and vLLM answer this."""
+    import urllib.request
+    try:
+        with urllib.request.urlopen(url.rstrip("/") + "/v1/models",
+                                    timeout=timeout) as r:
+            data = json.loads(r.read())
+        return [str(d.get("id")) for d in (data.get("data") or []) if d.get("id")]
+    except Exception:
+        return []
+
+
+def resolve_remote_lms(cfg: dict, timeout: float = 3.0, log=print) -> None:
+    """Reconcile remote LM tiers' model names with what each server serves.
+
+    llama-server ignores the request "model" field; vLLM validates it and
+    answers 404 — and the failing name is usually one NOBODY typed, a tier
+    whose `model` was simply left to DEFAULTS.  For each tier whose own
+    block sets remote=true: ask the server (memoized).  Configured name
+    served → done.  Not served but the server serves exactly ONE model →
+    adopt it in cfg (logged; set the name in config to make it permanent).
+    Several models → keep the name and log them once.  Unreachable → keep
+    silently and retry on a later call (60 s backoff).  Mutates cfg in
+    place; cheap after the first call, so per-connection reloads are fine."""
+    import time as _time
+    for tier in LM_TIERS:
+        block = cfg.get(tier) or {}
+        url, name = str(block.get("url") or ""), str(block.get("model") or "")
+        if not block.get("remote") or not url:
+            continue
+        key, now = (url, name), _time.time()
+        cached = _REMOTE_MODEL_CACHE.get(key)
+        if cached is not None:
+            block["model"] = cached[0]
+            if now - cached[1] < _REMOTE_MODEL_TTL_S:
+                continue                       # fresh — no network
+        if now - _REMOTE_PROBE_FAILED.get(url, 0) < _REMOTE_PROBE_RETRY_S:
+            continue
+        ids = served_model_ids(url, timeout=timeout)
+        if not ids:
+            # Down (or mid-load): keep whatever we had, back off, and leave a
+            # stale cache entry stale so the next call past the backoff retries.
+            _REMOTE_PROBE_FAILED[url] = now
+            continue
+        if name in ids:
+            _REMOTE_MODEL_CACHE[key] = (name, now)
+            block["model"] = name
+        elif len(ids) == 1:
+            if cached is None or cached[0] != ids[0]:
+                log(f"[lm] {tier}: {url} serves '{ids[0]}' — using it "
+                    f"(config said '{name}'; set {tier}.model to make this permanent)")
+            _REMOTE_MODEL_CACHE[key] = (ids[0], now)
+            block["model"] = ids[0]
+        elif cached is not None and cached[0] in ids:
+            # Adopted earlier; the server now hosts several models but still
+            # serves the adopted one — keep it rather than regress to `name`.
+            _REMOTE_MODEL_CACHE[key] = (cached[0], now)
+            block["model"] = cached[0]
+        else:
+            log(f"[lm] {tier}: {url} does not serve '{name}' — requests will "
+                f"404. It serves: {', '.join(ids)}; set {tier}.model to one "
+                f"of these (or served_model_name on the server).")
+            _REMOTE_MODEL_CACHE[key] = (name, now)
+            block["model"] = name
 
 
 def activity_path(cfg: dict) -> Path:

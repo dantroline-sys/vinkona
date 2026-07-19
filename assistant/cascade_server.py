@@ -241,14 +241,26 @@ class CascadeServer:
         except Exception:
             pass
 
-    def reload(self):
-        """Fresh config + personas from disk (called per connection for live edits)."""
+    def reload(self, resolve=True):
+        """Fresh config + personas from disk (called per connection for live edits).
+
+        resolve: reconcile remote LM tiers' model NAMES with what each remote
+        server serves (big_lm.remote — vLLM 404s on a mismatch, and the stale
+        name is usually an unnoticed DEFAULT).  Memoized with a TTL, so the
+        probe is rare — but it CAN block up to its timeout when the box is
+        down, so callers that run while audio is streaming (handle_personas)
+        pass resolve=False and live with the names the last session got."""
         cfg = self._cfgmod.load_config(self.config_path)
+        if resolve:
+            try:
+                self._cfgmod.resolve_remote_lms(cfg, log=_log)
+            except Exception as e:
+                _log(f"remote LM name resolution skipped: {e}")
         personas, default = self._cfgmod.load_personas(cfg)
         return cfg, personas, default
 
     async def handle_personas(self, _req):
-        _cfg, personas, default = self.reload()
+        _cfg, personas, default = self.reload(resolve=False)
         items = [{"name": n, "description": p.get("description", ""),
                   "default": n == default} for n, p in personas.items()]
         return web.json_response({"personas": items, "default": default})
