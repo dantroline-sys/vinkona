@@ -150,7 +150,8 @@
   <div>
     <h1>Vinkona Config</h1>
     <div class="sub">Personas &amp; tunables apply on the next call. Ports/models &amp; ASR need a service restart.
-      <a id="chatLink" href="#" target="_blank" style="color:#7aa7ff; margin-left:8px;">Open text chat ↗</a></div>
+      <a id="chatLink" href="#" target="_blank" style="color:#7aa7ff; margin-left:8px;">Open text chat ↗</a>
+      <span id="vinurLink" style="margin-left:8px;"></span></div>
   </div>
   <div id="idleControl" title="Pause Vinkona's background research/idle tasks to free the LMs (e.g. for the knowledge host)">
     <button id="idleBtn" onclick="toggleIdle()">Pause idle work</button>
@@ -1669,6 +1670,20 @@ function injectTabHelp(){
 
 loadPersonas(); loadHelp().then(loadConfig); setChatLink();
 refreshIdle(); setInterval(refreshIdle, 15000);
+
+// ── Vinur (knowledge host) connection badge ─────────────────────────────────
+async function refreshVinur() {
+  const el = document.getElementById('vinurLink');
+  try {
+    const r = await (await fetch('/api/vinur')).json();
+    if (!r.configured) { el.textContent = ''; return; }
+    const col = r.state === 'up' ? '#4caf82' : (r.state === 'no-auth' ? '#e0a800' : '#e05c5c');
+    const word = r.state === 'up' ? 'connected' : (r.state === 'no-auth' ? 'token refused' : 'unreachable');
+    el.innerHTML = '· Vinur: <span style="color:' + col + '">●</span> ' + word;
+    el.title = r.url + ' — ' + (r.detail || '');
+  } catch (e) { el.textContent = ''; }
+}
+refreshVinur(); setInterval(refreshVinur, 15000);
 </script>
 </body>
 </html>

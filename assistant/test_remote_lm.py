@@ -57,20 +57,85 @@ except SystemExit as e:
     assert "remote" in str(e) and "kb-box" in str(e), e
 ok("llm_server.build_command: remote tier exits with a clear message")
 
-# ── missing_models: a remote tier's model is a name, not a file ──────────────
-remote_cfg = {"models_dir": "Models",
-              "fast_lm": {"url": None},
-              "big_lm": {"url": "http://kb-box:11438",
-                         "model": "definitely-not-a-file", "remote": True}}
-fake_mod = mock.Mock()
-fake_mod.load_config.return_value = remote_cfg
-with mock.patch("importlib.util.module_from_spec", return_value=fake_mod), \
-     mock.patch.object(fake_mod, "load_config", return_value=remote_cfg):
-    with mock.patch("importlib.util.spec_from_file_location") as spec:
+# ── missing_models: remote names, phantom big_lm2, misplaced files ───────────
+def run_missing(cfg):
+    fake_mod = mock.Mock()
+    fake_mod.load_config.return_value = cfg
+    with mock.patch("importlib.util.module_from_spec", return_value=fake_mod), \
+         mock.patch("importlib.util.spec_from_file_location") as spec:
         spec.return_value.loader.exec_module = lambda m: None
-        miss = sup.missing_models()
-assert not [m for m in miss if m[0] == "big_lm"], miss
+        return sup.missing_models()
+
+
+res = run_missing({"models_dir": "Models",
+                   "fast_lm": {"url": None},
+                   "big_lm": {"url": "http://kb-box:11438",
+                              "model": "definitely-not-a-file", "remote": True}})
+assert not [m for m in res["missing"] if m[0] == "big_lm"], res
+assert res["enabled"] == 0, res
 ok("missing_models: remote tier not treated as a missing GGUF")
+
+res = run_missing({"models_dir": "Models",
+                   "big_lm": {"url": None, "model": "x.gguf"},
+                   "big_lm2": {"url": "http://127.0.0.1:11440", "model": "y.gguf"}})
+assert not [m for m in res["missing"] if m[0] == "big_lm2"], res
+ok("missing_models: big_lm2 is not 'enabled' while big_lm is disabled")
+
+import tempfile
+
+with tempfile.TemporaryDirectory() as td:
+    open(td + "/Orpheus-3B-Q8_0.GGUF", "w").close()      # wrong case on disk
+    res = run_missing({"models_dir": td,
+                       "fast_lm": {"url": "http://127.0.0.1:11435",
+                                   "model": "orpheus-3b-q8_0.gguf"}})
+    (tier, path, found), = res["missing"]
+    assert tier == "fast_lm" and found and found.endswith("Orpheus-3B-Q8_0.GGUF"), res
+ok("missing_models: a misplaced/case-mismatched file is pointed at, not just 'missing'")
+
+# ── vinur_link: the knowledge-host connection status ─────────────────────────
+class _KH(http.server.BaseHTTPRequestHandler):
+    drop_code = 200
+
+    def do_GET(self):
+        if self.path == "/health":
+            body = b"{}"
+        elif self.path == "/drop":
+            if type(self).drop_code != 200:
+                self.send_response(type(self).drop_code)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            body = json.dumps({"ok": True, "accepts": True, "count": 12,
+                               "drops": {}, "gaps": [{"query": "q"}]}).encode()
+        else:
+            self.send_response(404)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *a):
+        pass
+
+
+ksrv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _KH)
+threading.Thread(target=ksrv.serve_forever, daemon=True).start()
+kurl = f"http://127.0.0.1:{ksrv.server_address[1]}"
+
+assert sup.vinur_link({}) is None
+link = sup.vinur_link({"knowledge_host": {"enabled": True, "url": kurl, "token": "t"}})
+assert link["state"] == "up" and "12 drop(s)" in link["detail"] \
+    and "1 open gap(s)" in link["detail"], link
+_KH.drop_code = 401
+link = sup.vinur_link({"knowledge_host": {"enabled": True, "url": kurl, "token": "bad"}})
+assert link["state"] == "no-auth", link
+ksrv.shutdown()
+link = sup.vinur_link({"knowledge": {"enabled": True, "tool_url": "http://127.0.0.1:1"}})
+assert link["state"] == "down", link
+ok("vinur_link: up w/ counts, no-auth on 401, down, None when unconfigured")
 
 # ── remote_tiers: probes /health, drives both status views ───────────────────
 class _H(http.server.BaseHTTPRequestHandler):

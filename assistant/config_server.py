@@ -611,6 +611,17 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"services": [
                 {"name": p.stem, "size": p.stat().st_size, "mtime": p.stat().st_mtime}
                 for p in logs if not p.stem.startswith("_")]})
+        if path == "/api/vinur":
+            # The knowledge-host connection badge: /health + the authed /drop
+            # handshake (token validity, drops held, open gaps).
+            try:
+                link = _load_mod("supervisor").vinur_link(
+                    CFGMOD.load_config(self.config_path))
+            except Exception as e:
+                return self._json(200, {"configured": False, "error": str(e)})
+            if not link:
+                return self._json(200, {"configured": False})
+            return self._json(200, {"configured": True, **link})
         if path == "/api/logs":
             q = self._query()
             name = (q.get("service", [""])[0]).replace("/", "").replace("..", "")

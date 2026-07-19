@@ -44,6 +44,7 @@ import socket
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -511,12 +512,34 @@ def stale_cleanup():
         print(f"cleaned up a stale run (killed: {', '.join(killed)})")
 
 
-def missing_models():
-    """[(tier, resolved_path)] for enabled LM tiers whose GGUF is absent — the
-    start preflight.  Resolution goes through config.py's MERGED view (what
-    llm_server.py actually uses: defaults + the user overlay, big_lm2
-    inheriting big_lm), so the listed path is exactly where the service will
-    look — a wrong models_dir shows itself here as an absolute path."""
+def _model_elsewhere(name: str, models_dir: Path):
+    """A 'missing' model is often just MISPLACED: same filename under a
+    different case in models_dir, or sitting in a repo-root Models/ folder.
+    Return the found path (str) or None."""
+    try:
+        for f in os.listdir(models_dir):
+            if f.lower() == name.lower() and f != name:
+                return str(models_dir / f)
+    except OSError:
+        pass
+    for d in (DIR.parent / "Models", DIR / "models"):
+        p = d / name
+        try:
+            if p.exists() and str(d) != str(models_dir):
+                return str(p)
+        except OSError:
+            pass
+    return None
+
+
+def missing_models() -> dict:
+    """{"missing": [(tier, resolved_path, found_elsewhere)], "enabled": N} for
+    enabled LM tiers — the start preflight.  Resolution goes through config.py's
+    MERGED view (what llm_server.py actually uses: defaults + the user overlay,
+    big_lm2 inheriting big_lm), so the listed path is exactly where the service
+    will look — a wrong models_dir shows itself here as an absolute path.
+    big_lm2 counts as DISABLED while big_lm has no url (it is only ever a
+    second instance of that tier); remote tiers carry a served NAME, no file."""
     try:
         import importlib.util
         spec = importlib.util.spec_from_file_location("vinkona_config",
@@ -526,36 +549,51 @@ def missing_models():
         cfg = mod.load_config()
     except Exception as e:
         print(f"(model preflight skipped: {e})", file=sys.stderr)
-        return []
+        return {"missing": [], "enabled": 0}
     models_dir = Path(str(cfg.get("models_dir", "Models")))
     if not models_dir.is_absolute():
         models_dir = DIR / models_dir
     tiers = ["fast_lm", "big_lm", "big_lm2", "embed_lm"]
     if tts_engine(cfg) == "orpheus_gguf":
         tiers.append("tts_lm")
-    out = []
+    out, enabled = [], 0
     for tier in tiers:
         block = dict(cfg.get(tier) or {})
         if tier == "big_lm2":
+            if not (cfg.get("big_lm") or {}).get("url"):
+                continue           # a 2nd instance of a disabled tier isn't enabled
             block = {**dict(cfg.get("big_lm") or {}), **block}
         if not block.get("url") or not block.get("model"):
             continue
         if block.get("remote"):        # served elsewhere — model is a name, not a file
             continue
+        enabled += 1
         model = Path(str(block["model"]))
         path = model if model.is_absolute() else models_dir / model
         if not path.exists():
-            out.append((tier, str(path)))
-    return out
+            out.append((tier, str(path), _model_elsewhere(model.name, models_dir)))
+    return {"missing": out, "enabled": enabled}
 
 
 def preflight_models() -> None:
-    miss = missing_models()
+    res = missing_models()
+    miss = res["missing"]
     if not miss:
         return
     print("model files missing for enabled tiers (services will refuse to serve):")
-    for tier, p in miss:
+    for tier, p, found in miss:
         print(f"  {tier:<9} {p}")
+        if found:
+            print(f"  {'':<9} ↳ found at {found} — move/link it, or point "
+                  f"models_dir / the tier's 'model' there")
+    # Only a FRESH box (no enabled tier has its model, none merely misplaced)
+    # gets the interactive fetch offer; a box with allocated models is told
+    # what's off and left alone.
+    fresh = (len(miss) == res["enabled"]) and not any(f for _, _, f in miss)
+    if not fresh:
+        print("  → some models are present/misplaced, so not offering the default "
+              "fetch; fix the paths above (or: ./vinkona.sh models)")
+        return
     if sys.stdin.isatty():
         try:
             ans = input("fetch the default set now (fetch_models.sh, RAM-sized)? "
@@ -564,7 +602,7 @@ def preflight_models() -> None:
             ans = "n"
         if ans not in ("n", "no"):
             subprocess.run(["bash", str(DIR / "fetch_models.sh")], cwd=str(DIR))
-            for tier, p in missing_models():
+            for tier, p, _found in missing_models()["missing"]:
                 print(f"  still missing: {tier}  {p}  — the config names a "
                       f"model the fetch set doesn't include; fix the tier's "
                       f"'model' (config web UI) or fetch it manually")
@@ -671,6 +709,45 @@ def remote_tiers(cfg: dict) -> list:
         ok = bool(url) and _http_ok(url.rstrip("/") + "/health")
         out.append((tier, ok, url))
     return out
+
+
+def vinur_link(cfg: dict):
+    """The knowledge-host connection, or None when no host is configured.
+    Returns {url, state: up|no-auth|down, detail} — the /health probe says the
+    host is there, and the authed GET /drop handshake doubles as a token check
+    (plus drop/gap counts when the host serves them).  Rendered by terminal
+    status, status --json (the launcher), and the config UI's /api/vinur."""
+    kh = cfg.get("knowledge_host") or {}
+    kn = cfg.get("knowledge") or {}
+    url = str((kh.get("url") if kh.get("enabled") else "")
+              or (kn.get("tool_url") if kn.get("enabled") else "") or "").strip()
+    if not url:
+        return None
+    token = str(kh.get("token") or kn.get("auth_token") or "")
+    if not _http_ok(url.rstrip("/") + "/health"):
+        return {"url": url, "state": "down", "detail": "not answering /health"}
+    req = urllib.request.Request(url.rstrip("/") + "/drop",
+                                 headers={"Authorization": f"Bearer {token}"} if token else {})
+    try:
+        with urllib.request.urlopen(req, timeout=2) as r:
+            hs = json.loads(r.read().decode("utf-8", "replace"))
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403):
+            return {"url": url, "state": "no-auth",
+                    "detail": "reachable, but the token is refused — check "
+                              "knowledge_host.token / knowledge.auth_token"}
+        return {"url": url, "state": "up", "detail": "health ok"}   # older host
+    except Exception:
+        return {"url": url, "state": "up", "detail": "health ok"}
+    bits = ["health + token ok"]
+    if isinstance(hs, dict):
+        if hs.get("accepts") is False:
+            bits.append("drops refused: " + str(hs.get("reason") or "?"))
+        elif "count" in hs:
+            bits.append(f"{hs['count']} drop(s) held")
+        if isinstance(hs.get("gaps"), list):
+            bits.append(f"{len(hs['gaps'])} open gap(s)")
+    return {"url": url, "state": "up", "detail": " · ".join(bits)}
 
 
 def _http_ok(url: str) -> bool:
@@ -784,6 +861,13 @@ def status_payload() -> dict:
         payload["services"].append(
             {"name": tier, "pid": None, "up": ok,
              "detail": f"remote {url}" + ("" if ok else " — not answering")})
+    link = vinur_link(cfg)
+    if link:
+        item = {"name": "vinur", "pid": None, "up": link["state"] == "up",
+                "detail": f"{link['url']} — {link['detail']}"}
+        if link["state"] != "up":
+            item["reason"] = link["detail"]
+        payload["services"].append(item)
     return payload
 
 
@@ -815,6 +899,11 @@ def cmd_status() -> int:
     for tier, ok, url in remote_tiers(cfg):
         print(f"  {tier:<9} " + (f"up            (remote {url})" if ok
                                  else f"remote not answering ({url or 'no url set'})"))
+    link = vinur_link(cfg)
+    if link:
+        mark = {"up": "up           ", "no-auth": "token refused",
+                "down": "down         "}[link["state"]]
+        print(f"  {'vinur':<9} {mark} ({link['url']} — {link['detail']})")
     return 0
 
 
