@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Vinkona</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body { font: 14px/1.45 system-ui, sans-serif; margin: 0; padding: 18px 22px;
+         background: Canvas; color: CanvasText; }
+  h1 { font-size: 17px; margin: 0; letter-spacing: .2px; }
+  h1 .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%;
+            background: #888; margin-right: 8px; vertical-align: baseline; }
+  h1 .dot.up { background: #22aa66; } h1 .dot.part { background: #e0a800; }
+  h1 .dot.down { background: #cc4444; }
+  header { display: flex; align-items: center; gap: 14px; margin-bottom: 14px; }
+  header .grow { flex: 1; }
+  button { font: inherit; padding: 6px 14px; border-radius: 7px; cursor: pointer;
+           border: 1px solid #8886; background: ButtonFace; }
+  button:hover { filter: brightness(1.06); }
+  button.primary { background: #1a6f6a; color: #f5faf9; border-color: #1a6f6a; }
+  button:disabled { opacity: .45; cursor: default; }
+  #checkout { font-size: 12px; opacity: .65; margin: -8px 0 14px 0; }
+  #checkout a { cursor: pointer; text-decoration: underline; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th { text-align: left; opacity: .55; font-weight: 500; padding: 4px 10px; }
+  td { padding: 6px 10px; border-top: 1px solid #8883; vertical-align: top; }
+  .chip { display: inline-block; padding: 1px 9px; border-radius: 9px; font-size: 12px;
+          border: 1px solid transparent; }
+  .chip.up { background: #22aa6622; border-color: #22aa6666; }
+  .chip.down { background: #cc444422; border-color: #cc444466; }
+  .reason { font-size: 12px; opacity: .7; }
+  #msg { white-space: pre-wrap; font-size: 12px; opacity: .75; margin-top: 12px;
+         max-height: 9em; overflow-y: auto; }
+  .empty { opacity: .6; padding: 26px 8px; text-align: center; }
+</style>
+</head>
+<body>
+<header>
+  <h1><span id="dot" class="dot"></span>Vinkona</h1>
+  <div class="grow"></div>
+  <button id="btn-start" class="primary" onclick="act('start')">Start</button>
+  <button id="btn-stop" onclick="act('stop')">Stop</button>
+  <button id="btn-restart" onclick="act('restart')">Restart</button>
+  <button onclick="openUI('config')">Settings</button>
+  <button id="btn-kb" onclick="openUI('kb')">Knowledge</button>
+</header>
+<div id="checkout"></div>
+<div id="body"><div class="empty">looking for the stack…</div></div>
+<div id="msg"></div>
+
+<script>
+const invoke = window.__TAURI__.core.invoke;
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"]/g,
+  c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+let UI = { config: 'http://127.0.0.1:8090', kb: null };
+let busy = false;
+
+async function checkoutLine() {
+  const st = await invoke('get_state');
+  if (st.valid) {
+    $('#checkout').innerHTML = `managing <b>${esc(st.checkout)}</b> · <a onclick="pick()">change</a>`;
+    return true;
+  }
+  $('#checkout').innerHTML = `${esc(st.error)} · <a onclick="pick()">pick folder…</a>`;
+  $('#body').innerHTML = `<div class="empty">Point the launcher at your Vinkona folder to begin.</div>`;
+  return false;
+}
+
+async function pick() {
+  try { await invoke('pick_checkout'); } catch (e) { note(e); }
+  refresh();
+}
+
+function note(t) { $('#msg').textContent = String(t ?? ''); }
+
+async function refresh() {
+  if (!(await checkoutLine())) return;
+  let s;
+  try { s = await invoke('status'); }
+  catch (e) { note(e); return; }
+  UI = s.ui || UI;
+  $('#btn-kb').disabled = !UI.kb;
+  const dot = $('#dot');
+  const services = s.services || [];
+  const ups = services.filter(x => x.up).length;
+  dot.className = 'dot ' + (!s.running ? 'down'
+    : ups === services.length ? 'up' : ups ? 'part' : 'down');
+  if (!s.running) {
+    $('#body').innerHTML = `<div class="empty">The stack is not running — press Start.
+      <br><span style="font-size:12px">(mode: ${esc(s.mode)})</span></div>`;
+    return;
+  }
+  const rows = services.map(x => `<tr>
+    <td><b>${esc(x.name)}</b></td>
+    <td><span class="chip ${x.up ? 'up' : 'down'}">${x.up ? 'up' : 'down'}</span></td>
+    <td>${esc(x.detail)}${x.reason ? `<br><span class="reason">↳ ${esc(x.reason)}</span>` : ''}</td>
+  </tr>`).join('');
+  $('#body').innerHTML = `<table>
+    <tr><th>service</th><th></th><th>detail</th></tr>${rows}</table>`;
+}
+
+async function act(verb) {
+  if (busy) return;
+  busy = true;
+  for (const b of ['start', 'stop', 'restart']) $('#btn-' + b).disabled = true;
+  note(verb + '…');
+  try { note(await invoke('action', { verb })); }
+  catch (e) { note(e); }
+  busy = false;
+  for (const b of ['start', 'stop', 'restart']) $('#btn-' + b).disabled = false;
+  refresh();
+}
+
+async function openUI(which) {
+  const url = which === 'config' ? UI.config : UI.kb;
+  if (!url) return note('no URL for ' + which + ' yet — is the stack configured?');
+  try { await invoke('open_ui', { which, url }); } catch (e) { note(e); }
+}
+
+refresh();
+setInterval(() => { if (!busy) refresh(); }, 4000);
+</script>
+</body>
+</html>

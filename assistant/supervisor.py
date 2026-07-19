@@ -700,6 +700,48 @@ def _last_log_line(name: str) -> str:
     return lines[-1][:140] if lines else ""
 
 
+def status_payload() -> dict:
+    """Everything cmd_status prints, machine-readable — the seam the desktop
+    launcher polls (launcher/ Tauri app).  Always includes the web-UI URLs so
+    the launcher never hardcodes ports; service entries appear only while the
+    supervisor runs."""
+    topo, cfg = load_topo(), load_config()
+    kb_dir = topo.get("kb_dir") or ""
+    payload = {
+        "running": False, "supervisor": None, "mode": read_mode(),
+        "services": [],
+        "ui": {"config": "http://127.0.0.1:%d" % int(
+                   (cfg.get("config_server") or {}).get("port") or 8090),
+               "kb": ("http://127.0.0.1:%d" % _kb_port(kb_dir)) if kb_dir else None},
+    }
+    pid = supervisor_pid()
+    if not pid:
+        return payload
+    payload["running"], payload["supervisor"] = True, pid
+    try:
+        state = json.load(open(STATE))
+    except Exception:
+        state = {}
+    payload["mode"] = state.get("mode", payload["mode"])
+    payload["box"] = BOX if state.get("box_ok") else None
+    for name, info in (state.get("services") or {}).items():
+        alive = info.get("exited") is None and pid_alive(info.get("pid", -1))
+        line = svc_check(name, cfg, topo, alive)
+        item = {"name": name, "pid": info.get("pid"),
+                "up": line.startswith("up"), "detail": " ".join(line.split())}
+        if not item["up"] and "fine if" not in line:
+            hint = _last_log_line(name)
+            if hint:
+                item["reason"] = hint
+        payload["services"].append(item)
+    return payload
+
+
+def cmd_status_json() -> int:
+    print(json.dumps(status_payload()))
+    return 0
+
+
 def cmd_status() -> int:
     pid = supervisor_pid()
     if not pid:
@@ -783,7 +825,7 @@ def main() -> int:
     if cmd == "restart":
         return cmd_restart(args)
     if cmd == "status":
-        return cmd_status()
+        return cmd_status_json() if "--json" in args else cmd_status()
     if cmd == "plan":
         return cmd_plan()
     if cmd == "mode":
