@@ -1,15 +1,25 @@
 # Vinkona launcher
 
-A **thin desktop shell** over the stack: double-clickable on macOS (`.app`)
-and Linux (a single native binary + `.desktop` entry), showing live service
-status with the supervisor's reason lines, Start/Stop/Restart buttons, a
-tray icon, and the two web UIs (Settings `:8090`, Knowledge panel `:8771`)
-hosted in native webview windows.
+The **easy-mode face** of the stack: a sleek desktop app (macOS `.app`,
+Linux native binary — run `./Vinkona` at the repo root) with a live status
+hero, one Start/Stop button, a tray icon, the web UIs in native windows —
+and **wizards instead of switches**: first-run setup (model check +
+RAM-sized download with live progress), and "Connect a knowledge box"
+(URL + token → live probe → config written for you, including the optional
+remote big-LM hookup). The config web UI stays the expert surface, one
+click away under "All settings".
 
 Principle: the launcher is **never a second orchestrator**. Every button
-shells out to `vinkona.sh` / `assistant/supervisor.py` and every row renders
-`supervisor.py status --json`. Close the launcher and nothing changes;
-`./vinkona.sh` stays fully equivalent.
+shells out to `vinkona.sh` / `assistant/supervisor.py`, and every wizard
+action is one small, tested supervisor JSON verb (`preflight`,
+`vinur-probe`, `config-patch`, `fetch-models`, `logtail`) piped through a
+single whitelisted Rust command — the logic lives in Python, the app is a
+dumb pipe.  Close the launcher and nothing changes; `./vinkona.sh` stays
+fully equivalent.
+
+`./install-desktop.sh` (here) adds Vinkona to the Linux application menu
+(a `.desktop` entry pointing at the root `./Vinkona` wrapper, with the
+committed icon); `--uninstall` removes it.
 
 ## Building
 
@@ -53,7 +63,9 @@ launcher/
 
 ## Roadmap (P2/P3)
 
-- Front-end `install.sh` (it's already an idempotent checklist — drive it
-  with visible progress) and `fetch_models.sh` (small/full as a dialog).
+- DONE: `fetch_models.sh` driven from the setup wizard with live progress;
+  connect-a-knowledge-box wizard; `.desktop` entry; root `./Vinkona`.
+- Front-end `install.sh` (an idempotent checklist — drive it with visible
+  progress) from the wizard too.
 - Start-at-login (autostart plugin), log viewer window.
-- dmg/AppImage polish, first-run onboarding.
+- dmg/AppImage polish.

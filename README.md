@@ -133,10 +133,14 @@ and is the reference example of writing a host.
 ./install.sh status # installer state;  ./install.sh uninstall  to undo
 ```
 
-Prefer a desktop app to a terminal? [`launcher/`](launcher/) builds a small
-Tauri shell — a macOS `.app` / Linux binary with live status, Start/Stop, a
-tray icon, and the web UIs in native windows. It drives the same
-`vinkona.sh`/supervisor underneath, so the two stay interchangeable.
+Prefer a desktop app to a terminal? **`./Vinkona`** at the repo root runs
+the easy-mode GUI (built once from [`launcher/`](launcher/) — a small Tauri
+shell): live status, one Start/Stop button, a tray icon, the web UIs in
+native windows, and wizards for first-run setup (model check + download)
+and connecting a knowledge box. `launcher/install-desktop.sh` adds it to
+the Linux application menu. It drives the same `vinkona.sh`/supervisor
+underneath, so the two stay interchangeable; the config web UI remains the
+expert surface under "All settings".
 
 To run the knowledge host too, clone [Vinur](https://github.com/dantroline-sys/vinur)
 **next to** this repository (`../vinur`) — the installer and orchestrator find

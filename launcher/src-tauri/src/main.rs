@@ -5,11 +5,15 @@
 // answers; if the launcher dies, nothing about the running stack changes.
 //
 // Commands the UI invokes:
-//   get_state      -> stored checkout path + validity
-//   pick_checkout  -> native folder dialog, persisted in the app config dir
-//   status         -> `python3 assistant/supervisor.py status --json`
-//   action         -> `bash vinkona.sh start|stop|restart`
-//   open_ui        -> a webview window on the config UI / knowledge panel
+//   get_state       -> stored checkout path + validity
+//   pick_checkout   -> native folder dialog, persisted in the app config dir
+//   status          -> `python3 assistant/supervisor.py status --json`
+//   action          -> `bash vinkona.sh start|stop|restart`
+//   open_ui         -> a webview window on the config UI / knowledge panel
+//   supervisor_json -> the wizards' pipe: a whitelisted supervisor.py JSON
+//                      verb (preflight / vinur-probe / config-patch /
+//                      fetch-models / logtail).  All wizard LOGIC lives in
+//                      supervisor.py (tested Python); this stays a dumb pipe.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -167,6 +171,39 @@ fn action(app: AppHandle, stored: State<Stored>, verb: String) -> Result<String,
 }
 
 #[tauri::command]
+fn supervisor_json(
+    app: AppHandle,
+    stored: State<Stored>,
+    args: Vec<String>,
+) -> Result<serde_json::Value, String> {
+    // The wizards' single pipe into the checkout's Python.  Whitelisted verbs
+    // only — every one prints a single JSON object and owns its own safety
+    // (config-patch validates, logtail refuses traversal, fetch-models
+    // detaches).  `status --json` keeps its dedicated command above.
+    let ok_verb = matches!(
+        args.first().map(String::as_str),
+        Some("preflight" | "vinur-probe" | "config-patch" | "fetch-models" | "logtail")
+    );
+    if !ok_verb {
+        return Err(format!("verb not allowed: {:?}", args.first()));
+    }
+    let dir = checkout(&app, &stored)?;
+    let out = Command::new("python3")
+        .arg(dir.join("assistant").join("supervisor.py"))
+        .args(&args)
+        .current_dir(&dir)
+        .output()
+        .map_err(|e| format!("python3 failed: {e}"))?;
+    serde_json::from_slice(&out.stdout).map_err(|e| {
+        format!(
+            "bad JSON from supervisor {:?}: {e}: {}",
+            args.first(),
+            String::from_utf8_lossy(&out.stdout)
+        )
+    })
+}
+
+#[tauri::command]
 fn open_ui(app: AppHandle, which: String, url: String) -> Result<(), String> {
     // Only ever open the stack's own UIs: localhost, or the configured
     // remote knowledge host the status payload handed us.
@@ -199,7 +236,8 @@ fn main() {
             pick_checkout,
             status,
             action,
-            open_ui
+            open_ui,
+            supervisor_json
         ])
         .setup(|app| {
             let cfg = load_cfg(app.handle());

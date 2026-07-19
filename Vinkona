@@ -1,0 +1,21 @@
+#!/bin/bash
+# Vinkona — the desktop app.  Double-click (or run) to open the launcher GUI:
+# live status, Start/Stop, setup wizards, and the web UIs in native windows.
+#
+# This wrapper runs the built binary from launcher/; it exists so the repo
+# root has one obvious executable.  `./launcher/install-desktop.sh` also puts
+# Vinkona in your application menu.  Terminal management stays fully
+# equivalent via ./vinkona.sh {start|stop|status|logs}.
+cd "$(dirname "$0")" || exit 1
+for BIN in launcher/src-tauri/target/release/vinkona-launcher \
+           launcher/bin/vinkona-launcher; do
+    [ -x "$BIN" ] && exec "$BIN" "$@"
+done
+echo "The desktop app isn't built yet — a one-time build:"
+echo
+echo "  sudo dnf install gtk3-devel webkit2gtk4.1-devel libappindicator-gtk3-devel \\"
+echo "                   librsvg2-devel openssl-devel        # Fedora; see launcher/README.md"
+echo "  ( cd launcher/src-tauri && cargo build --release )"
+echo
+echo "Then re-run ./Vinkona.  Terminal alternative: ./vinkona.sh start"
+exit 1

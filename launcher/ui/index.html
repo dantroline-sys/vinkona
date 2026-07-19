@@ -4,114 +4,193 @@
 <meta charset="utf-8">
 <title>Vinkona</title>
 <style>
-  :root { color-scheme: light dark; }
+  :root {
+    color-scheme: light dark;
+    --accent: #1a6f6a; --accent-ink: #f2faf9;
+    --ok: #2ea06d; --warn: #d99a06; --bad: #cc4f4f;
+    --card: #ffffff; --edge: #00000018; --muted: #00000090; --wash: #f3f5f4;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --card: #23262b; --edge: #ffffff1c; --muted: #ffffff90; --wash: #1a1d21; }
+  }
   * { box-sizing: border-box; }
-  body { font: 14px/1.45 system-ui, sans-serif; margin: 0; padding: 18px 22px;
-         background: Canvas; color: CanvasText; }
-  h1 { font-size: 17px; margin: 0; letter-spacing: .2px; }
-  h1 .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%;
-            background: #888; margin-right: 8px; vertical-align: baseline; }
-  h1 .dot.up { background: #22aa66; } h1 .dot.part { background: #e0a800; }
-  h1 .dot.down { background: #cc4444; }
-  header { display: flex; align-items: center; gap: 14px; margin-bottom: 14px; }
-  header .grow { flex: 1; }
-  button { font: inherit; padding: 6px 14px; border-radius: 7px; cursor: pointer;
-           border: 1px solid #8886; background: ButtonFace; }
-  button:hover { filter: brightness(1.06); }
-  button.primary { background: #1a6f6a; color: #f5faf9; border-color: #1a6f6a; }
-  button:disabled { opacity: .45; cursor: default; }
-  #checkout { font-size: 12px; opacity: .65; margin: -8px 0 14px 0; }
-  #checkout a { cursor: pointer; text-decoration: underline; }
-  table { border-collapse: collapse; width: 100%; font-size: 13px; }
-  th { text-align: left; opacity: .55; font-weight: 500; padding: 4px 10px; }
-  td { padding: 6px 10px; border-top: 1px solid #8883; vertical-align: top; }
-  .chip { display: inline-block; padding: 1px 9px; border-radius: 9px; font-size: 12px;
-          border: 1px solid transparent; }
-  .chip.up { background: #22aa6622; border-color: #22aa6666; }
-  .chip.down { background: #cc444422; border-color: #cc444466; }
-  .reason { font-size: 12px; opacity: .7; }
-  #msg { white-space: pre-wrap; font-size: 12px; opacity: .75; margin-top: 12px;
-         max-height: 9em; overflow-y: auto; }
-  .empty { opacity: .6; padding: 26px 8px; text-align: center; }
+  body { font: 14px/1.5 system-ui, sans-serif; margin: 0; background: var(--wash);
+         color: CanvasText; min-height: 100vh; }
+  .shell { max-width: 640px; margin: 0 auto; padding: 26px 22px 30px; }
+  header { display: flex; align-items: baseline; gap: 10px; margin-bottom: 18px; }
+  header h1 { font-size: 20px; margin: 0; letter-spacing: .3px; }
+  header .co { font-size: 12px; color: var(--muted); }
+  header .co a { cursor: pointer; text-decoration: underline; }
+  .card { background: var(--card); border: 1px solid var(--edge); border-radius: 14px;
+          padding: 18px 20px; margin-bottom: 14px; box-shadow: 0 1px 3px #0000000a; }
+  .hero { display: flex; align-items: center; gap: 16px; }
+  .dot { width: 14px; height: 14px; border-radius: 50%; background: #999; flex: none;
+         box-shadow: 0 0 0 5px color-mix(in srgb, currentColor 12%, transparent); }
+  .dot.up { background: var(--ok); color: var(--ok); }
+  .dot.part { background: var(--warn); color: var(--warn); }
+  .dot.down { background: var(--bad); color: var(--bad); }
+  .hero .word { flex: 1; }
+  .hero .word b { font-size: 16px; }
+  .hero .word .sub { font-size: 12.5px; color: var(--muted); margin-top: 2px; }
+  button { font: inherit; padding: 8px 18px; border-radius: 9px; cursor: pointer;
+           border: 1px solid var(--edge); background: var(--card); color: inherit; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); color: var(--accent-ink);
+                   border-color: var(--accent); font-weight: 600; }
+  button.quiet { border: none; background: none; color: var(--muted);
+                 text-decoration: underline; padding: 4px 6px; }
+  button:disabled { opacity: .45; cursor: default; pointer-events: none; }
+  .chips { display: flex; flex-wrap: wrap; gap: 7px; }
+  .chip { font-size: 12px; padding: 3px 11px; border-radius: 999px;
+          border: 1px solid var(--edge); color: var(--muted); }
+  .chip::before { content: "●"; margin-right: 6px; }
+  .chip.up::before { color: var(--ok); } .chip.down::before { color: var(--bad); }
+  .chip.warn::before { color: var(--warn); }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
+  .callout { border-left: 3px solid var(--accent); padding: 2px 0 2px 12px;
+             margin-top: 14px; font-size: 13px; }
+  .callout a { cursor: pointer; text-decoration: underline; }
+  .foot { display: flex; gap: 4px; flex-wrap: wrap; justify-content: center;
+          margin-top: 6px; }
+  #msg { white-space: pre-wrap; font-size: 12px; color: var(--muted);
+         max-height: 8em; overflow-y: auto; margin-top: 10px; }
+  /* wizard overlay */
+  #veil { position: fixed; inset: 0; background: #0007; display: none;
+          align-items: center; justify-content: center; padding: 20px; }
+  #veil.open { display: flex; }
+  .wiz { background: var(--card); border-radius: 16px; width: min(560px, 96vw);
+         max-height: 92vh; overflow-y: auto; padding: 24px 26px;
+         border: 1px solid var(--edge); }
+  .wiz h2 { margin: 0 0 4px; font-size: 17px; }
+  .wiz .crumbs { font-size: 12px; color: var(--muted); margin-bottom: 14px; }
+  .wiz label { display: block; font-size: 13px; margin: 12px 0 4px; }
+  .wiz input[type=text], .wiz input[type=password] {
+    width: 100%; font: inherit; padding: 8px 10px; border-radius: 8px;
+    border: 1px solid var(--edge); background: var(--wash); color: inherit; }
+  .wiz .nav { display: flex; justify-content: space-between; margin-top: 20px; }
+  .wiz table { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-top: 8px; }
+  .wiz td { padding: 4px 8px; border-top: 1px solid var(--edge); vertical-align: top; }
+  .hint { font-size: 12px; color: var(--muted); }
+  .probe { margin-top: 12px; font-size: 13px; }
+  pre.tail { background: var(--wash); border-radius: 8px; padding: 10px; font-size: 11px;
+             max-height: 10em; overflow-y: auto; white-space: pre-wrap; }
+  .good { color: var(--ok); } .warn { color: var(--warn); } .bad { color: var(--bad); }
 </style>
 </head>
 <body>
-<header>
-  <h1><span id="dot" class="dot"></span>Vinkona</h1>
-  <div class="grow"></div>
-  <button id="btn-start" class="primary" onclick="act('start')">Start</button>
-  <button id="btn-stop" onclick="act('stop')">Stop</button>
-  <button id="btn-restart" onclick="act('restart')">Restart</button>
-  <button onclick="openUI('config')">Settings</button>
-  <button id="btn-kb" onclick="openUI('kb')">Knowledge</button>
-</header>
-<div id="checkout"></div>
-<div id="body"><div class="empty">looking for the stack…</div></div>
-<div id="msg"></div>
+<div class="shell">
+  <header>
+    <h1>Vinkona</h1>
+    <span class="co" id="checkout"></span>
+  </header>
+
+  <div class="card hero">
+    <div class="dot" id="dot"></div>
+    <div class="word">
+      <b id="stateWord">looking for the stack…</b>
+      <div class="sub" id="stateSub"></div>
+    </div>
+    <button id="mainBtn" class="primary" onclick="mainAction()" disabled>Start</button>
+  </div>
+
+  <div class="card" id="detailCard" style="display:none">
+    <div class="chips" id="chips"></div>
+    <div class="callout" id="callout" style="display:none"></div>
+    <div id="msg"></div>
+  </div>
+
+  <div class="foot">
+    <button class="quiet" onclick="openWizard('setup')">Set up…</button>
+    <button class="quiet" onclick="openWizard('connect')">Connect knowledge box…</button>
+    <button class="quiet" onclick="openUI('config')">All settings</button>
+    <button class="quiet" id="kbBtn" onclick="openUI('kb')">Knowledge panel</button>
+    <button class="quiet" onclick="act('restart')">Restart</button>
+  </div>
+</div>
+
+<div id="veil"><div class="wiz" id="wiz"></div></div>
 
 <script>
 const invoke = window.__TAURI__.core.invoke;
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"]/g,
   c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const sup = args => invoke('supervisor_json', { args });
 let UI = { config: 'http://127.0.0.1:8090', kb: null };
-let busy = false;
+let RUNNING = false, BUSY = false, PREFLIGHT = null;
+
+function note(t) { $('#msg').textContent = String(t ?? ''); }
 
 async function checkoutLine() {
   const st = await invoke('get_state');
   if (st.valid) {
-    $('#checkout').innerHTML = `managing <b>${esc(st.checkout)}</b> · <a onclick="pick()">change</a>`;
+    $('#checkout').innerHTML = `${esc(st.checkout)} · <a onclick="pick()">change</a>`;
     return true;
   }
-  $('#checkout').innerHTML = `${esc(st.error)} · <a onclick="pick()">pick folder…</a>`;
-  $('#body').innerHTML = `<div class="empty">Point the launcher at your Vinkona folder to begin.</div>`;
+  $('#checkout').innerHTML = `<a onclick="pick()">pick the Vinkona folder…</a>`;
+  $('#stateWord').textContent = 'Point me at your Vinkona folder to begin.';
+  $('#stateSub').textContent = st.error || '';
   return false;
 }
+async function pick() { try { await invoke('pick_checkout'); } catch (e) { note(e); } refresh(); }
 
-async function pick() {
-  try { await invoke('pick_checkout'); } catch (e) { note(e); }
-  refresh();
+function chip(name, cls, title) {
+  return `<span class="chip ${cls}" title="${esc(title || '')}">${esc(name)}</span>`;
 }
 
-function note(t) { $('#msg').textContent = String(t ?? ''); }
-
 async function refresh() {
-  if (!(await checkoutLine())) return;
+  if (BUSY || !(await checkoutLine())) return;
   let s;
-  try { s = await invoke('status'); }
-  catch (e) { note(e); return; }
+  try { s = await invoke('status'); } catch (e) { note(e); return; }
   UI = s.ui || UI;
-  $('#btn-kb').disabled = !UI.kb;
-  const dot = $('#dot');
+  $('#kbBtn').style.display = UI.kb ? '' : 'none';
   const services = s.services || [];
   const ups = services.filter(x => x.up).length;
-  dot.className = 'dot ' + (!s.running ? 'down'
+  RUNNING = !!s.running;
+  const dot = $('#dot');
+  dot.className = 'dot ' + (!RUNNING ? 'down'
     : ups === services.length ? 'up' : ups ? 'part' : 'down');
-  if (!s.running) {
-    $('#body').innerHTML = `<div class="empty">The stack is not running — press Start.
-      <br><span style="font-size:12px">(mode: ${esc(s.mode)})</span></div>`;
-    return;
+  const vin = services.find(x => x.name === 'vinur');
+  if (!RUNNING) {
+    $('#stateWord').textContent = 'Vinkona is not running';
+    $('#stateSub').textContent = 'Press Start — or run the setup wizard on a fresh machine.';
+    $('#mainBtn').textContent = 'Start';
+  } else {
+    $('#stateWord').textContent = ups === services.length
+      ? 'Vinkona is running' : `Vinkona is running (${ups}/${services.length} services up)`;
+    $('#stateSub').textContent = vin
+      ? ('Knowledge box: ' + (vin.up ? 'connected' : (vin.reason || 'not answering')))
+      : 'No knowledge box connected.';
+    $('#mainBtn').textContent = 'Stop';
   }
-  const rows = services.map(x => `<tr>
-    <td><b>${esc(x.name)}</b></td>
-    <td><span class="chip ${x.up ? 'up' : 'down'}">${x.up ? 'up' : 'down'}</span></td>
-    <td>${esc(x.detail)}${x.reason ? `<br><span class="reason">↳ ${esc(x.reason)}</span>` : ''}</td>
-  </tr>`).join('');
-  $('#body').innerHTML = `<table>
-    <tr><th>service</th><th></th><th>detail</th></tr>${rows}</table>`;
+  $('#mainBtn').disabled = false;
+  $('#detailCard').style.display = '';
+  $('#chips').innerHTML = services.map(x =>
+    chip(x.name, x.up ? 'up' : (x.name === 'vinur' ? 'warn' : 'down'),
+         (x.detail || '') + (x.reason ? ' — ' + x.reason : ''))).join('')
+    || '<span class="hint">no services yet</span>';
+  // A fresh box quietly gets pointed at the wizard.
+  if (!RUNNING && PREFLIGHT === null) {
+    try { PREFLIGHT = await sup(['preflight']); } catch (e) { PREFLIGHT = { missing: [] }; }
+    if ((PREFLIGHT.missing || []).length && PREFLIGHT.missing.length === PREFLIGHT.enabled) {
+      const co = $('#callout');
+      co.style.display = '';
+      co.innerHTML = `Looks like a fresh install — models aren't downloaded yet.
+        <a onclick="openWizard('setup')">Run the setup wizard</a>`;
+    }
+  }
 }
 
 async function act(verb) {
-  if (busy) return;
-  busy = true;
-  for (const b of ['start', 'stop', 'restart']) $('#btn-' + b).disabled = true;
+  if (BUSY) return;
+  BUSY = true;
+  $('#mainBtn').disabled = true;
   note(verb + '…');
-  try { note(await invoke('action', { verb })); }
-  catch (e) { note(e); }
-  busy = false;
-  for (const b of ['start', 'stop', 'restart']) $('#btn-' + b).disabled = false;
+  try { note(await invoke('action', { verb })); } catch (e) { note(e); }
+  BUSY = false;
   refresh();
 }
+function mainAction() { act(RUNNING ? 'stop' : 'start'); }
 
 async function openUI(which) {
   const url = which === 'config' ? UI.config : UI.kb;
@@ -119,8 +198,187 @@ async function openUI(which) {
   try { await invoke('open_ui', { which, url }); } catch (e) { note(e); }
 }
 
+/* ── wizards ─────────────────────────────────────────────────────────────── */
+let WSTATE = {};
+function closeWizard() { $('#veil').classList.remove('open'); WSTATE = {}; }
+function openWizard(kind, step) { $('#veil').classList.add('open'); renderWizard(kind, step || 0); }
+$('#veil').addEventListener('click', e => { if (e.target.id === 'veil') closeWizard(); });
+
+function wnav(kind, step, opts) {
+  const { nextLabel = 'Next', last = false } = opts || {};
+  return `<div class="nav">
+    <button class="quiet" onclick="closeWizard()">Close</button>
+    <span>
+      ${step > 0 ? `<button onclick="renderWizard('${kind}', ${step - 1})">Back</button>` : ''}
+      ${last ? `<button class="primary" onclick="closeWizard(); refresh()">Done</button>`
+             : `<button class="primary" id="wnext"
+                  onclick="renderWizard('${kind}', ${step + 1})">${nextLabel}</button>`}
+    </span></div>`;
+}
+
+async function renderWizard(kind, step) {
+  const w = $('#wiz');
+  if (kind === 'setup') return renderSetup(w, step);
+  if (kind === 'connect') return renderConnect(w, step);
+}
+
+/* Setup: welcome → models → knowledge box (optional) → start */
+async function renderSetup(w, step) {
+  const crumbs = ['Welcome', 'Models', 'Knowledge box', 'Start']
+    .map((c, i) => i === step ? `<b>${c}</b>` : c).join(' · ');
+  if (step === 0) {
+    w.innerHTML = `<h2>Set up Vinkona</h2><div class="crumbs">${crumbs}</div>
+      <p>Everything runs on your own hardware — speech, language models, memory,
+      research. This wizard checks the model files, optionally connects a
+      knowledge box, and starts the stack.</p>
+      <p class="hint">The full set of switches stays available under
+      “All settings”; nothing here is irreversible.</p>
+      ${wnav('setup', 0)}`;
+    return;
+  }
+  if (step === 1) {
+    w.innerHTML = `<h2>Model files</h2><div class="crumbs">${crumbs}</div>
+      <div id="wbody">checking…</div>`;
+    const pf = await sup(['preflight']).catch(() => ({ missing: [], enabled: 0 }));
+    PREFLIGHT = pf;
+    const miss = pf.missing || [];
+    if (!miss.length) {
+      $('#wbody').innerHTML = `<p class="good">✓ Every enabled tier has its model file.</p>
+        ${wnav('setup', 1)}`;
+      return;
+    }
+    const rows = miss.map(([tier, path, found]) => `<tr><td><b>${esc(tier)}</b></td>
+      <td>${esc(path)}${found ? `<br><span class="warn">found at ${esc(found)} —
+        move/link it, or fix models_dir</span>` : ''}</td></tr>`).join('');
+    const misplaced = miss.some(m => m[2]);
+    $('#wbody').innerHTML = `
+      <p>${miss.length} enabled tier(s) have no model file yet:</p>
+      <table>${rows}</table>
+      ${misplaced ? `<p class="hint">Some files were found elsewhere — fix those paths
+        first (the download button would fetch duplicates).</p>` : `
+      <div class="row" style="margin-top:14px">
+        <button class="primary" onclick="startFetch()">Download the recommended set</button>
+        <span class="hint" style="align-self:center">sized to this machine's RAM</span>
+      </div>
+      <div id="fetchZone"></div>`}
+      ${wnav('setup', 1, { nextLabel: 'Skip for now' })}`;
+    return;
+  }
+  if (step === 2) {
+    w.innerHTML = `<h2>Knowledge box</h2><div class="crumbs">${crumbs}</div>
+      <p>If a separate machine runs <b>Vinur</b> (the knowledge host), connect it
+      here — research, knowledge lookups and the reasoning model can all use it.
+      Entirely optional.</p>
+      <div class="row">
+        <button onclick="openWizard('connect')">Connect a knowledge box…</button>
+      </div>
+      ${wnav('setup', 2, { nextLabel: 'Continue' })}`;
+    return;
+  }
+  w.innerHTML = `<h2>Start</h2><div class="crumbs">${crumbs}</div>
+    <p id="wstart">Ready — start the stack now?</p>
+    <div class="row"><button class="primary" id="wgo" onclick="wizardStart()">Start Vinkona</button></div>
+    ${wnav('setup', 3, { last: true })}`;
+}
+
+async function startFetch() {
+  const zone = $('#fetchZone');
+  zone.innerHTML = `<p class="hint">downloading — this can take a while…</p><pre class="tail" id="wtail"></pre>`;
+  try { await sup(['fetch-models']); } catch (e) { zone.textContent = String(e); return; }
+  const timer = setInterval(async () => {
+    if (!document.getElementById('wtail')) return clearInterval(timer);
+    try {
+      const t = await sup(['logtail', 'fetch_models', '12']);
+      if (t.ok) { const el = $('#wtail'); el.textContent = t.text; el.scrollTop = el.scrollHeight; }
+      const pf = await sup(['preflight']);
+      if (!(pf.missing || []).length) {
+        clearInterval(timer);
+        zone.innerHTML = `<p class="good">✓ All models in place.</p>`;
+      }
+    } catch (e) {}
+  }, 3000);
+}
+
+async function wizardStart() {
+  $('#wgo').disabled = true;
+  $('#wstart').textContent = 'starting…';
+  try {
+    await invoke('action', { verb: 'start' });
+    $('#wstart').innerHTML = '<span class="good">✓ Started.</span> Close this wizard to watch the status.';
+  } catch (e) {
+    $('#wstart').innerHTML = `<span class="bad">start failed:</span> ${esc(e)}`;
+    $('#wgo').disabled = false;
+  }
+}
+
+/* Connect: url + token → test → save */
+async function renderConnect(w, step) {
+  w.innerHTML = `<h2>Connect a knowledge box</h2>
+    <div class="crumbs">Vinur — the knowledge host — on another machine</div>
+    <label>Address (its base URL)</label>
+    <input type="text" id="cUrl" placeholder="http://kb-box:8771"
+           value="${esc(WSTATE.url || '')}">
+    <label>Auth token (its config.toml's auth_token)</label>
+    <input type="password" id="cTok" value="${esc(WSTATE.token || '')}">
+    <label style="margin-top:14px">
+      <input type="checkbox" id="cBig" ${WSTATE.big ? 'checked' : ''}>
+      Also run Vinkona's reasoning model on that box (big_lm on port 11438,
+      served as “big”)</label>
+    <div class="probe" id="cProbe"></div>
+    <div class="nav">
+      <button class="quiet" onclick="closeWizard()">Close</button>
+      <span>
+        <button onclick="connectTest()">Test</button>
+        <button class="primary" id="cSave" onclick="connectSave()" disabled>Save</button>
+      </span></div>`;
+  if (WSTATE.tested) $('#cSave').disabled = false;
+}
+
+async function connectTest() {
+  const url = $('#cUrl').value.trim(), tok = $('#cTok').value.trim();
+  WSTATE = { url, token: tok, big: $('#cBig').checked };
+  const el = $('#cProbe');
+  if (!url) { el.innerHTML = '<span class="bad">enter the box\'s URL first</span>'; return; }
+  el.textContent = 'probing…';
+  try {
+    const r = await sup(['vinur-probe', url, tok]);
+    if (r.state === 'up') {
+      el.innerHTML = `<span class="good">✓ Connected</span> — ${esc(r.detail)}`;
+      WSTATE.tested = true;
+      $('#cSave').disabled = false;
+    } else if (r.state === 'no-auth') {
+      el.innerHTML = `<span class="warn">Reachable, but the token is refused.</span>`;
+    } else {
+      el.innerHTML = `<span class="bad">Not answering</span> — is Vinur running there
+        (its ./vinur.sh start), and the address right?`;
+    }
+  } catch (e) { el.innerHTML = `<span class="bad">${esc(e)}</span>`; }
+}
+
+async function connectSave() {
+  const url = $('#cUrl').value.trim(), tok = $('#cTok').value.trim();
+  const patch = {
+    knowledge:      { enabled: true, tool_url: url, auth_token: tok },
+    knowledge_host: { enabled: true, url: url, token: tok },
+    research:       { export: { enabled: true } }
+  };
+  if ($('#cBig').checked) {
+    try {
+      const u = new URL(url);
+      patch.big_lm = { remote: true, url: `${u.protocol}//${u.hostname}:11438`, model: 'big' };
+    } catch (e) {}
+  }
+  const el = $('#cProbe');
+  try {
+    await sup(['config-patch', JSON.stringify(patch)]);
+    el.innerHTML = `<span class="good">✓ Saved.</span> Takes effect on the next
+      session; <a style="cursor:pointer;text-decoration:underline"
+      onclick="closeWizard(); act('restart')">restart now</a> to apply everywhere.`;
+  } catch (e) { el.innerHTML = `<span class="bad">${esc(e)}</span>`; }
+}
+
 refresh();
-setInterval(() => { if (!busy) refresh(); }, 4000);
+setInterval(() => { if (!BUSY && !$('#veil').classList.contains('open')) refresh(); }, 4000);
 </script>
 </body>
 </html>

@@ -724,6 +724,12 @@ def vinur_link(cfg: dict):
     if not url:
         return None
     token = str(kh.get("token") or kn.get("auth_token") or "")
+    return probe_kb(url, token)
+
+
+def probe_kb(url: str, token: str) -> dict:
+    """Probe ANY knowledge-host url/token pair (the launcher's connect wizard
+    tests credentials with this before saving them)."""
     if not _http_ok(url.rstrip("/") + "/health"):
         return {"url": url, "state": "down", "detail": "not answering /health"}
     req = urllib.request.Request(url.rstrip("/") + "/drop",
@@ -956,10 +962,87 @@ def cmd_logs(args: list[str]) -> int:
         return 0
 
 
+# ── easy-mode plumbing: small JSON verbs the desktop launcher shells to ──────
+# The launcher (launcher/) is a thin shell: every wizard action is one of
+# these — testable Python here, a dumb pipe there.
+
+def _deep_patch(base: dict, patch: dict) -> dict:
+    for k, v in patch.items():
+        if isinstance(v, dict) and isinstance(base.get(k), dict):
+            _deep_patch(base[k], v)
+        else:
+            base[k] = v
+    return base
+
+
+def cmd_config_patch(raw: str) -> int:
+    """Deep-merge a JSON fragment into config/config.json (atomic; created if
+    absent).  The connect wizard writes the split-machine fragment with this."""
+    try:
+        patch = json.loads(raw)
+        if not isinstance(patch, dict):
+            raise ValueError("patch must be a JSON object")
+    except ValueError as e:
+        print(json.dumps({"ok": False, "error": f"bad patch: {e}"}))
+        return 1
+    path = DIR / "config" / "config.json"
+    try:
+        base = json.load(open(path))
+    except Exception:
+        base = {}
+    _deep_patch(base, patch)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(base, indent=2) + "\n")
+    os.replace(tmp, path)
+    print(json.dumps({"ok": True, "path": str(path)}))
+    return 0
+
+
+def cmd_fetch_models(args: list) -> int:
+    """Start fetch_models.sh detached, output to logs/fetch_models.log — the
+    launcher polls `preflight --json` + `logtail fetch_models` to follow it."""
+    flags = [a for a in args if a in ("--small", "--full")]
+    LOGS.mkdir(exist_ok=True)
+    logf = open(LOGS / "fetch_models.log", "wb")
+    p = subprocess.Popen(["bash", str(DIR / "fetch_models.sh")] + flags,
+                         cwd=str(DIR), stdout=logf, stderr=subprocess.STDOUT,
+                         stdin=subprocess.DEVNULL, start_new_session=True)
+    print(json.dumps({"ok": True, "pid": p.pid, "log": "fetch_models"}))
+    return 0
+
+
+def cmd_logtail(args: list) -> int:
+    name = (args[0] if args else "").replace("/", "").replace("..", "")
+    n = int(args[1]) if len(args) > 1 else 40
+    log = LOGS / f"{name}.log"
+    if not name or not log.exists():
+        print(json.dumps({"ok": False, "error": "no such log"}))
+        return 1
+    lines = log.read_bytes().decode("utf-8", "replace").splitlines()
+    print(json.dumps({"ok": True, "text": "\n".join(lines[-n:])}))
+    return 0
+
+
 def main() -> int:
     LOGS.mkdir(exist_ok=True)
     CTRL.mkdir(parents=True, exist_ok=True)
     cmd, args = (sys.argv[1] if len(sys.argv) > 1 else ""), sys.argv[2:]
+    if cmd == "preflight":
+        print(json.dumps(missing_models()))
+        return 0
+    if cmd == "vinur-probe":
+        if not args:
+            print(json.dumps({"ok": False, "error": "usage: vinur-probe <url> [token]"}))
+            return 1
+        print(json.dumps(probe_kb(args[0], args[1] if len(args) > 1 else "")))
+        return 0
+    if cmd == "config-patch":
+        return cmd_config_patch(args[0] if args else "")
+    if cmd == "fetch-models":
+        return cmd_fetch_models(args)
+    if cmd == "logtail":
+        return cmd_logtail(args)
     if cmd == "start":
         return cmd_start(args)
     if cmd == "stop":
