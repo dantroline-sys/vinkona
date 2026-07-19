@@ -297,6 +297,12 @@ DEFAULTS: dict = {
     },
     "big_lm": {
         "url": None,                         # set to enable the reasoning/briefing tier
+        # Served by another machine (e.g. the Vinur GPU box's vLLM)?  Set remote
+        # true and url to that server: no local llama-server is launched, the
+        # model file isn't preflighted, and `model` below becomes the NAME sent
+        # in requests — vLLM validates it (404 on a mismatch; llama-server never
+        # cared), so match the box's served_model_name.  Works on any LM tier.
+        "remote": False,
         "model": "Qwen2.5-32B-Instruct-Q4_K_M.gguf",
         "gpu": 0,                            # 3090 (dedicated; never on Ollama's 11434)
         "ctx_size": 65536,                   # background tier; needs the VRAM (keep KV q8_0)

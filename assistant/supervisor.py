@@ -129,6 +129,22 @@ def tts_engine(cfg: dict) -> str:
     return eng if eng in ("neutts", "chatterbox") else "orpheus_gguf"
 
 
+def lm_block(cfg: dict, tier: str) -> dict:
+    """The tier's config block; big_lm2 inherits big_lm (llm_server's rule)."""
+    block = dict(cfg.get(tier) or {})
+    if tier == "big_lm2":
+        block = {**dict(cfg.get("big_lm") or {}), **block}
+    return block
+
+
+def lm_remote(cfg: dict, tier: str) -> bool:
+    """True when the tier is served by another machine (block.remote — e.g. the
+    Vinur GPU box's vLLM): no local service, no model-file preflight.  `model`
+    is then the NAME requests carry — vLLM validates it against its
+    served_model_name (404 on mismatch); llama-server never cared."""
+    return bool(lm_block(cfg, tier).get("remote"))
+
+
 def load_topo() -> dict:
     try:
         return json.load(open(TOPO))
@@ -161,12 +177,23 @@ def box_ok() -> bool:
 
 # ── service topology (mirrors the old set_services) ─────────────────────────
 
-def services_for(mode: str, topo: dict) -> list[dict]:
-    """Each entry: name, where (host|box|kb), cmd (argv), killpat (box reaping)."""
+
+# Service name → the config tier whose `remote` flag excuses it from running here.
+_SVC_TIER = {"fast_lm": "fast_lm", "big_lm": "big_lm", "big_lm2": "big_lm2",
+             "embed": "embed_lm", "tts_lm": "tts_lm"}
+
+
+def services_for(mode: str, topo: dict, cfg: dict | None = None) -> list[dict]:
+    """Each entry: name, where (host|box|kb), cmd (argv), killpat (box reaping).
+    LM tiers marked remote in config get no local service (see lm_remote)."""
     kb_dir, kb_only = topo.get("kb_dir"), topo.get("kb_only")
+    cfg = load_config() if cfg is None else cfg
     svcs: list[dict] = []
 
     def add(name, where, cmd, killpat=""):
+        tier = _SVC_TIER.get(name)
+        if tier and lm_remote(cfg, tier):
+            return
         svcs.append({"name": name, "where": where, "cmd": cmd, "killpat": killpat})
 
     if not kb_only:
@@ -180,7 +207,7 @@ def services_for(mode: str, topo: dict) -> list[dict]:
             add("big_lm", "host", ["./serve_big_lm.sh"])
             add("embed", "host", ["./serve_embed.sh"])
             add("tunnel", "host", ["./serve_tunnel.sh"])
-            eng = tts_engine(load_config())
+            eng = tts_engine(cfg)
             if eng == "orpheus_gguf":          # only Orpheus needs the tts_lm llama-server
                 add("tts_lm", "host", ["./serve_tts_lm.sh"])
             add("tts", "box", ["./serve_tts.sh", eng], r"tts_server\.py")
@@ -513,6 +540,8 @@ def missing_models():
             block = {**dict(cfg.get("big_lm") or {}), **block}
         if not block.get("url") or not block.get("model"):
             continue
+        if block.get("remote"):        # served elsewhere — model is a name, not a file
+            continue
         model = Path(str(block["model"]))
         path = model if model.is_absolute() else models_dir / model
         if not path.exists():
@@ -627,6 +656,23 @@ def cmd_restart(args: list[str]) -> int:
     return 0
 
 
+def remote_tiers(cfg: dict) -> list:
+    """[(tier, reachable, url)] for LM tiers served by another machine — both
+    status views show them so a remote big LM doesn't just vanish from sight.
+    Probes the server's /health (vLLM and llama-server both have one).
+    Deliberately asymmetric with lm_remote: launch-skipping lets big_lm2
+    INHERIT remote (never boot a local twin of a remote model by accident),
+    but only a tier whose own block says remote is worth a status line."""
+    out = []
+    for tier in ("fast_lm", "big_lm", "big_lm2", "embed_lm", "tts_lm"):
+        if not (cfg.get(tier) or {}).get("remote"):
+            continue
+        url = str(lm_block(cfg, tier).get("url") or "")
+        ok = bool(url) and _http_ok(url.rstrip("/") + "/health")
+        out.append((tier, ok, url))
+    return out
+
+
 def _http_ok(url: str) -> bool:
     try:
         with urllib.request.urlopen(url, timeout=2):
@@ -734,6 +780,10 @@ def status_payload() -> dict:
             if hint:
                 item["reason"] = hint
         payload["services"].append(item)
+    for tier, ok, url in remote_tiers(cfg):
+        payload["services"].append(
+            {"name": tier, "pid": None, "up": ok,
+             "detail": f"remote {url}" + ("" if ok else " — not answering")})
     return payload
 
 
@@ -762,6 +812,9 @@ def cmd_status() -> int:
             hint = _last_log_line(name)
             if hint:
                 print(f"  {'':<9} ↳ {hint}")
+    for tier, ok, url in remote_tiers(cfg):
+        print(f"  {tier:<9} " + (f"up            (remote {url})" if ok
+                                 else f"remote not answering ({url or 'no url set'})"))
     return 0
 
 

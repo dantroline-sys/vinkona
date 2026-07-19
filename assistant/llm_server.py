@@ -61,6 +61,9 @@ def build_command(cfg: dict, tier: str) -> tuple[list[str], dict, Path]:
     block = cfg.get(tier) or {}
     if tier == "big_lm2":               # second big-LM instance: inherit big_lm, override per big_lm2
         block = {**(cfg.get("big_lm") or {}), **block}
+    if block.get("remote"):
+        sys.exit(f"tier '{tier}' is remote ({block.get('url')}) — served by "
+                 "another machine, nothing to launch here")
     if not block.get("url"):
         sys.exit(f"tier '{tier}' has no url set (it is disabled)")
     if not block.get("model"):

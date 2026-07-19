@@ -152,13 +152,21 @@ config sets (Vinur refuses a LAN bind without one):
 {
   "knowledge":      {"enabled": true, "tool_url": "http://kb-box:8771", "auth_token": "<token>"},
   "knowledge_host": {"enabled": true, "url": "http://kb-box:8771", "token": "<token>"},
-  "research": {"export": {"enabled": true, "folder": "http://kb-box:8771", "token": "<token>"}}
+  "research": {"export": {"enabled": true, "folder": "http://kb-box:8771", "token": "<token>"}},
+  "big_lm": {"remote": true, "url": "http://kb-box:11438", "model": "big"}
 }
 ```
 
 The third line switches the research hand-off from a shared folder to Vinur's
 `/drop` route, so solved research reaches the remote knowledge base with no
 network mount.
+
+The fourth line is optional: the assistant's background reasoning tier can be
+a model the box serves instead of a local llama-server. `remote: true` skips
+the local launch (status shows the tier's remote reachability instead), and
+`model` becomes the *name* sent in requests — vLLM validates it, so give the
+box's entry a stable alias (`served_model_name = "big"`) and send that;
+llama-server ignored the name, which is why this never mattered before.
 
 The top-level installer drives one installer per component (each also usable
 directly, with its own uninstall):
