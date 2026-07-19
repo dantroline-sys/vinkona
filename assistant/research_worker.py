@@ -1402,6 +1402,17 @@ async def main():
              f"-> {res.get('dest') or res.get('folder') or 'nowhere'} "
              f"[{res.get('transport', '?')}: {res.get('route_reason', '')}]"
              + (f" — ERROR: {res['error']}" if res.get("error") else ""))
+        # The handshake's return leg: the host's open knowledge gaps become
+        # research questions.  Queries stay VERBATIM (the eventual drop's
+        # question closes the gap on lower/trim match); the queue's own dedup
+        # (pending, or done within 14 days) keeps a stubborn gap from looping.
+        gaps = res.get("gaps") or []
+        fresh = [{"topic": q, "reason": "open knowledge gap reported by the knowledge host"}
+                 for q in gaps if not memory._topic_queued_or_recent(q)][:5]
+        if fresh:
+            n = memory.enqueue_research("kb-gaps", fresh)
+            _log(f"knowledge host reports {len(gaps)} open gap(s) — queued {n} "
+                 f"as research: " + "; ".join(f["topic"][:60] for f in fresh))
         return res
 
     rss_cfg = rcfg.get("rss", {})

@@ -49,6 +49,7 @@ class DropHost(BaseHTTPRequestHandler):
     bodies = {}
     gmode = "ok"          # handshake behavior: ok | noaccept | 401 | 404
     inventory = {}
+    gaps = []
 
     def _json(self, body):
         self.send_response(200)
@@ -78,7 +79,8 @@ class DropHost(BaseHTTPRequestHandler):
                                    "reason": "research_solved_dir is not configured"}).encode())
             return
         self._json(json.dumps({"ok": True, "accepts": True,
-                               "drops": DropHost.inventory}).encode())
+                               "drops": DropHost.inventory,
+                               "gaps": DropHost.gaps}).encode())
 
     def log_message(self, *_):
         pass
@@ -171,6 +173,25 @@ def main():
     assert res["ok"] is False and "can't store" in res["error"], res
     ok("host can't store (no solved dir): surfaced, watermark untouched")
     DropHost.gmode = "ok"
+
+    # ── the return leg: open gaps ride the handshake, verbatim ──────────
+    DropHost.gaps = [{"query": "How do  plasmids replicate?", "count": 3, "intent": "ask"},
+                     {"query": "how do  plasmids replicate?", "count": 1},   # dupe (case)
+                     {"query": "  "}, "bare string gap"]
+    res = rexport.run_export(mem, kh_cfg(), ["mail"], full=True)
+    assert res["gaps"] == ["How do  plasmids replicate?", "bare string gap"], res["gaps"]
+    ok("gaps: deduped case-insensitively, VERBATIM text preserved (close_gap contract)")
+
+    import os
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        folder_cfg = {"research": {"export": {"folder": td}},
+                      "knowledge_host": {"enabled": True, "url": url, "token": "tok"}}
+        res = rexport.run_export(mem, folder_cfg, ["mail"], full=True)
+        assert res["transport"] == "folder" and os.path.exists(os.path.join(td, name)), res
+        assert res["gaps"] == ["How do  plasmids replicate?", "bare string gap"], res
+    ok("folder transport still handshakes: local setups get the gap return leg too")
+    DropHost.gaps = []
 
     # ── down host: auto mode falls back to the folder outbox ────────────
     import os

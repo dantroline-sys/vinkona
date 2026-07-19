@@ -256,14 +256,33 @@ def run_export(memory, cfg: dict, crawl_sources: tp.Iterable[str] = (), *,
     lower-level engine (and the fixed-destination API)."""
     target = resolve_export_target(cfg)
     rcfg = (cfg.get("research") or {}).get("export") or {}
+    kh = cfg.get("knowledge_host") or {}
+    kh_url = str(kh.get("url") or "").strip() if kh.get("enabled") else ""
     max_chars = int(rcfg.get("max_source_chars", 40000))
     base = {"transport": target["mode"], "dest": target["dest"],
             "route_reason": target["reason"]}
+
+    def _gaps(hs) -> list:
+        """The handshake's return leg: the host's open knowledge gaps as
+        VERBATIM query strings (close_gap matches lower/trim on them, so the
+        text must round-trip through the research queue untouched)."""
+        out, seen = [], set()
+        for g in (hs or {}).get("gaps") or []:
+            q = str(g.get("query") if isinstance(g, dict) else g or "").strip()
+            if q and q.lower() not in seen:
+                seen.add(q.lower())
+                out.append(q)
+        return out
+
     if target["mode"] == "off":
         return {"ok": False, "error": target["reason"], "written": 0, "skipped": 0, **base}
     if target["mode"] == "folder":
         res = export_research(memory, target["dest"], crawl_sources, full=full,
                               max_source_chars=max_chars)
+        if kh_url:      # folder transport, but the host still answers the handshake
+            status, hs = negotiate_drop(kh_url, target["token"] or str(kh.get("token") or ""))
+            if status == "ok":
+                res["gaps"] = _gaps(hs)
         return {**res, **base}
     status, hs = negotiate_drop(target["dest"], target["token"])
     if status == "denied":
@@ -286,6 +305,8 @@ def run_export(memory, cfg: dict, crawl_sources: tp.Iterable[str] = (), *,
     res = export_research(memory, target["dest"], crawl_sources, full=full,
                           max_source_chars=max_chars, token=target["token"],
                           inventory=inventory)
+    if status == "ok":
+        res["gaps"] = _gaps(hs)
     return {**res, **base}
 
 
