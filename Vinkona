@@ -7,6 +7,15 @@
 # Vinkona in your application menu.  Terminal management stays fully
 # equivalent via ./vinkona.sh {start|stop|status|logs}.
 cd "$(dirname "$0")" || exit 1
+# WebKitGTK's DMABUF renderer crashes on NVIDIA's proprietary driver —
+# on Wayland the window dies instantly with "Error 71 (Protocol error)
+# dispatching to Wayland display" (X11 shows a blank window instead).
+# Disable it unless the user has chosen; WebKit falls back to shared-
+# memory rendering, which just works.  Still crashing?  Force XWayland:
+#   GDK_BACKEND=x11 ./Vinkona
+if [ -z "${WEBKIT_DISABLE_DMABUF_RENDERER+set}" ] && [ -e /proc/driver/nvidia/version ]; then
+    export WEBKIT_DISABLE_DMABUF_RENDERER=1
+fi
 for BIN in launcher/src-tauri/target/release/vinkona-launcher \
            launcher/bin/vinkona-launcher; do
     [ -x "$BIN" ] && exec "$BIN" "$@"

@@ -229,6 +229,18 @@ fn open_ui(app: AppHandle, which: String, url: String) -> Result<(), String> {
 }
 
 fn main() {
+    // WebKitGTK's DMABUF renderer crashes on NVIDIA's proprietary driver
+    // (Wayland: instant "Error 71 (Protocol error)"; X11: blank window).
+    // The ./Vinkona wrapper sets this too, but the binary must also survive
+    // being launched directly.  Respect an explicit user choice.
+    #[cfg(target_os = "linux")]
+    {
+        if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none()
+            && Path::new("/proc/driver/nvidia/version").exists()
+        {
+            std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+        }
+    }
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![

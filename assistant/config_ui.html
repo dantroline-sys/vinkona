@@ -255,6 +255,16 @@
     <div class="hint">Knowledge mode shuts down the fast LM, TTS, cascade &amp; tunnel and runs a
       second big LM on the 4090 (port 11440) so the knowledge-host can split distillation across
       both GPUs. Applying does a full stack restart (~1&nbsp;min); flip back to normal when done.</div>
+    <div class="bar" style="border:1px solid #2c303a;border-radius:8px;padding:10px;flex-wrap:wrap">
+      <b>Vinur (knowledge host)</b> <span id="vinurState" class="pill">…</span>
+      <span id="vinurDetail" class="muted" style="font-size:12px"></span>
+      <div style="flex:1"></div>
+      <button class="btn secondary" onclick="refreshVinur()">Check now</button>
+    </div>
+    <div class="hint">The server-to-server research lane: /health says the host is there, the authed
+      /drop handshake proves the token and reports drops held + open gaps. The same dot lives in the
+      page header. Configure the link under <b>knowledge_host</b> in config.json (or the launcher's
+      Connect wizard).</div>
     <div class="bar">
       <select id="svcSelect" onchange="loadServiceLog()" style="width:auto;min-width:160px"></select>
       <button class="btn secondary" onclick="loadServiceLog()">Refresh</button>
@@ -1671,17 +1681,36 @@ function injectTabHelp(){
 loadPersonas(); loadHelp().then(loadConfig); setChatLink();
 refreshIdle(); setInterval(refreshIdle, 15000);
 
-// ── Vinur (knowledge host) connection badge ─────────────────────────────────
-async function refreshVinur() {
+// ── Vinur (knowledge host) connection: header badge + Services-tab panel ────
+function paintVinur(state, word, col, detail, url) {
   const el = document.getElementById('vinurLink');
+  el.innerHTML = state ? '· Vinur: <span style="color:' + col + '">●</span> ' + word : '';
+  el.title = url ? url + ' — ' + (detail || '') : (detail || '');
+  const st = document.getElementById('vinurState'), dt = document.getElementById('vinurDetail');
+  if (!st) return;
+  st.textContent = word || 'not configured';
+  st.style.color = col || '';
+  dt.textContent = (url ? url + ' — ' : '') + (detail || '');
+}
+async function refreshVinur() {
   try {
-    const r = await (await fetch('/api/vinur')).json();
-    if (!r.configured) { el.textContent = ''; return; }
+    const resp = await fetch('/api/vinur');
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const r = await resp.json();
+    if (!r.configured) {
+      paintVinur('', '', '', r.error ? 'probe failed: ' + r.error
+                 : 'no knowledge_host configured — see the hint below', '');
+      return;
+    }
     const col = r.state === 'up' ? '#4caf82' : (r.state === 'no-auth' ? '#e0a800' : '#e05c5c');
     const word = r.state === 'up' ? 'connected' : (r.state === 'no-auth' ? 'token refused' : 'unreachable');
-    el.innerHTML = '· Vinur: <span style="color:' + col + '">●</span> ' + word;
-    el.title = r.url + ' — ' + (r.detail || '');
-  } catch (e) { el.textContent = ''; }
+    paintVinur(r.state, word, col, r.detail, r.url);
+  } catch (e) {
+    // An old config server has no /api/vinur — say so in the panel instead of
+    // silently blanking (the header badge stays empty: nothing to alarm about).
+    paintVinur('', "can't query", '#e0a800', '/api/vinur failed (' + e.message +
+               ') — restart the config server to pick up new code?', '');
+  }
 }
 refreshVinur(); setInterval(refreshVinur, 15000);
 </script>

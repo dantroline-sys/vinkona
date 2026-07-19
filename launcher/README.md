@@ -43,6 +43,22 @@ cargo install tauri-cli --locked && cargo tauri build
 (right-click → Open the first time); signing/notarization is deferred until
 distribution matters.
 
+### Crashes at startup on Linux/NVIDIA?
+
+`Gdk-Message: Error 71 (Protocol error) dispatching to Wayland display`
+(or a blank window on X11) is WebKitGTK's DMABUF renderer failing on the
+NVIDIA proprietary driver. Both `./Vinkona` and the binary itself now set
+`WEBKIT_DISABLE_DMABUF_RENDERER=1` automatically when that driver is
+present (WebKit falls back to shared-memory rendering — visually
+identical). If it still dies, force XWayland:
+
+```bash
+GDK_BACKEND=x11 ./Vinkona
+```
+
+The `Gtk-CRITICAL … gtk_widget_get_scale_factor` lines that precede the
+crash are benign noise — they appear on healthy runs too.
+
 ## How it finds the stack
 
 Stored choice → `$VINKONA_DIR` → ancestors of the executable (dev builds
