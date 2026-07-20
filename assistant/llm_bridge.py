@@ -446,10 +446,28 @@ REVISE_SELF_TOOL = {
                                              "'honesty', 'warmth', or 'appearance'."},
                 "value": {"type": "string",
                           "description": "The new description, in plain words."},
-                "layer": {"type": "string", "enum": ["core", "surface"],
+                "layer": {"type": "string",
+                          "enum": ["core", "compensated", "surface"],
                           "description": "core = a lasting change to who you are (default); "
-                                         "surface = just how you're being for now.",
+                                         "compensated = a way of expressing a trait you "
+                                         "ALREADY have, in a particular situation (give "
+                                         "'context'); surface = just how you're being for now.",
                           "default": "core"},
+                "context": {"type": "string",
+                            "description": "compensated only, REQUIRED: the situation it "
+                                           "applies to — e.g. 'when he's deep in a hard bug'. "
+                                           "An adaptation without a situation is a change to "
+                                           "who you are; use core for that."},
+                "derived_from": {"type": "string",
+                                 "description": "compensated only: which trait you ALREADY "
+                                                "have that this grows out of (default: the "
+                                                "same attribute). For 'compensates', name the "
+                                                "strength you lean on."},
+                "mode": {"type": "string", "enum": ["expresses", "compensates"],
+                         "description": "compensated only: 'expresses' = how that trait shows "
+                                        "here; 'compensates' = you lean on that strength to "
+                                        "cover a weaker one.",
+                         "default": "expresses"},
             },
             "required": ["attribute", "value"],
         },
@@ -910,7 +928,11 @@ class LLMBridge:
             lines.append("When you and the user settle on something about who YOU are — "
                          "your character, manner, values, how you speak, or how you look in "
                          "roleplay — call revise_self to make it part of you. Use it only "
-                         "for yourself, and only once it's actually agreed.")
+                         "for yourself, and only once it's actually agreed. When what you've "
+                         "settled on is a way of expressing a trait you ALREADY have, in a "
+                         "particular situation, use layer='compensated' with a context — that "
+                         "grows from who you are rather than changing it, and you keep the "
+                         "trait underneath.")
         if "note_person" in names:
             lines.append("When you learn something lasting about a PERSON — the user or "
                          "someone in their life — call note_person to remember it. For "

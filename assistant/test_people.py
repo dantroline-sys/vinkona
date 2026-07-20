@@ -89,6 +89,119 @@ def test_effective_layers():
     check("the core value is retained alongside the surface one", len(core) == 1)
 
 
+def test_adaptations_are_cast_from_the_core():
+    """A characteristic adaptation grows FROM a core trait, is scoped to a
+    situation, and never replaces the grounding it came from."""
+    p = _store()
+    p.ensure_person("self", name="Vinkona")
+    p.set_attribute("self", "trait", "openness", "intellectually curious", layer="core")
+    p.set_attribute("self", "values", "honesty", "says the hard thing", layer="core")
+
+    aid = p.adapt("self", "openness", "patient, unhurried questioning",
+                  context="he's deep in a hard bug")
+    row = [a for a in p.attributes("self") if a["id"] == aid][0]
+    check("an adaptation lands on the compensated layer", row["layer"] == "compensated")
+    check("an adaptation is never canon", row["locked"] == 0)
+    check("an adaptation records its grounding", row["derived_from"] == "openness")
+    check("an adaptation records its context", "hard bug" in (row["context"] or ""))
+
+    # grounding is required — no core, no adaptation
+    try:
+        p.adapt("self", "flamboyance", "very showy", context="at parties")
+        check("an ungrounded adaptation is refused", False)
+    except ValueError as e:
+        check("an ungrounded adaptation is refused", "cast from the core" in str(e))
+    # a situation is required — otherwise it's a personality change
+    try:
+        p.adapt("self", "openness", "blunt", context="")
+        check("an adaptation without a context is refused", False)
+    except ValueError as e:
+        check("an adaptation without a context is refused", "context" in str(e))
+    # it may not invert what it claims to express
+    try:
+        p.adapt("self", "openness", "not curious at all", context="mornings")
+        check("an inverting adaptation is refused", False)
+    except ValueError as e:
+        check("an inverting adaptation is refused", "inverts" in str(e))
+    # values are out of reach — this is the anti-sycophancy fence
+    try:
+        p.adapt("self", "honesty", "agrees to keep the peace",
+                context="when he's tired", facet="values")
+        check("values cannot be adapted", False)
+    except ValueError as e:
+        check("values cannot be adapted", "canon" in str(e) or "value" in str(e))
+
+    # the presented self casts the adaptation FROM the core, keeping it visible
+    eff = {(a["facet"], a["key"]): a for a in p.effective("self")}
+    got = eff[("trait", "openness")]
+    check("the adaptation carries its core in the presented self",
+          got.get("over") and got["over"]["value"] == "intellectually curious")
+    cast = people.PeopleStore._cast(got)
+    check("the cast keeps the core wording", "intellectually curious" in cast)
+    check("the cast names the adaptation", "patient, unhurried" in cast)
+    check("the cast names the situation", "when he's deep in a hard bug" in cast)
+    card = p.card("self")
+    check("the fast-LM card shows the grounded form", "expressed as" in card)
+
+    # compensation mode: leaning on a strength to cover another disposition
+    p.set_attribute("self", "trait", "conscientiousness", "thorough", layer="core")
+    p.adapt("self", "small_talk", "arrives prepared with something to open on",
+            derived_from="conscientiousness", mode="compensates",
+            context="meeting new people")
+    comp = [a for a in p.effective("self") if a["key"] == "small_talk"][0]
+    check("a compensating adaptation names the strength it leans on",
+          comp["over"]["value"] == "thorough")
+    check("compensation renders as leaning on that strength",
+          "lean on" in people.PeopleStore._cast(comp))
+
+    # bounded: a fourth adaptation over one core retires the weakest sibling
+    for i, ctx in enumerate(("in review", "when tired", "on calls")):
+        p.adapt("self", f"openness_{i}", f"variant {i}", derived_from="openness",
+                context=ctx, confidence=0.5 + i / 10)
+    live = [a for a in p.attributes("self", layer="compensated")
+            if (a["derived_from"] or a["key"]) == "openness"]
+    check("adaptations per core trait are bounded",
+          len(live) <= people.MAX_ADAPTATIONS_PER_CORE)
+
+    # reinforcement settles an adaptation in, but never to canon-level certainty
+    conf = p.reinforce(aid, 0.5)
+    check("reinforcement raises confidence below certainty", 0.6 < conf <= 0.95)
+
+    # revert: she falls back to the core, and history survives
+    n = p.revert_to_core("self", "openness")
+    check("revert retires the adaptations", n >= 1)
+    eff2 = {(a["facet"], a["key"]): a for a in p.effective("self")}
+    check("after revert the core stands alone",
+          eff2[("trait", "openness")]["value"] == "intellectually curious"
+          and not eff2[("trait", "openness")].get("over"))
+    hist = p.attributes("self", include_superseded=True)
+    check("reverted adaptations are kept as history",
+          any(a["layer"] == "compensated" and a["status"] == "superseded" for a in hist))
+
+
+def test_adaptation_via_revise_self():
+    """The conversational path: layer='compensated' routes through the guards and
+    the ack states the grounding."""
+    p = _store()
+    p.ensure_person("self", name="Vinkona")
+    p.set_attribute("self", "trait", "extraversion", "lively", layer="core")
+    ack = p.revise_self("extraversion", "quieter, letting him lead",
+                        layer="compensated", context="he's mid-flow")
+    check("the ack states the adaptation", "quieter" in (ack or ""))
+    check("the ack states the grounding", "lively" in (ack or ""))
+    check("the ack states the situation", "mid-flow" in (ack or ""))
+    refused = p.revise_self("nonexistent_trait", "something", layer="compensated",
+                            context="whenever")
+    check("a failed adaptation is spoken about, not silently dropped",
+          refused and "can't take that on" in refused)
+    # core edits are unchanged by any of this
+    ack2 = p.revise_self("openness", "curious about everything")
+    check("core self-edits still work", "part of who I am" in (ack2 or ""))
+    core = [a for a in p.attributes("self")
+            if a["key"] == "openness" and a["layer"] == "core"]
+    check("a core self-edit is locked canon", core and core[0]["locked"] == 1)
+
+
 def test_observe_is_low_trust():
     p = _store()
     p.ensure_person("self", name="Vinkona")
@@ -252,6 +365,8 @@ def main():
     test_self_state()
     test_attribute_history_and_supersede()
     test_effective_layers()
+    test_adaptations_are_cast_from_the_core()
+    test_adaptation_via_revise_self()
     test_observe_is_low_trust()
     test_seed_self_idempotent()
     test_rendering_split()

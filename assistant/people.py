@@ -37,6 +37,26 @@ HEXACO = ("honesty_humility", "emotionality", "extraversion",
 LAYERS = ("core", "compensated", "surface")
 _LAYER_RANK = {"core": 0, "compensated": 1, "surface": 2}
 
+# ── characteristic adaptations (the `compensated` layer) ─────────────────────
+# Five-Factor Theory's split: basic tendencies (the locked core — stable, and
+# effectively part of her value system) vs characteristic adaptations (learned,
+# situational ways those tendencies get expressed).  An adaptation NEVER
+# replaces its core: it is cast from it, carries its context, and renders
+# attached to it, so the grounding is always in what she enacts and she can
+# always revert to the core alone.
+ADAPT_MODES = ("expresses",     # how core trait X shows in this context
+               "compensates")   # covers a weaker disposition by leaning on X
+# Facets an adaptation may never touch: her values and boundaries are the part
+# of canon that keeps her able to disagree.  Adaptation shapes HOW she shows up,
+# never WHAT she will stand for (the anti-sycophancy fence).
+UNADAPTABLE_FACETS = ("values", "boundaries")
+MAX_ADAPTATIONS_PER_CORE = 3     # a person has a handful, not a drawerful
+# An adaptation must not invert the disposition it claims to express — that is
+# a mask, not an adaptation.  Cheap structural check: a bare negation of the
+# parent's own words.
+_NEGATORS = ("not ", "never ", "no longer ", "stop being ", "opposite of ",
+             "instead of being ", "un-", "anti-")
+
 
 class PeopleStore:
     """Identity/entity store, sharing the MemoryStore's sqlite connection (one WAL file)."""
@@ -58,7 +78,13 @@ class PeopleStore:
             layer TEXT, provenance TEXT, confidence REAL,
             locked INTEGER DEFAULT 0,
             status TEXT DEFAULT 'active',          -- active | superseded
-            superseded_by INTEGER, created_at REAL, updated_at REAL
+            superseded_by INTEGER, created_at REAL, updated_at REAL,
+            -- characteristic adaptations (compensated layer): an adaptation is
+            -- cast FROM a core trait and never stands alone.  derived_from =
+            -- the core `key` it is grounded in; context = the situation it
+            -- applies to; mode = expresses (how that core shows here) or
+            -- compensates (covers a weaker disposition by leaning on this one).
+            derived_from TEXT, context TEXT, mode TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_pa_person ON person_attributes(person_id, status);
         CREATE TABLE IF NOT EXISTS self_state (
@@ -66,6 +92,12 @@ class PeopleStore:
             text TEXT, source TEXT, created_at REAL
         );
         """)
+        # adaptation columns on a table created before they existed (idempotent)
+        cols = {r["name"] for r in self.db.execute(
+            "PRAGMA table_info(person_attributes)")}
+        for c in ("derived_from", "context", "mode"):
+            if c not in cols:
+                self.db.execute(f"ALTER TABLE person_attributes ADD COLUMN {c} TEXT")
         self.db.commit()
 
     # ── people rows ───────────────────────────────────────────────────────────
@@ -147,10 +179,12 @@ class PeopleStore:
     # ── attributes (with history) ─────────────────────────────────────────────
     def set_attribute(self, person_id: str, facet: str, key: str, value: str, *,
                       layer: str = "core", provenance: str = "agreed_with_user",
-                      confidence: float = 1.0, locked: bool | None = None) -> int:
+                      confidence: float = 1.0, locked: bool | None = None,
+                      derived_from: str = "", context: str = "", mode: str = "") -> int:
         """Privileged write (from conversation).  Supersedes any active attribute at the
         same (facet, key, layer) coordinates — keeping the old row as history — and inserts
-        the new value.  Core attributes are canon (locked) by default."""
+        the new value.  Core attributes are canon (locked) by default.  The adaptation
+        fields are set by `adapt()`; a direct caller normally leaves them empty."""
         now = time.time()
         if locked is None:
             locked = (layer == "core")
@@ -159,9 +193,11 @@ class PeopleStore:
             "AND layer=? AND status='active'", (person_id, facet, key, layer)).fetchone()
         cur = self.db.execute(
             "INSERT INTO person_attributes(person_id,facet,key,value,layer,provenance,"
-            "confidence,locked,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,'active',?,?)",
+            "confidence,locked,status,created_at,updated_at,derived_from,context,mode) "
+            "VALUES (?,?,?,?,?,?,?,?,'active',?,?,?,?,?)",
             (person_id, facet, key, value, layer, provenance, confidence,
-             1 if locked else 0, now, now))
+             1 if locked else 0, now, now, derived_from or None, context or None,
+             mode or None))
         new_id = cur.lastrowid
         if prev:
             self.db.execute("UPDATE person_attributes SET status='superseded', "
@@ -182,6 +218,116 @@ class PeopleStore:
             return None
         return self.set_attribute(person_id, facet, key, value, layer="surface",
                                   provenance="observed", confidence=confidence, locked=False)
+
+    # ── characteristic adaptations ────────────────────────────────────────────
+    def core_attribute(self, person_id: str, key: str) -> dict | None:
+        """The active CORE row for a key — an adaptation's grounding.  Matched on
+        key alone (a core trait and its adaptation share the key, not the facet)."""
+        r = self.db.execute(
+            "SELECT * FROM person_attributes WHERE person_id=? AND key=? AND "
+            "layer='core' AND status='active' LIMIT 1", (person_id, key)).fetchone()
+        return dict(r) if r else None
+
+    def adapt(self, person_id: str, key: str, value: str, *, context: str,
+              derived_from: str = "", mode: str = "expresses",
+              facet: str = "trait", provenance: str = "chosen",
+              confidence: float = 0.6) -> int:
+        """Write a characteristic adaptation (the `compensated` layer).
+
+        Guards, all fail-closed — each one is what keeps this an adaptation
+        rather than a second personality:
+          * GROUNDED: `derived_from` (default: `key`) must name an ACTIVE core
+            attribute.  No core, no adaptation — the derivative is always cast
+            from canon.
+          * SITUATED: `context` is required.  "patient when he's debugging" is
+            an adaptation; "patient" is a personality change.
+          * NON-INVERTING: it may not simply negate the core it claims to
+            express (that is a mask; record it as a surface state instead).
+          * VALUES ARE OUT OF REACH: `UNADAPTABLE_FACETS` can't be adapted, so
+            she can always still disagree.
+          * BOUNDED: at most MAX_ADAPTATIONS_PER_CORE live per core trait; a new
+            one supersedes the weakest/oldest rather than piling up.
+        Raises ValueError when a guard rejects the write."""
+        v = (value or "").strip()
+        ctx = (context or "").strip()
+        key = (key or "").strip().lower().replace(" ", "_")
+        parent_key = (derived_from or key).strip().lower().replace(" ", "_")
+        if not v:
+            raise ValueError("an adaptation needs a value")
+        if not ctx:
+            raise ValueError("an adaptation needs a context — when does it apply? "
+                             "(an adaptation without a situation is a trait change)")
+        if mode not in ADAPT_MODES:
+            raise ValueError(f"mode must be one of {ADAPT_MODES}")
+        if facet in UNADAPTABLE_FACETS:
+            raise ValueError(f"'{facet}' is canon and cannot be adapted — values and "
+                             "boundaries are what she can always fall back on")
+        parent = self.core_attribute(person_id, parent_key)
+        if not parent:
+            raise ValueError(f"no core attribute '{parent_key}' to ground this in — "
+                             "an adaptation is cast from the core, never freestanding")
+        if parent["facet"] in UNADAPTABLE_FACETS:
+            raise ValueError(f"'{parent_key}' is a value, not a disposition — "
+                             "it grounds her rather than flexing")
+        low = v.lower()
+        pval = (parent["value"] or "").lower()
+        if any(low.startswith(n) or f" {n}" in f" {low}" for n in _NEGATORS) and \
+                any(w in low for w in pval.split() if len(w) > 4):
+            raise ValueError(f"that inverts the core it claims to express "
+                             f"({parent_key}: {parent['value']}) — an adaptation "
+                             "shapes how a disposition shows, it can't reverse it")
+        # bound the fan-out: retire the weakest live sibling when full
+        live = [a for a in self.attributes(person_id, layer="compensated")
+                if (a.get("derived_from") or a["key"]) == parent_key and a["key"] != key]
+        if len(live) >= MAX_ADAPTATIONS_PER_CORE:
+            weakest = sorted(live, key=lambda a: (a.get("confidence") or 0,
+                                                  a.get("updated_at") or 0))[0]
+            self.db.execute("UPDATE person_attributes SET status='superseded', "
+                            "updated_at=? WHERE id=?", (time.time(), weakest["id"]))
+            self.db.commit()
+        return self.set_attribute(person_id, facet, key, v, layer="compensated",
+                                  provenance=provenance, confidence=confidence,
+                                  locked=False, derived_from=parent_key,
+                                  context=ctx, mode=mode)
+
+    def reinforce(self, attr_id: int, amount: float = 0.1) -> float:
+        """An adaptation that keeps proving useful settles in (human adaptations
+        are maintained by recurrence).  Returns the new confidence, capped below
+        1.0 — an adaptation never becomes as certain as canon."""
+        r = self.db.execute("SELECT confidence FROM person_attributes WHERE id=?",
+                            (attr_id,)).fetchone()
+        if not r:
+            return 0.0
+        conf = min(0.95, (r["confidence"] or 0.0) + amount)
+        self.db.execute("UPDATE person_attributes SET confidence=?, updated_at=? WHERE id=?",
+                        (conf, time.time(), attr_id))
+        self.db.commit()
+        return conf
+
+    def revert_to_core(self, person_id: str, key: str) -> int:
+        """Drop the live adaptations grown over a core trait — she falls back to
+        canon.  History is kept (superseded, not deleted), so this is reversible
+        and legible, like every other identity edit.  Returns how many retired."""
+        key = (key or "").strip().lower().replace(" ", "_")
+        rows = [a for a in self.attributes(person_id, layer="compensated")
+                if (a.get("derived_from") or a["key"]) == key or a["key"] == key]
+        for a in rows:
+            self.db.execute("UPDATE person_attributes SET status='superseded', "
+                            "updated_at=? WHERE id=?", (time.time(), a["id"]))
+        if rows:
+            self.db.commit()
+        return len(rows)
+
+    def adaptations(self, person_id: str, min_confidence: float = 0.0) -> list[dict]:
+        """Live adaptations, strongest first — each with the core it is cast from."""
+        out = []
+        for a in self.attributes(person_id, layer="compensated"):
+            if (a.get("confidence") or 0) < min_confidence:
+                continue
+            a = dict(a)
+            a["core"] = self.core_attribute(person_id, a.get("derived_from") or a["key"])
+            out.append(a)
+        return sorted(out, key=lambda a: -(a.get("confidence") or 0))
 
     def attributes(self, person_id: str, layer: str | None = None,
                    include_superseded: bool = False) -> list[dict]:
@@ -232,14 +378,45 @@ class PeopleStore:
             "ORDER BY created_at, id", (person_id, facet, key))]
 
     def effective(self, person_id: str) -> list[dict]:
-        """The *presented* self: for each (facet, key), the highest-layer active value
-        (surface over compensated over core).  This is what the fast LM should enact."""
+        """The *presented* self — what the fast LM should enact.
+
+        For each (facet, key) the highest layer still wins, BUT an adaptation
+        never erases the core it grew from: it is returned carrying that core in
+        `over`, so every renderer casts the derivative from its grounding.  The
+        core may not be listed separately in a given context, yet whatever is
+        shown in its place is visibly a form of it — and `revert_to_core` always
+        leads back.  Rows whose core is superseded fall back to standing alone."""
         best: dict[tuple, dict] = {}
         for a in self.attributes(person_id):
             k = (a["facet"], a["key"])
             if k not in best or _LAYER_RANK[a["layer"]] >= _LAYER_RANK[best[k]["layer"]]:
                 best[k] = a
-        return list(best.values())
+        out = []
+        for a in best.values():
+            if a["layer"] != "core":
+                parent_key = a.get("derived_from") or a["key"]
+                core = self.core_attribute(person_id, parent_key)
+                if core and core["id"] != a["id"]:
+                    a = {**a, "over": core}
+            out.append(a)
+        # a core trait whose expression is entirely carried by an adaptation
+        # is not lost — the adaptation above renders it as its own grounding
+        return out
+
+    @staticmethod
+    def _cast(a: dict) -> str:
+        """One presented trait, cast from its grounding: the core first, then how
+        it is being expressed here.  This is the shape that keeps the core felt
+        in every derivative without repeating the whole profile."""
+        core = a.get("over")
+        val = a["value"]
+        if not core:
+            return val
+        ctx = (a.get("context") or "").strip()
+        when = f" when {ctx}" if ctx else ""
+        if a.get("mode") == "compensates":
+            return f"{core['value']} — which you lean on{when}, expressed as {val}"
+        return f"{core['value']} — expressed as {val}{when}"
 
     # ── rendering ─────────────────────────────────────────────────────────────
     _BODY_FACETS = ("appearance", "bio", "embodiment")   # roleplay-only
@@ -251,8 +428,9 @@ class PeopleStore:
         if not p:
             return ""
         eff = self.effective(person_id)
-        traits = [a["value"] for a in eff if a["facet"] == "trait"]
-        style = [a["value"] for a in eff if a["facet"] in ("style", "speech_style", "values")]
+        traits = [self._cast(a) for a in eff if a["facet"] == "trait"]
+        style = [self._cast(a) for a in eff
+                 if a["facet"] in ("style", "speech_style", "values")]
         bits: list[str] = []
         if p.get("summary"):
             bits.append(p["summary"])
@@ -284,7 +462,14 @@ class PeopleStore:
         for facet in sorted(by_facet):
             lines.append(f"  {facet}:")
             for a in by_facet[facet]:
-                lines.append(f"    - {a['key']}: {a['value']}  [{a['layer']}; {a['provenance']}]")
+                tail = f"  [{a['layer']}; {a['provenance']}]"
+                if a["layer"] == "compensated":
+                    grounding = a.get("derived_from") or a["key"]
+                    ctx = a.get("context") or "unscoped"
+                    tail = (f"  [{a['layer']} — {a.get('mode') or 'expresses'} "
+                            f"{grounding}, when {ctx}; {a['provenance']}; "
+                            f"conf {a.get('confidence') or 0:.2f}]")
+                lines.append(f"    - {a['key']}: {a['value']}{tail}")
         return "\n".join(lines)
 
     def identity_block(self, *, roleplay: bool = False,
@@ -463,10 +648,15 @@ class PeopleStore:
     # ── conversational write helpers (map free text → facet/key, return a spoken ack) ──
     _BODY_WORDS = ("appearance", "look", "body", "face", "hair", "eyes", "build", "height")
 
-    def revise_self(self, attribute: str, value: str, *, layer: str = "core") -> str | None:
+    def revise_self(self, attribute: str, value: str, *, layer: str = "core",
+                    context: str = "", derived_from: str = "",
+                    mode: str = "expresses") -> str | None:
         """Apply a self-edit from conversation (the revise_self tool): map a free-text
         attribute onto a (facet, key) and write it as agreed-with-user.  core = canon
-        (locked); surface = how she's being for now.  Returns a short spoken ack."""
+        (locked); compensated = a characteristic adaptation, cast from a core trait and
+        scoped to a context; surface = how she's being for now.  Returns a short spoken
+        ack, or a plain refusal when an adaptation fails its guards (the LM relays it —
+        a rejected self-edit should be spoken about, not silently dropped)."""
         v = (value or "").strip()
         if not v:
             return None
@@ -483,6 +673,18 @@ class PeopleStore:
             facet = "trait"
         layer = layer if layer in LAYERS else "core"
         pid = self.ensure_person("self", name="Vinkona")
+        if layer == "compensated":
+            try:
+                self.adapt(pid, key, v, context=context, derived_from=derived_from,
+                           mode=mode, facet=facet, provenance="agreed_with_user")
+            except ValueError as e:
+                return f"I can't take that on: {e}"
+            parent = self.core_attribute(pid, (derived_from or key).lower()
+                                         .replace(" ", "_"))
+            root = parent["value"] if parent else key
+            return (f"Alright — I'll let that show as {v}"
+                    + (f" when {context.strip()}" if context.strip() else "")
+                    + f", still coming from {root}.")
         self.set_attribute(pid, facet, key, v, layer=layer,
                            provenance="agreed_with_user", locked=(layer == "core"))
         if layer == "surface":

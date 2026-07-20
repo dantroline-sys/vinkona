@@ -1151,14 +1151,22 @@ class _Session:
             _log(f"affect set failed: {e}")
 
     def _revise_self(self, args: dict):
-        """Commit a change to Vinkona's own character (the revise_self tool)."""
+        """Commit a change to Vinkona's own character (the revise_self tool).  A
+        `compensated` edit is a characteristic adaptation — cast from a core trait
+        and scoped to a context; people.adapt() enforces that grounding."""
         line = self.s.memory.people.revise_self(
             args.get("attribute", ""), args.get("value", ""),
-            layer=args.get("layer", "core"))
+            layer=args.get("layer", "core"),
+            context=args.get("context", ""),
+            derived_from=args.get("derived_from", ""),
+            mode=args.get("mode", "expresses"))
         if self.s.trace:
             self._trace({"ts": time.time(), "kind": "identity_write", "target": "self",
                          "attribute": args.get("attribute"), "value": args.get("value"),
-                         "layer": args.get("layer", "core")})
+                         "layer": args.get("layer", "core"),
+                         "context": args.get("context", ""),
+                         "derived_from": args.get("derived_from", ""),
+                         "mode": args.get("mode", "expresses")})
         return line
 
     def _note_person(self, args: dict):

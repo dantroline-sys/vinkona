@@ -18,6 +18,7 @@ Endpoints
   GET  /api/self             Vinkona's self-authored identity (traits) + self-memories
   POST /api/self/attribute   set/edit one identity attribute
   POST /api/self/attribute/delete   delete one identity attribute by id
+  POST /api/self/revert      drop the adaptations grown over one core trait
 
 Edits to config/personas land in the JSON files; the cascade re-reads personas +
 tunables per connection, so those apply on the next call.  Structural changes
@@ -492,7 +493,12 @@ class SelfAdmin:
             except sqlite3.OperationalError:
                 pass
             return {"self": dict(s) if s else None, "attributes": attrs, "self_memories": mems,
-                    "state": ps.self_state(), "state_history": ps.self_state_history(12)}
+                    "state": ps.self_state(), "state_history": ps.self_state_history(12),
+                    # adaptations carry the core they are cast from, so the panel
+                    # can show the grounding rather than a detached second self
+                    "adaptations": ps.adaptations(s["id"]) if s else [],
+                    "presented": [ps._cast(a) for a in ps.effective(s["id"])
+                                  if a["facet"] == "trait"] if s else []}
         finally:
             c.close()
 
@@ -510,11 +516,39 @@ class SelfAdmin:
             ps = PEOPLE.PeopleStore(c)
             s = ps.by_kind("self")
             pid = s["id"] if s else ps.ensure_person("self", name="Vinkona")
+            layer = obj.get("layer") or "core"
+            if layer == "compensated":
+                # even owner-level edits go through the guards: an adaptation with
+                # no grounding or no context isn't an adaptation, whoever wrote it
+                try:
+                    ps.adapt(pid, (obj.get("key") or "").strip(),
+                             (obj.get("value") or "").strip(),
+                             context=obj.get("context") or "",
+                             derived_from=obj.get("derived_from") or "",
+                             mode=obj.get("mode") or "expresses",
+                             facet=(obj.get("facet") or "trait").strip(),
+                             provenance="user_edit")
+                except ValueError as e:
+                    return {"ok": False, "error": str(e)}
+                return {"ok": True}
             ps.set_attribute(pid, (obj.get("facet") or "trait").strip(),
                              (obj.get("key") or "").strip(), (obj.get("value") or "").strip(),
-                             layer=obj.get("layer") or "core", provenance="user_edit",
+                             layer=layer, provenance="user_edit",
                              locked=obj.get("locked"))
             return {"ok": True}
+        finally:
+            c.close()
+
+    def revert_to_core(self, obj: dict) -> dict:
+        """Drop the adaptations grown over one core trait — she falls back to canon."""
+        c = self._conn()
+        try:
+            ps = PEOPLE.PeopleStore(c)
+            s = ps.by_kind("self")
+            if not s:
+                return {"ok": False, "error": "no self record"}
+            n = ps.revert_to_core(s["id"], (obj.get("key") or "").strip())
+            return {"ok": True, "reverted": n}
         finally:
             c.close()
 
@@ -798,6 +832,11 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/self/attribute/delete":
             try:
                 return self._json(200, SelfAdmin(self._cfg()).delete_attribute(obj))
+            except Exception as e:
+                return self._json(500, {"error": str(e)})
+        if path == "/api/self/revert":            # drop adaptations over one core trait
+            try:
+                return self._json(200, SelfAdmin(self._cfg()).revert_to_core(obj))
             except Exception as e:
                 return self._json(500, {"error": str(e)})
         if path == "/api/self/state":

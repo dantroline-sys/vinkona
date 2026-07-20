@@ -330,12 +330,17 @@
       <span id="selfStatus" class="status"></span>
     </div>
     <div class="hint">Two layers of self. <b>Character traits</b> are her structured identity
-      (declared, always in the prompt) across depth layers — <i>core</i> (innate canon),
-      <i>compensated</i> (learned adjustment), <i>surface</i> (presented). The fast LM enacts
-      the highest layer present. <b>Self-memories</b> are the looser relational insights she
-      writes over time. You're the owner here, so you can edit anything — including core canon
-      (the conversation-only restriction exists to keep untrusted data out, not you). Changes
-      apply on the cascade's next connection.</div>
+      (declared, always in the prompt) across depth layers — <i>core</i> (innate canon, locked:
+      her grounding and effectively part of her values), <i>compensated</i> (characteristic
+      adaptations: learned, situational ways a core trait gets expressed), <i>surface</i> (how
+      she's being for now). An adaptation never replaces the core it grew from — it is always
+      cast from it ("curious — expressed as patient and unhurried when he's debugging"), so the
+      grounding stays present in what she enacts and <i>revert to core</i> always leads back.
+      Adaptations need a core parent and a context, can't invert what they express, and can't
+      touch values or boundaries — that's what keeps her able to disagree. <b>Self-memories</b>
+      are the looser relational insights she writes over time. You're the owner here, so you can
+      edit anything — including core canon (the conversation-only restriction exists to keep
+      untrusted data out, not you). Changes apply on the cascade's next connection.</div>
     <h3 style="margin:16px 0 6px">Inner state <span class="muted">— her current mood, as one evolving line</span></h3>
     <div id="selfState"></div>
     <h3 style="margin:18px 0 6px">Character traits</h3>
@@ -1124,14 +1129,43 @@ function renderSelf() {
   renderSelfState();
   const box = document.getElementById('selfTraits'); box.innerHTML = '';
   const attrs = selfData.attributes || [];
+  // what she actually enacts — each adaptation shown cast from its core
+  const presented = selfData.presented || [];
+  if (presented.length) {
+    const p = document.createElement('div'); p.className = 'card';
+    p.style.cssText = 'padding:8px 10px;margin-bottom:8px';
+    p.innerHTML = '<div class="muted" style="text-transform:uppercase;font-size:11px;letter-spacing:.04em;margin-bottom:4px">presented — what she enacts</div>'
+      + presented.map(t => `<div class="mem-meta">${escHtml(t)}</div>`).join('');
+    box.appendChild(p);
+  }
+  const byCore = {};
+  attrs.filter(a => a.layer === 'compensated')
+       .forEach(a => { const k = a.derived_from || a.key; (byCore[k] = byCore[k] || []).push(a); });
   for (const layer of LAYERS) {
     const inLayer = attrs.filter(a => a.layer === layer);
     if (!inLayer.length) continue;
     const h = document.createElement('div'); h.className = 'muted';
     h.style.cssText = 'margin:8px 0 4px;text-transform:uppercase;font-size:11px;letter-spacing:.04em';
-    h.textContent = layer + (layer === 'core' ? ' · canon' : '');
+    h.textContent = layer === 'core' ? 'core · canon (locked — her grounding)'
+      : layer === 'compensated' ? 'adaptations · learned, situational, always cast from a core trait'
+      : layer;
     box.appendChild(h);
-    inLayer.forEach(a => box.appendChild(traitRow(a)));
+    inLayer.forEach(a => {
+      // an adaptation carries the core's wording, so the panel shows the grounding
+      if (layer === 'compensated') {
+        const core = attrs.find(x => x.layer === 'core' && x.key === (a.derived_from || a.key));
+        if (core) a = Object.assign({}, a, { core_value: core.value });
+      }
+      box.appendChild(traitRow(a));
+      if (layer === 'core' && (byCore[a.key] || []).length) {
+        const n = byCore[a.key].length;
+        const r = document.createElement('div'); r.className = 'mem-meta';
+        r.style.cssText = 'margin:-4px 0 8px 10px';
+        r.innerHTML = `${n} adaptation${n>1?'s':''} grown over this — `
+          + `<a href="#" onclick="revertTrait('${escAttr(a.key)}');return false">revert to core</a>`;
+        box.appendChild(r);
+      }
+    });
   }
   if (!attrs.length) box.innerHTML = '<div class="muted">No traits yet — seeded from the persona on her next connect, or add one.</div>';
   if (newTrait) box.appendChild(traitRow({ _new: true, facet: 'trait', layer: 'core' }));
@@ -1163,29 +1197,52 @@ async function saveSelfState(btn) {
 function traitRow(a) {
   const row = document.createElement('div'); row.className = 'card'; row.style.padding = '8px 10px';
   const opts = LAYERS.map(l => `<option value="${l}"${a.layer===l?' selected':''}>${l}</option>`).join('');
+  const adapt = a.layer === 'compensated';
+  const modes = ['expresses','compensates'].map(m =>
+    `<option value="${m}"${a.mode===m?' selected':''}>${m}</option>`).join('');
   row.innerHTML = `
     <div class="row" style="align-items:end;gap:8px">
       <div style="flex:0 0 140px"><label>Trait (key)</label><input data-f="key" value="${escAttr(a.key||'')}" placeholder="e.g. extraversion"></div>
       <div style="flex:1"><label>Value</label><input data-f="value" value="${escAttr(a.value||'')}" placeholder="how she is on this"></div>
-      <div style="flex:0 0 120px"><label>Layer</label><select data-f="layer">${opts}</select></div>
+      <div style="flex:0 0 120px"><label>Layer</label><select data-f="layer" onchange="renderSelfAdaptFields(this)">${opts}</select></div>
       <div style="flex:0 0 70px"><label>Locked</label><input data-f="locked" type="checkbox" ${a.locked?'checked':''} style="width:auto"></div>
       <input data-f="facet" type="hidden" value="${escAttr(a.facet||'trait')}">
       <button class="btn" onclick="saveTrait(this)">Save</button>
       ${a._new ? '' : `<button class="btn danger" onclick="deleteTrait(${a.id})">✕</button>`}
     </div>
-    <div class="mem-meta">${a._new ? '<i>new trait</i>' : `${escHtml(a.facet||'trait')} · provenance ${escHtml(a.provenance||'—')}${a.confidence!=null?` · confidence ${a.confidence}`:''}`}</div>
+    <div class="row adaptfields" style="align-items:end;gap:8px;margin-top:6px;${adapt?'':'display:none'}">
+      <div style="flex:0 0 140px"><label>Grows from</label><input data-f="derived_from" value="${escAttr(a.derived_from||'')}" placeholder="a core trait key"></div>
+      <div style="flex:1"><label>When (context)</label><input data-f="context" value="${escAttr(a.context||'')}" placeholder="the situation it applies to"></div>
+      <div style="flex:0 0 130px"><label>Mode</label><select data-f="mode">${modes}</select></div>
+    </div>
+    <div class="mem-meta">${a._new ? '<i>new trait</i>' : `${escHtml(a.facet||'trait')} · provenance ${escHtml(a.provenance||'—')}${a.confidence!=null?` · confidence ${a.confidence}`:''}`}${
+      adapt && a.core_value ? ` · <b>cast from</b> ${escHtml(a.core_value)}` : ''}</div>
     <span class="status"></span>`;
   return row;
+}
+function renderSelfAdaptFields(sel) {
+  const c = sel.closest('.card'), f = c.querySelector('.adaptfields');
+  if (f) f.style.display = sel.value === 'compensated' ? '' : 'none';
 }
 async function saveTrait(btn) {
   const c = btn.closest('.card'), g = f => c.querySelector(`[data-f="${f}"]`);
   const body = { facet: g('facet').value || 'trait', key: g('key').value.trim(),
                  value: g('value').value.trim(), layer: g('layer').value,
                  locked: g('locked').checked };
+  if (body.layer === 'compensated') {
+    body.derived_from = g('derived_from').value.trim();
+    body.context = g('context').value.trim();
+    body.mode = g('mode').value;
+  }
   if (!body.key) return flash(c.querySelector('.status'), false, 'needs a trait key');
   const d = await (await fetch('/api/self/attribute', {method:'POST', body: JSON.stringify(body)})).json();
   if (d.ok) { newTrait = false; loadSelf(); flash(document.getElementById('selfStatus'), true, 'saved ✓'); }
   else flash(c.querySelector('.status'), false, 'error: ' + (d.error||''));
+}
+async function revertTrait(key) {
+  if (!confirm(`Drop the adaptations grown over "${key}"? She falls back to the core trait; history is kept.`)) return;
+  await fetch('/api/self/revert', {method:'POST', body: JSON.stringify({key})});
+  loadSelf();
 }
 async function deleteTrait(id) {
   if (!confirm('Delete this trait?')) return;
