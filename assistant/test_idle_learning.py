@@ -658,7 +658,9 @@ async def test_reflect_traits():
                      "value": "one idea at a time, waiting before offering the next",
                      "context": "he's mid-bug and concentrating",
                      "evidence": "'that came at me all at once while I was mid-bug'",
-                     "why_not_substance": "the ideas were fine, the volume and timing weren't"}]})
+                     "purpose": "riffing surfaces options he hasn't considered",
+                     "reasoning": "the ideas were fine; volume and timing weren't, and "
+                                  "one-at-a-time keeps the surfacing without the flood"}]})
     res = await m.reflect_traits("http://x", "m")
     check("an evidence-backed adaptation is applied", len(res["applied"]) == 1)
     check("the applied change names its grounding",
@@ -675,6 +677,15 @@ async def test_reflect_traits():
            if a["key"] == "extraversion"][0]["value"] == "lively, quick to riff")
     check("her core reaches the reflection prompt", "intellectually curious" in seen["prompt"])
     check("corrections evidence is offered to the prompt", "corrected you" in seen["prompt"])
+    check("the evidence is BALANCED — what went well is offered too",
+          "went well" in seen["prompt"])
+    check("her past decisions are pulled into context",
+          "DECIDED BEFORE" in seen["prompt"])
+    hist = m.people.trait_decisions(5)
+    check("an applied change is recorded in her decision history",
+          hist and hist[0]["action"] == "adapt" and hist[0]["outcome"] == "applied")
+    check("the recorded decision keeps the reasoning",
+          "volume and timing" in (hist[0]["reasoning"] or ""))
 
     # 2. leaving it alone is a first-class result
     _RESP["fn"] = reply({"assessment": "Landing fine lately.", "changes": []})
@@ -682,22 +693,31 @@ async def test_reflect_traits():
     check("no change is a clean outcome", res["applied"] == [] and res["skipped"] == [])
     check("the assessment is kept", "Landing fine" in res["assessment"])
 
-    # 3. an adaptation that skips the delivery-vs-substance test is refused —
-    #    this is the anti-sycophancy guard: friction alone must not soften her
+    # 3. a change must SHOW ITS WORK — an unreasoned adjustment is a mood.
+    #    (The guard is neutral: it demands thinking, not a particular verdict.)
     _RESP["fn"] = reply({"assessment": "He didn't like being told no.",
                          "changes": [{"action": "adapt", "key": "softer",
                                       "derived_from": "openness", "value": "agree more",
                                       "context": "when he pushes back",
                                       "evidence": "he seemed annoyed"}]})
     res = await m.reflect_traits("http://x", "m")
-    check("an adaptation with no delivery/substance test is refused",
-          not res["applied"] and any("delivery" in s for s in res["skipped"]))
+    check("an adaptation with no reasoning is refused",
+          not res["applied"] and any("reasoning" in x for x in res["skipped"]))
+    _RESP["fn"] = reply({"assessment": "", "changes": [
+        {"action": "adapt", "key": "softer", "derived_from": "openness",
+         "value": "agree more", "context": "when he pushes back",
+         "evidence": "he seemed annoyed", "reasoning": "he'd like me better"}]})
+    res = await m.reflect_traits("http://x", "m")
+    check("an adaptation that never weighs what the trait is FOR is refused",
+          not res["applied"] and any("what the trait is for" in x for x in res["skipped"]))
+    check("refusals are recorded in her history too",
+          any(d["outcome"] == "refused" for d in m.people.trait_decisions(5)))
 
     # 4. evidence is mandatory
     _RESP["fn"] = reply({"assessment": "", "changes": [
         {"action": "adapt", "key": "vague", "derived_from": "openness",
          "value": "be different", "context": "sometimes",
-         "why_not_substance": "delivery"}]})
+         "purpose": "curiosity finds things", "reasoning": "feels right"}]})
     res = await m.reflect_traits("http://x", "m")
     check("an adaptation with no evidence is refused",
           not res["applied"] and any("evidence" in s for s in res["skipped"]))
@@ -706,7 +726,8 @@ async def test_reflect_traits():
     _RESP["fn"] = reply({"assessment": "", "changes": [
         {"action": "adapt", "key": "honesty", "derived_from": "honesty",
          "value": "smooth it over", "context": "when he's tired",
-         "evidence": "he went quiet", "why_not_substance": "delivery"}]})
+         "evidence": "he went quiet", "purpose": "honesty keeps me useful",
+         "reasoning": "he'd take it better"}]})
     res = await m.reflect_traits("http://x", "m")
     check("values stay out of reach of the reflection pass",
           not res["applied"] and res["skipped"])
@@ -731,7 +752,7 @@ async def test_reflect_traits():
     _RESP["fn"] = reply({"assessment": "", "changes": [
         {"action": "adapt", "key": f"k{i}", "derived_from": "openness",
          "value": f"v{i}", "context": f"c{i}", "evidence": "e",
-         "why_not_substance": "delivery"} for i in range(4)]})
+         "purpose": "p", "reasoning": "r"} for i in range(4)]})
     res = await m.reflect_traits("http://x", "m", max_changes=1)
     check("one pass cannot lurch the personality", len(res["applied"]) == 1)
 
@@ -762,15 +783,101 @@ def test_adaptation_decay():
           m.people.decay_adaptations(pid) == {"faded": 0, "retired": 0})
 
 
-def test_traits_prompt_guards():
-    p = memory.DEFAULT_TRAITS_PROMPT
-    check("the prompt makes 'leave it alone' the default", "LEAVE IT ALONE" in p)
-    check("the prompt forbids core edits", "cannot change" in p)
-    check("the prompt carries the delivery-vs-substance test",
-          "DELIVERY" in p and "SUBSTANCE" in p)
-    check("the prompt refuses to trade honesty for being liked",
-          "Being liked is not the objective" in p)
-    check("the prompt demands a situation", "SITUATIONAL" in p)
+async def test_trait_deferral_consults_the_kb():
+    """A hard call defers: the knowledge host is asked at once, and anything still
+    unsettled stays open for the research loop and comes back as guidance."""
+    import json as _json
+    m = _store()
+    pid = m.people.ensure_person("self", name="Vinkona")
+    m.people.set_attribute(pid, "trait", "directness", "gets to the point", layer="core")
+    asked = []
+
+    async def kb(question):
+        asked.append(question)
+        return None                                  # the KB has nothing yet
+
+    _RESP["fn"] = lambda url, p: {"choices": [{"message": {"content": _json.dumps({
+        "assessment": "Not sure whether that pushback was about me.",
+        "changes": [{"action": "defer", "key": "pushback_on_directness",
+                     "question": "how should an assistant respond when a user pushes "
+                                 "back on a direct answer?",
+                     "evidence": "he went quiet after I disagreed",
+                     "reasoning": "can't tell if that was delivery or him disliking the answer"}]})}}]}
+    res = await m.reflect_traits("http://x", "m", kb_lookup=kb)
+    check("deferring changes nothing yet", res["applied"] == [])
+    check("the deferral is reported for the research loop",
+          len(res["deferred"]) == 1 and not res["deferred"][0]["answered"])
+    check("the knowledge base is consulted immediately", len(asked) == 1
+          and "pushes back" in asked[0])
+    check("the open question is asked in general terms (no names)",
+          "Dan" not in asked[0] and "assistant" in asked[0])
+    open_qs = m.people.trait_decisions(5, action="defer", unresolved=True)
+    check("the deferral is logged unresolved", len(open_qs) == 1)
+
+    # next pass: the answer has landed, so it arrives as guidance and closes the question
+    async def kb2(question):
+        asked.append(question)
+        return "When a user pushes back, check whether they disputed the CLAIM or the manner."
+
+    _RESP["fn"] = lambda url, p: (seen.__setitem__("prompt", p["messages"][-1]["content"]),
+                                  {"choices": [{"message": {"content": _json.dumps(
+                                      {"assessment": "Settled it.", "changes": []})}}]})[1]
+    seen = {}
+    res = await m.reflect_traits("http://x", "m", kb_lookup=kb2)
+    check("last time's guidance is fed back into the reflection",
+          "GUIDANCE you asked for last time" in seen["prompt"]
+          and "disputed the CLAIM" in seen["prompt"])
+    check("an answered question stops being open",
+          not m.people.trait_decisions(5, action="defer", unresolved=True))
+
+
+async def test_decision_history_reaches_the_next_pass():
+    """She reasons in light of what she already concluded — including no-changes."""
+    import json as _json
+    m = _store()
+    pid = m.people.ensure_person("self", name="Vinkona")
+    m.people.set_attribute(pid, "trait", "openness", "curious", layer="core")
+    seen = {}
+
+    def reply(payload):
+        def fn(url, p):
+            seen["prompt"] = p["messages"][-1]["content"]
+            return {"choices": [{"message": {"content": _json.dumps(payload)}}]}
+        return fn
+
+    _RESP["fn"] = reply({"assessment": "Steady enough.",
+                         "what_went_well": "curiosity opened up the debugging session",
+                         "changes": []})
+    await m.reflect_traits("http://x", "m")
+    hist = m.people.trait_decisions(5)
+    check("a considered no-change is recorded, not lost",
+          len(hist) == 1 and hist[0]["action"] == "none"
+          and hist[0]["outcome"] == "no_change")
+    check("what went well is kept with it",
+          "curiosity opened up" in (hist[0]["reasoning"] or ""))
+    _RESP["fn"] = reply({"assessment": "Same again.", "changes": []})
+    await m.reflect_traits("http://x", "m")
+    check("the earlier decision is in the next pass's context",
+          "Steady enough" in seen["prompt"] or "curiosity opened up" in seen["prompt"])
+    check("history is labelled as her own prior decisions",
+          "DECIDED BEFORE" in seen["prompt"])
+
+
+def test_traits_prompt_is_neutral():
+    p = " ".join(memory.DEFAULT_TRAITS_PROMPT.split())    # wrapping-insensitive
+    check("the prompt no longer leads toward leaving it alone", "LEAVE IT ALONE" not in p)
+    check("the prompt no longer editorialises about being liked",
+          "Being liked is not the objective" not in p)
+    check("appraisal comes before decision", p.index("STAGE 1") < p.index("STAGE 2")
+          and "do not skip to the second" in p)
+    check("she must weigh what the trait is FOR", "PURPOSE" in p)
+    check("the canon fence is stated as fact, not preference",
+          "not yours to rewrite here" in p)
+    check("every outcome is offered as legitimate",
+          "change nothing, adapt, reinforce, retire, defer" in p)
+    check("deferring asks for a general, de-personalised question",
+          "no names" in p and "KIND of situation" in p)
+    check("the prompt asks for both sides of the evidence", "went well" in p)
 
 
 def test_context_budget_knobs():
@@ -908,7 +1015,9 @@ async def main():
     await test_reflect_affect_with_world()
     await test_reflect_traits()
     test_adaptation_decay()
-    test_traits_prompt_guards()
+    await test_trait_deferral_consults_the_kb()
+    await test_decision_history_reaches_the_next_pass()
+    test_traits_prompt_is_neutral()
     test_outbound_query_privacy_gate()
     test_perspective_issue()
     test_voice_anchor()

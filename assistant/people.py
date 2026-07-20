@@ -91,6 +91,21 @@ class PeopleStore:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             text TEXT, source TEXT, created_at REAL
         );
+        -- Trait-reflection history: what she has DECIDED about her own character and
+        -- why — including the passes where she changed nothing, the ones a guard
+        -- refused, and the questions she deferred.  Read back into the next
+        -- reflection so a decision is made in the light of the ones before it
+        -- (without this she can oscillate: adapt, retire, re-adapt the same thing).
+        CREATE TABLE IF NOT EXISTS trait_reflections (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at REAL, assessment TEXT,
+            action TEXT,            -- adapt | reinforce | retire | none | defer
+            key TEXT, derived_from TEXT, value TEXT, context TEXT,
+            evidence TEXT, reasoning TEXT,
+            outcome TEXT,           -- applied | refused | deferred | no_change
+            detail TEXT,            -- the guard's words, or the deferred question
+            resolved INTEGER DEFAULT 0
+        );
         """)
         # adaptation columns on a table created before they existed (idempotent)
         cols = {r["name"] for r in self.db.execute(
@@ -317,6 +332,40 @@ class PeopleStore:
         if rows:
             self.db.commit()
         return len(rows)
+
+    # ── trait-reflection history (what she has decided about herself, and why) ──
+    def log_trait_decision(self, *, assessment: str = "", action: str = "none",
+                           key: str = "", derived_from: str = "", value: str = "",
+                           context: str = "", evidence: str = "", reasoning: str = "",
+                           outcome: str = "no_change", detail: str = "") -> int:
+        cur = self.db.execute(
+            "INSERT INTO trait_reflections(created_at,assessment,action,key,derived_from,"
+            "value,context,evidence,reasoning,outcome,detail,resolved) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,0)",
+            (time.time(), assessment[:400], action, key[:120], derived_from[:120],
+             value[:400], context[:300], evidence[:400], reasoning[:600],
+             outcome, detail[:400]))
+        self.db.commit()
+        return cur.lastrowid
+
+    def trait_decisions(self, limit: int = 12, *, action: str | None = None,
+                        outcome: str | None = None, unresolved: bool = False) -> list[dict]:
+        """Recent decisions about her own character, newest first."""
+        q = "SELECT * FROM trait_reflections WHERE 1=1"
+        args: list = []
+        if action:
+            q += " AND action=?"; args.append(action)
+        if outcome:
+            q += " AND outcome=?"; args.append(outcome)
+        if unresolved:
+            q += " AND resolved=0"
+        q += " ORDER BY id DESC LIMIT ?"
+        args.append(int(limit))
+        return [dict(r) for r in self.db.execute(q, args)]
+
+    def resolve_trait_decision(self, decision_id: int) -> None:
+        self.db.execute("UPDATE trait_reflections SET resolved=1 WHERE id=?", (decision_id,))
+        self.db.commit()
 
     def decay_adaptations(self, person_id: str, *, older_than_s: float = 1209600,
                           amount: float = 0.1, floor: float = 0.25) -> dict:

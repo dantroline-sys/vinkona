@@ -1290,11 +1290,37 @@ async def main():
                             if d["faded"] or d["retired"]:
                                 _log(f"adaptations decayed: {d['faded']} faded, "
                                      f"{d['retired']} retired")
+                    # A hard call gets to consult the knowledge host rather than being
+                    # guessed at: kb_ask/kb_search first (Dan's corpus is rich in
+                    # exactly this material), and anything still unsettled becomes a
+                    # de-personalised research question, answered by the next pass.
+                    async def _kb_lookup(question: str):
+                        if not tcfg.get("consult_kb", True):
+                            return None
+                        got = await kb_source(tools, question, max_chars=1500, max_items=4)
+                        return got[0] if got else None
+
                     res = await memory.reflect_traits(
                         big["url"], big["model"], prompt=tcfg.get("prompt"),
                         recent_turns=int(tcfg.get("recent_turns", 40)),
-                        max_changes=int(tcfg.get("max_changes", 1)))
+                        max_changes=int(tcfg.get("max_changes", 1)),
+                        kb_lookup=_kb_lookup,
+                        history=int(tcfg.get("history", 8)))
                     memory.set_state("traits.last_run", str(time.time()))
+                    # Unanswered deferrals go round the normal research loop — the
+                    # question is already general by construction (the prompt requires
+                    # it), and the privacy guard masks anything that slipped through.
+                    unanswered = [d for d in res.get("deferred", []) if not d["answered"]]
+                    if unanswered and tcfg.get("research_deferred", True):
+                        cands = [{"topic": d["key"][:80], "query": d["question"],
+                                  "reason": "an open question about my own character"}
+                                 for d in unanswered]
+                        try:
+                            memory.enqueue_research("self-reflection", cands)
+                            _log("personality: deferred — queued research on "
+                                 + ", ".join(d["key"] for d in unanswered))
+                        except Exception as e:
+                            _log(f"could not queue deferred trait question: {e}")
                     if res.get("applied") or res.get("skipped"):
                         trace.write(kind="traits", source="idle",
                                     assessment=res.get("assessment", ""),

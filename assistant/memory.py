@@ -471,53 +471,72 @@ Reply with ONLY JSON: {"topics": [ {"topic":"short subject line",
 An empty list is fine when nothing generalizes.\
 """
 
-# Trait reflection (the idle personality pass): between conversations Vinkona reviews
-# how she actually landed and decides — PURPOSEFULLY, from evidence — whether to adjust
-# how a core trait gets expressed.  She writes only CHARACTERISTIC ADAPTATIONS
-# (people.adapt): situational expressions cast from a locked core trait, never the core
-# itself, which stays canon and is what she falls back to.
+# Trait reflection (the idle personality pass): between conversations Vinkona appraises
+# how she has been LANDING and decides whether how a core trait gets expressed should
+# change.  She writes only CHARACTERISTIC ADAPTATIONS (people.adapt): situational
+# expressions cast from a locked core trait, never the core itself, which stays canon.
 #
-# The failure mode this prompt exists to prevent: "friction ⇒ soften" turns her into a
-# mirror.  So the discriminating question is DELIVERY vs SUBSTANCE — was the friction a
-# failure of HOW she said it (adapt), or was she right and it stung (leave it alone,
-# that trait is working)?  "No change" is the expected answer most of the time and is
-# stated first so it never reads as a failed run.
-# (Overridable via config affect.traits_prompt.)
+# Design note — the question is deliberately NEUTRAL.  An earlier version led the
+# witness ("leave it alone is the usual answer", "being liked is not the objective"),
+# which produces a rationalised verdict rather than an appraisal.  Objectivity is
+# instead pursued structurally:
+#   * BALANCED EVIDENCE — what went WELL is offered alongside what went badly (a diet
+#     of corrections alone drifts toward appeasement however the question is worded).
+#   * TWO STAGES — appraise what happened, THEN decide; never the reverse.
+#   * PURPOSE FIRST — she must say what the trait is FOR before modulating it, so the
+#     cost of softening it is in view rather than implicit.
+#   * HISTORY — what she has decided before (including refusals and no-changes) is in
+#     context, so she doesn't oscillate.
+#   * DEFER — "I don't have enough to decide well" is a first-class outcome that asks
+#     the knowledge base, then queues research, rather than forcing a shallow call.
+# The only non-negotiable is the canon fence, which is a fact about the system rather
+# than a thumb on the scale: values/boundaries and the core itself are not hers to
+# rewrite here.  (Overridable via config affect.traits.prompt.)
 DEFAULT_TRAITS_PROMPT = """\
-You are Vinkona, alone between conversations, thinking honestly about how you've been
-landing with this person — the way someone reviews their own conduct, not to feel bad
-about it but to work out whether anything about how they show up should change.
+You are Vinkona, alone between conversations, appraising how you have been landing with
+this person and deciding whether anything about how you show up should change.
 
-You are given your CORE character (locked canon — who you fundamentally are), any
-ADAPTATIONS you've already grown over those core traits, and evidence: recent
-exchanges, and moments the user corrected you.
+You are given your CORE character (locked canon), the ADAPTATIONS you have grown over
+those core traits, what you have DECIDED BEFORE about your own character, evidence of
+how recent exchanges went — both the ones that went well and the ones that did not —
+and any guidance you asked for last time.
 
-You may propose ONLY adaptations: a situational way one of your CORE traits gets
-expressed. You cannot change, soften, or overwrite a core trait — that is who you are,
-and it is what you fall back to. An adaptation says "in THIS kind of situation, that
-trait of mine is better expressed like THIS".
+What you may change: only an ADAPTATION — a situational way one of your CORE traits
+gets expressed ("in THIS kind of situation, that trait of mine is better expressed like
+THIS"). The core traits themselves, and your values and boundaries, are not yours to
+rewrite here; they are what you fall back to, and changing them is a conversation to
+have with the user, not a decision to take alone.
 
-Think it through in this order:
-1. LEAVE IT ALONE is the usual answer. Personality shouldn't lurch after every rough
-   exchange. Propose nothing unless the evidence is specific and you can point at it.
-2. If something did land badly, name what actually happened — the exchange, what you
-   did, how it went. Vague dissatisfaction is not evidence.
-3. Then ask the DECIDING question: was that a failure of DELIVERY or of SUBSTANCE?
-   - DELIVERY — you were right but clumsy, mistimed, too much at once, too breezy for
-     a serious moment, too slow to get to the point: that is worth an adaptation.
-   - SUBSTANCE — you told the truth, disagreed, or held a boundary, and it stung
-     BECAUSE it was true: leave it alone. Do NOT adapt toward being easier to hear at
-     the cost of being honest or useful. Being liked is not the objective.
-   If you cannot tell which it was, leave it alone.
-4. An adaptation must be SITUATIONAL. "when he's deep in a hard bug", "when he asks
-   for a decision rather than options". If it applies always, it is not an adaptation
-   and you must not propose it.
-5. Check what you already have. If an existing adaptation covers it, say so and
-   reinforce it rather than adding a near-duplicate. If one has stopped fitting — the
-   situation passed, or it made things worse — retire it.
+Work in two stages, and do not skip to the second.
+
+STAGE 1 — APPRAISE. Set out what actually happened, as evenly as you can:
+  - Where did an exchange go well, and which of your traits was doing that work?
+  - Where did one go badly, and what specifically happened — what you did, when, and
+    how they responded? Name the exchange. Vague dissatisfaction is not evidence.
+  - Was the difficulty about you at all? Sometimes a rough exchange is someone having a
+    bad day, or a hard subject, and says nothing about how you should be.
+
+STAGE 2 — DECIDE, one consideration at a time:
+  - PURPOSE: what is the core trait FOR — what does it accomplish when it works? State
+    that before you propose expressing it differently, and weigh what would be lost.
+  - COST: if the friction came from you being right — telling the truth, disagreeing,
+    holding a boundary — then expressing it more softly may cost the very thing the
+    trait is for. If the friction came from timing, volume, tone or clumsiness, that
+    cost is not incurred.
+  - FIT: an adaptation is SITUATIONAL. If what you are proposing would apply always,
+    it is not an adaptation and does not belong here.
+  - PRECEDENT: check what you decided before. If you already have an adaptation
+    covering this, reinforce it rather than adding a near-duplicate. If you keep
+    revisiting the same question, say so — that is worth noticing in itself.
+  - SUFFICIENCY: if this is a genuinely difficult call and you cannot settle it from
+    what is in front of you, DEFER and say what you would need to know. That is a
+    better answer than a confident guess.
+
+Any of these is a legitimate result: change nothing, adapt, reinforce, retire, defer.
 
 Reply with ONLY JSON: {
-  "assessment": "one honest sentence about how you've been landing",
+  "assessment": "one honest sentence on how you have been landing",
+  "what_went_well": "where a trait of yours did its job, and which trait",
   "changes": [
     {"action": "adapt",
      "key": "short name for this way of being",
@@ -525,15 +544,21 @@ Reply with ONLY JSON: {
      "mode": "expresses" | "compensates",
      "value": "how that trait is better expressed here, in plain words",
      "context": "the situation it applies to",
-     "evidence": "the specific exchange or correction that showed you this",
-     "why_not_substance": "why this was delivery, not you being right and it stinging"},
+     "purpose": "what that core trait is FOR when it works",
+     "evidence": "the specific exchange that showed you this",
+     "reasoning": "why this is worth doing, and what it costs"},
     {"action": "reinforce", "key": "<existing adaptation key>",
-     "evidence": "where it proved itself"},
+     "evidence": "where it proved itself", "reasoning": "why it is holding up"},
     {"action": "retire", "key": "<existing adaptation key>",
-     "evidence": "why it no longer fits"}
+     "evidence": "why it no longer fits", "reasoning": "what changed"},
+    {"action": "defer", "key": "short name for the open question",
+     "question": "what you would need to know, asked in general terms — about how "
+                 "an assistant should handle this KIND of situation, with no names "
+                 "or personal details",
+     "evidence": "what raised it", "reasoning": "why you cannot settle it yet"}
   ]
 }
-An empty "changes" list is a good outcome — most reflections should produce one.\
+An empty "changes" list is a legitimate outcome; so is a single one.\
 """
 
 # Idle memory consolidation: the big LM reviews a small group of related
@@ -1648,37 +1673,66 @@ class MemoryStore:
 
     async def reflect_traits(self, big_url: str, big_model: str, *,
                              prompt: str | None = None, recent_turns: int = 40,
-                             max_changes: int = 1) -> dict:
-        """Idle: Vinkona reviews how she's been LANDING and purposefully adjusts how her
-        core traits get expressed — the personality pass.
+                             max_changes: int = 1, kb_lookup=None,
+                             history: int = 8) -> dict:
+        """Idle: Vinkona appraises how she's been LANDING and decides whether how a core
+        trait gets expressed should change — the personality pass.
 
         She may only write characteristic adaptations (people.adapt): situational
         expressions cast from a locked core trait.  The core itself is never touched
         here — canon changes stay conversation-only and confirmed, so an idle pass can
-        never quietly rewrite who she is.  Everything it does write is capped
-        (`max_changes` per pass), stamped provenance='reflection' (filterable and
-        revertable in the Self tab), and reversible.
+        never quietly rewrite who she is.  Everything written is capped (`max_changes`
+        per pass), stamped provenance='reflection', and reversible.
 
-        Returns {assessment, applied: [...], skipped: [...]} — `skipped` carries the
-        guard's own words, so a rejected self-adjustment is visible rather than silent."""
+        Objectivity is pursued structurally rather than by leading the question:
+          * evidence is BALANCED — how exchanges went well is offered beside the
+            corrections (a diet of complaints drifts toward appeasement however
+            neutrally you word the prompt);
+          * her own DECISION HISTORY is in context, including refusals, no-changes and
+            open questions, so she reasons in light of what she already concluded
+            instead of oscillating;
+          * a change must show its work (evidence + reasoning), which is a demand for
+            thinking rather than for a particular verdict;
+          * DEFER is a first-class outcome: `kb_lookup(question)` (the knowledge host)
+            is consulted at once, and anything still unsettled is logged unresolved for
+            the caller to turn into a research question — so a hard call is answered
+            with acquired knowledge next pass rather than guessed at now.
+
+        `kb_lookup` is an async callable (question -> text or None).  Returns
+        {assessment, applied, skipped, deferred} — `skipped` carries the guard's own
+        words, so a rejected self-adjustment is visible rather than silent."""
+        empty = {"assessment": "", "applied": [], "skipped": [], "deferred": []}
         s = self.people.by_kind("self")
         if not s:
-            return {"assessment": "", "applied": [], "skipped": []}
+            return empty
         pid = s["id"]
         core = [a for a in self.people.attributes(pid, layer="core")
                 if a["facet"] not in UNADAPTABLE_FACETS]
         if not core:
-            return {"assessment": "", "applied": [], "skipped": []}   # nothing to ground in
+            return empty                                  # nothing to ground in
         core_txt = "\n".join(f"- {a['key']}: {a['value']}" for a in core)
         adapts = self.people.adaptations(pid)
         adapt_txt = "\n".join(
             f"- {a['key']}: {a['value']}  (from {a.get('derived_from') or a['key']}, "
             f"when {a.get('context') or '—'}, confidence {a.get('confidence') or 0:.2f})"
             for a in adapts) or "(none yet)"
+        # What she has concluded before — including the passes that changed nothing and
+        # the ones a guard refused.  Without this she can re-litigate the same question
+        # every cycle, or oscillate between adapting and retiring the same way of being.
+        past = self.people.trait_decisions(history)
+        past_txt = "\n".join(
+            f"- {time.strftime('%Y-%m-%d', time.localtime(d['created_at'] or 0))} "
+            f"{d['action']}/{d['outcome']}"
+            + (f" [{d['key']}]" if d["key"] else "")
+            + (f": {d['reasoning'] or d['detail'] or d['assessment']}"[:200])
+            for d in past) or "(nothing decided yet)"
+        # Answers that came back for questions she deferred last time — the loop that
+        # makes a hard call resolvable instead of merely postponed.
+        open_qs = self.people.trait_decisions(6, action="defer", unresolved=True)
         log = self.recent_logs(recent_turns)
         convo = "\n".join(f"{r['role'].upper()}: {r['text']}" for r in log) \
             or "(no recent conversations)"
-        # Corrections are the sharpest evidence of landing badly — read forward from a
+        # Corrections: sharpest evidence of landing badly — read forward from a
         # watermark so the same ones don't drive the same adjustment twice.
         try:
             wm = int(self.get_state(self._TRAITS_WM_KEY) or 0)
@@ -1692,51 +1746,126 @@ class MemoryStore:
             f"  you said/did: {r['vinkona_response'] or '(unknown)'}\n"
             f"  they corrected: {r['user_correction']}" for r in crows) \
             or "(no corrections since the last review)"
+        # …and the counterweight: exchanges the user acted on or fed back well about.
+        # Corrections alone are a one-sided record; this is what keeps the appraisal
+        # even-handed at the level of the EVIDENCE, not just the wording.
+        well_txt = "(no positive signals recorded)"
+        try:
+            wrows = self.db.execute(
+                "SELECT query, explicit_feedback, user_acted_on_response, domain "
+                "FROM user_interactions WHERE user_acted_on_response=1 OR "
+                "(explicit_feedback IS NOT NULL AND explicit_feedback != '') "
+                "ORDER BY id DESC LIMIT 10").fetchall()
+            if wrows:
+                well_txt = "\n".join(
+                    f"- asked: {r['query'] or '(unknown)'}"
+                    + (f"  · they acted on it" if r["user_acted_on_response"] else "")
+                    + (f"  · said: {r['explicit_feedback']}" if r["explicit_feedback"] else "")
+                    for r in wrows)
+        except sqlite3.Error:
+            pass
+        guidance = ""
+        if open_qs and kb_lookup:
+            bits = []
+            for d in open_qs[:2]:
+                try:
+                    ans = await kb_lookup(d["detail"] or d["key"])
+                except Exception:
+                    ans = None
+                if ans:
+                    bits.append(f"You asked: {d['detail']}\nWhat came back:\n{str(ans)[:1500]}")
+                    self.people.resolve_trait_decision(d["id"])
+            if bits:
+                guidance = ("\n\nGUIDANCE you asked for last time (use it to settle "
+                            "those questions):\n" + "\n\n".join(bits))
         full = (f"{prompt or DEFAULT_TRAITS_PROMPT}\n\n"
                 f"At most {max_changes} change(s) this time.\n\n"
-                f"YOUR CORE (locked canon — you cannot change these):\n{core_txt}\n\n"
+                f"YOUR CORE (locked canon — not yours to rewrite here):\n{core_txt}\n\n"
                 f"ADAPTATIONS you've already grown:\n{adapt_txt}\n\n"
+                f"What you've DECIDED BEFORE about your own character:\n{past_txt}\n\n"
+                f"Exchanges that went well:\n{well_txt}\n\n"
                 f"Moments they corrected you:\n{corr_txt}\n\n"
-                f"Recent exchanges:\n{convo}")
+                f"Recent exchanges:\n{convo}{guidance}")
         data = await self._chat_json(big_url, big_model, full, think=True)
         if crows:                                     # reviewed either way — no re-driving
             self.set_state(self._TRAITS_WM_KEY, str(crows[-1]["id"]))
-        out = {"assessment": ((data or {}).get("assessment") or "").strip()[:300],
-               "applied": [], "skipped": []}
+        assessment = ((data or {}).get("assessment") or "").strip()[:300]
+        out = {"assessment": assessment, "applied": [], "skipped": [], "deferred": []}
+        changes = [c for c in ((data or {}).get("changes") or []) if isinstance(c, dict)]
+        if not changes:                               # a considered no-change is a result
+            self.people.log_trait_decision(
+                assessment=assessment, action="none", outcome="no_change",
+                reasoning=((data or {}).get("what_went_well") or "").strip())
+            return out
         by_key = {a["key"]: a for a in adapts}
-        for ch in ((data or {}).get("changes") or [])[:max_changes]:
-            if not isinstance(ch, dict):
-                continue
+        for ch in changes[:max_changes]:
             action = (ch.get("action") or "adapt").strip().lower()
             key = (ch.get("key") or "").strip()
             if not key:
                 continue
+            ev = (ch.get("evidence") or "").strip()
+            why = (ch.get("reasoning") or "").strip()
+            common = dict(assessment=assessment, key=key, evidence=ev, reasoning=why)
             try:
-                if action == "reinforce":
+                if action == "defer":
+                    q = (ch.get("question") or "").strip()
+                    if not q:
+                        out["skipped"].append(f"{key}: deferred without saying what it needs")
+                        continue
+                    settled = None
+                    if kb_lookup:                     # ask the knowledge base right away
+                        try:
+                            settled = await kb_lookup(q)
+                        except Exception:
+                            settled = None
+                    self.people.log_trait_decision(
+                        action="defer", outcome="deferred", detail=q, **common)
+                    out["deferred"].append({"key": key, "question": q,
+                                            "answered": bool(settled)})
+                elif action == "reinforce":
                     row = by_key.get(key)
                     if not row:
                         out["skipped"].append(f"{key}: no such adaptation to reinforce")
+                        self.people.log_trait_decision(
+                            action=action, outcome="refused",
+                            detail="no such adaptation", **common)
                         continue
                     self.people.reinforce(row["id"])
+                    self.people.log_trait_decision(action=action, outcome="applied", **common)
                     out["applied"].append({"action": "reinforce", "key": key,
-                                           "evidence": (ch.get("evidence") or "")[:200]})
+                                           "evidence": ev[:200]})
                 elif action == "retire":
                     if key not in by_key:
                         out["skipped"].append(f"{key}: no such adaptation to retire")
+                        self.people.log_trait_decision(
+                            action=action, outcome="refused",
+                            detail="no such adaptation", **common)
                         continue
                     self.people.revert_to_core(pid, key)
+                    self.people.log_trait_decision(action=action, outcome="applied", **common)
                     out["applied"].append({"action": "retire", "key": key,
-                                           "evidence": (ch.get("evidence") or "")[:200]})
+                                           "evidence": ev[:200]})
                 else:
-                    # An adaptation from reflection must show its work: the evidence it
-                    # came from AND why this was delivery rather than her being right.
-                    # Without both, it is a mood, not a considered adjustment.
-                    if not (ch.get("evidence") or "").strip():
+                    # A change must SHOW ITS WORK: the exchange it came from, what the
+                    # trait is for, and why this is worth its cost.  That is a demand
+                    # for thinking, not for a particular answer — an unreasoned
+                    # adjustment is a mood, however plausible it sounds.
+                    if not ev:
                         out["skipped"].append(f"{key}: no evidence cited")
+                        self.people.log_trait_decision(
+                            action=action, outcome="refused", detail="no evidence", **common)
                         continue
-                    if not (ch.get("why_not_substance") or "").strip():
+                    if not why:
+                        out["skipped"].append(f"{key}: no reasoning given")
+                        self.people.log_trait_decision(
+                            action=action, outcome="refused", detail="no reasoning", **common)
+                        continue
+                    if not (ch.get("purpose") or "").strip():
                         out["skipped"].append(
-                            f"{key}: didn't distinguish delivery from substance")
+                            f"{key}: didn't say what the trait is for")
+                        self.people.log_trait_decision(
+                            action=action, outcome="refused",
+                            detail="no trait purpose weighed", **common)
                         continue
                     self.people.adapt(
                         pid, key, (ch.get("value") or "").strip(),
@@ -1744,14 +1873,22 @@ class MemoryStore:
                         derived_from=(ch.get("derived_from") or "").strip(),
                         mode=(ch.get("mode") or "expresses").strip(),
                         provenance="reflection", confidence=0.5)
+                    self.people.log_trait_decision(
+                        action="adapt", outcome="applied",
+                        derived_from=(ch.get("derived_from") or "").strip(),
+                        value=(ch.get("value") or "").strip(),
+                        context=(ch.get("context") or "").strip(),
+                        detail=(ch.get("purpose") or "").strip(), **common)
                     out["applied"].append({
                         "action": "adapt", "key": key,
                         "value": (ch.get("value") or "").strip()[:200],
                         "context": (ch.get("context") or "").strip()[:200],
                         "derived_from": (ch.get("derived_from") or "").strip(),
-                        "evidence": (ch.get("evidence") or "")[:200]})
+                        "evidence": ev[:200]})
             except ValueError as e:               # a guard refused it — say which
                 out["skipped"].append(f"{key}: {e}")
+                self.people.log_trait_decision(
+                    action=action, outcome="refused", detail=str(e), **common)
             except Exception as e:
                 out["skipped"].append(f"{key}: {e}")
         return out

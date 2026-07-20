@@ -620,6 +620,13 @@ DEFAULTS: dict = {
             "interval_s": 86400,                 # at most one pass a day
             "recent_turns": 40,                  # conversation evidence window
             "prompt": None,                      # None → memory.DEFAULT_TRAITS_PROMPT
+            "history": 8,                        # past decisions pulled into context, so a
+                                                 # call is made in light of the earlier ones
+            # A hard call may DEFER: ask the knowledge host (kb_ask/kb_search) at once,
+            # and route anything still unsettled through the normal research loop — the
+            # answer comes back as a card and settles it on a later pass.
+            "consult_kb": True,
+            "research_deferred": True,
             # unreinforced adaptations fade back toward the core (human adaptations are
             # maintained by recurrence); below the floor they retire, history kept
             "decay": True,
