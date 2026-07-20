@@ -450,6 +450,32 @@ async def test_review_corrections_dedups_and_advances_on_empty():
           int(m.get_state("corrections.review_watermark")) == 1)
 
 
+async def test_topic_dedup_catches_rewordings():
+    """The same question asked in different words is the same question — an
+    exact match let it through, and the answer then got researched, exported and
+    distilled twice."""
+    m = _store()
+    m.enqueue_research("idle", [{"topic": "why do sourdough starters stall", "query": "x"}])
+    check("the identical question is caught",
+          m._topic_queued_or_recent("why do sourdough starters stall"))
+    check("a reordering is caught",
+          m._topic_queued_or_recent("sourdough starters: why do they stall"))
+    check("a rewording with the same content words is caught",
+          m._topic_queued_or_recent("what makes sourdough starters stall"))
+    check("a longer restatement is caught",
+          m._topic_queued_or_recent("i want to know what makes sourdough starters "
+                                    "stall in a cold kitchen"))
+    check("a genuinely different question about the same subject is NOT caught",
+          not m._topic_queued_or_recent("which flour gives sourdough the best crust"))
+    check("an unrelated question is not caught",
+          not m._topic_queued_or_recent("how do i prune an apple tree in winter"))
+    # a one-word topic can't be judged this way and must fall back to exact match
+    m.enqueue_research("idle", [{"topic": "blight", "query": "x"}])
+    check("a one-word topic still matches exactly", m._topic_queued_or_recent("Blight"))
+    check("…and doesn't swallow everything else",
+          not m._topic_queued_or_recent("compost"))
+
+
 async def test_learn_frames_untrusted_source():
     m = _store()
     seen = {}
@@ -1029,6 +1055,7 @@ async def main():
     await test_idle_reflect_banks_corrections()
     await test_review_corrections_frames_general_questions()
     await test_review_corrections_dedups_and_advances_on_empty()
+    await test_topic_dedup_catches_rewordings()
     await test_learn_frames_untrusted_source()
     await test_consolidate_merge()
     await test_consolidate_split()

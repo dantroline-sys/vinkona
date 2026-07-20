@@ -95,6 +95,7 @@ except Exception:
     _pron = _ilupn.module_from_spec(_specpn); _specpn.loader.exec_module(_pron)
 
 try:                                    # what she has brought up unprompted, and how it landed
+    import spontaneity as _spon
     from spontaneity import OfferLog
 except Exception:
     import importlib.util as _ilusp
@@ -1654,12 +1655,37 @@ class MemoryStore:
         self.set_state(self._CORR_WM_KEY, str(rows[-1]["id"]))
         return fresh
 
+    # Two questions are the same question when their content words are: an exact
+    # string match let "why do sourdough starters stall" and "what makes
+    # sourdough starters stall" both through, which is how the same answer gets
+    # researched twice, exported twice, and distilled twice downstream.
+    _TOPIC_OVERLAP = 0.8       # of the SHORTER question — a longer restatement counts
+    _TOPIC_MIN_WORDS = 2
+
     def _topic_queued_or_recent(self, topic: str, within_s: float = 14 * 86400) -> bool:
+        since = time.time() - within_s
         row = self.db.execute(
             "SELECT 1 FROM research_queue WHERE lower(topic)=lower(?) AND "
             "(status='pending' OR (status='done' AND updated_at > ?)) LIMIT 1",
-            (topic, time.time() - within_s)).fetchone()
-        return row is not None
+            (topic, since)).fetchone()
+        if row is not None:
+            return True
+        here = _spon.words(topic)
+        if len(here) < self._TOPIC_MIN_WORDS:
+            return False
+        rows = self.db.execute(
+            "SELECT topic FROM research_queue WHERE status='pending' OR "
+            "(status='done' AND updated_at > ?) ORDER BY id DESC LIMIT 400",
+            (since,)).fetchall()
+        for r in rows:
+            other = _spon.words(r["topic"] or "")
+            if len(other) < self._TOPIC_MIN_WORDS:
+                continue
+            shared = len(here & other)
+            if shared >= self._TOPIC_MIN_WORDS and \
+                    shared / float(min(len(here), len(other))) >= self._TOPIC_OVERLAP:
+                return True
+        return False
 
     async def reflect_affect(self, big_url: str, big_model: str, objective: str,
                              prompt: str | None = None, recent_turns: int = 30,
