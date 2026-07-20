@@ -498,7 +498,11 @@ class SelfAdmin:
                     # can show the grounding rather than a detached second self
                     "adaptations": ps.adaptations(s["id"]) if s else [],
                     "presented": [ps._cast(a) for a in ps.effective(s["id"])
-                                  if a["facet"] == "trait"] if s else []}
+                                  if a["facet"] == "trait"] if s else [],
+                    # her reflection record — applied/refused/deferred/no-change, with
+                    # the reasoning.  Collapsed in the panel: it's for perusal and
+                    # debugging, not something to put in the owner's face.
+                    "reflections": ps.trait_decisions(25) if s else []}
         finally:
             c.close()
 

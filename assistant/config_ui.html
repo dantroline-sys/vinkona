@@ -345,6 +345,7 @@
     <div id="selfState"></div>
     <h3 style="margin:18px 0 6px">Character traits</h3>
     <div id="selfTraits"></div>
+    <div id="selfReflections"></div>
     <h3 style="margin:18px 0 6px">Self-memories <span class="muted">(category “self”)</span></h3>
     <div id="selfMems"></div>
   </section>
@@ -1119,7 +1120,7 @@ async function reembedMemory() {
 
 // ── Self (Vinkona's self-authored personality: identity store + self-memories) ─
 const LAYERS = ['core', 'compensated', 'surface'];
-let selfData = { self: null, attributes: [], self_memories: [] };
+let selfData = { self: null, attributes: [], self_memories: [], reflections: [] };
 async function loadSelf() {
   try { selfData = await (await fetch('/api/self')).json(); }
   catch (e) { return flash(document.getElementById('selfStatus'), false, 'load error'); }
@@ -1170,10 +1171,48 @@ function renderSelf() {
   if (!attrs.length) box.innerHTML = '<div class="muted">No traits yet — seeded from the persona on her next connect, or add one.</div>';
   if (newTrait) box.appendChild(traitRow({ _new: true, facet: 'trait', layer: 'core' }));
 
+  renderSelfReflections();
+
   const m = document.getElementById('selfMems'); m.innerHTML = '';
   const mems = selfData.self_memories || [];
   if (!mems.length) m.innerHTML = '<div class="muted">No self-memories yet — she writes these as she reflects.</div>';
   mems.forEach(e => m.appendChild(selfMemCard(e)));
+}
+// Reflection record — every idle personality pass, including the ones that changed
+// nothing and the ones a guard refused.  Collapsed by default: this is for perusal and
+// debugging, not something to sit in the owner's face.
+const REFL_BADGE = { applied: '✓', refused: '✕', deferred: '…', no_change: '—' };
+function renderSelfReflections() {
+  const box = document.getElementById('selfReflections');
+  if (!box) return;
+  const rows = selfData.reflections || [];
+  if (!rows.length) { box.innerHTML = ''; return; }
+  const open = rows.filter(r => r.action === 'defer' && !r.resolved).length;
+  const body = rows.map(r => {
+    const when = r.created_at ? new Date(r.created_at * 1000).toLocaleString() : '';
+    const badge = REFL_BADGE[r.outcome] || '·';
+    const head = `${badge} <b>${escHtml(r.action)}</b>`
+      + (r.key ? ` <code>${escHtml(r.key)}</code>` : '')
+      + (r.derived_from ? ` <span class="muted">from ${escHtml(r.derived_from)}</span>` : '')
+      + ` <span class="muted">· ${escHtml(r.outcome)}${r.action === 'defer' && !r.resolved ? ' · still open' : ''} · ${escHtml(when)}</span>`;
+    const bits = [];
+    if (r.value) bits.push(`<div class="mem-meta">→ ${escHtml(r.value)}${r.context ? ` <span class="muted">(when ${escHtml(r.context)})</span>` : ''}</div>`);
+    if (r.assessment) bits.push(`<div class="mem-meta"><span class="muted">assessment:</span> ${escHtml(r.assessment)}</div>`);
+    if (r.reasoning) bits.push(`<div class="mem-meta"><span class="muted">reasoning:</span> ${escHtml(r.reasoning)}</div>`);
+    if (r.evidence) bits.push(`<div class="mem-meta"><span class="muted">evidence:</span> ${escHtml(r.evidence)}</div>`);
+    if (r.detail) bits.push(`<div class="mem-meta"><span class="muted">${r.outcome === 'refused' ? 'declined because' : r.action === 'defer' ? 'asked' : 'trait is for'}:</span> ${escHtml(r.detail)}</div>`);
+    return `<div class="card" style="padding:8px 10px;margin-bottom:6px">
+      <div style="font-size:13px">${head}</div>${bits.join('')}</div>`;
+  }).join('');
+  box.innerHTML = `<details class="cfg-group" style="margin-top:14px">
+      <summary>Reflection record <span class="muted" style="font-weight:400">— ${rows.length} recent pass${rows.length === 1 ? '' : 'es'}${open ? `, ${open} open question${open === 1 ? '' : 's'}` : ''}</span></summary>
+      <div style="padding:10px 16px 14px">
+        <div class="hint" style="margin-bottom:8px">What she decided about her own character on each idle pass, and why —
+          including the passes that changed nothing (—), the ones a guard declined (✕), and the questions she deferred (…)
+          to the knowledge base or research. Read this to see whether her reasoning is any good; the record is written
+          whether or not anything changed.</div>
+        ${body}
+      </div></details>`;
 }
 function renderSelfState() {
   const box = document.getElementById('selfState'); box.innerHTML = '';

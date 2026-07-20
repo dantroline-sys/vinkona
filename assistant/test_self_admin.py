@@ -84,6 +84,27 @@ def test_view_set_delete():
     check("inner state is stored and read back", v2["state"].startswith("Content"))
     check("inner-state history is exposed", any("Content" in h["text"] for h in v2["state_history"]))
 
+    # the reflection record reaches the panel (collapsed there, but present) —
+    # including the passes that changed nothing and the ones a guard declined
+    c = sqlite3.connect(cfg["memory"]["db_path"]); c.row_factory = sqlite3.Row
+    ps = people.PeopleStore(c)
+    ps.log_trait_decision(assessment="Landing fine.", action="none", outcome="no_change")
+    ps.log_trait_decision(action="adapt", key="softer", outcome="refused",
+                          detail="no reasoning given", evidence="he went quiet")
+    ps.log_trait_decision(action="defer", key="pushback", outcome="deferred",
+                          detail="how should an assistant handle pushback?")
+    c.close()
+    refl = sa.view()["reflections"]
+    check("the reflection record is exposed to the Self tab", len(refl) == 3)
+    check("it is newest-first", refl[0]["action"] == "defer")
+    check("no-change passes are kept, not dropped",
+          any(r["outcome"] == "no_change" for r in refl))
+    check("declined changes carry the guard's words",
+          any(r["outcome"] == "refused" and "no reasoning" in (r["detail"] or "")
+              for r in refl))
+    check("an open deferral is marked unresolved",
+          [r for r in refl if r["action"] == "defer"][0]["resolved"] == 0)
+
 
 def main():
     test_view_set_delete()
