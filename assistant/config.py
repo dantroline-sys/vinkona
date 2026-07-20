@@ -607,6 +607,26 @@ DEFAULTS: dict = {
         "reflect_prompt": None,                  # None → memory.DEFAULT_AFFECT_PROMPT (idle)
         "idle": True,                            # re-form the state during idle reflection
         "live": True,                            # let the big-LM briefing shift it mid-chat
+        # Trait reflection: between conversations she reviews how she's been LANDING and
+        # purposefully adjusts how a core trait gets expressed — writing only situational
+        # ADAPTATIONS (people.adapt), never the locked core, which stays conversation-only
+        # and confirmed.  Evidence-bound (recent exchanges + the user's corrections), and
+        # each adaptation must distinguish a DELIVERY failure from having been right and
+        # it stinging — the guard against adapting into a mirror.  Everything it writes is
+        # provenance='reflection' and revertable in the Self tab.
+        "traits": {
+            "enabled": True,
+            "max_changes": 1,                    # per pass — personality shouldn't lurch
+            "interval_s": 86400,                 # at most one pass a day
+            "recent_turns": 40,                  # conversation evidence window
+            "prompt": None,                      # None → memory.DEFAULT_TRAITS_PROMPT
+            # unreinforced adaptations fade back toward the core (human adaptations are
+            # maintained by recurrence); below the floor they retire, history kept
+            "decay": True,
+            "decay_after_s": 1209600,            # a fortnight without reinforcement
+            "decay_amount": 0.1,
+            "decay_floor": 0.25,
+        },
     },
     # Tier-2 "run and fetch" tools — a tool host (typically on the Mac) the fast LM
     # can call mid-conversation (calendar, files, mail).  See MAC_TOOLS.md.
@@ -858,8 +878,8 @@ DEFAULTS: dict = {
             # gates one task; a task runs when its value is True or absent (still subject to its own
             # enabled flag).  Set the others False to focus, e.g. {"research_queue": True} + the rest
             # False to isolate research.  Tasks: reembed, rhythms, calendar_sync, consolidate,
-            # perspective_audit, synthesis, reconcile, affect, reflect, corrections, plans,
-            # research_queue, crawl, ingest, garden.
+            # perspective_audit, synthesis, reconcile, affect, traits, reflect, corrections,
+            # plans, research_queue, crawl, ingest, garden.
             "tasks": {},
             # Quiet hours: windows (local time) where idle work is suppressed so the fast/big
             # LMs are free (e.g. for the knowledge host to distill uninterrupted).  Each entry

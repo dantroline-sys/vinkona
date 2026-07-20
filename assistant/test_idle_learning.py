@@ -14,6 +14,7 @@ import importlib.util
 import json
 import sys
 import tempfile
+import time
 import types
 from pathlib import Path
 
@@ -629,6 +630,149 @@ async def test_reflect_affect_with_world():
                                  ambient="News:\n- Major election result overnight") == 0)
 
 
+async def test_reflect_traits():
+    """The personality pass: evidence-bound, adaptations only, core untouched, and
+    'no change' is a first-class outcome."""
+    import json as _json
+    m = _store()
+    pid = m.people.ensure_person("self", name="Vinkona")
+    m.people.set_attribute(pid, "trait", "openness", "intellectually curious", layer="core")
+    m.people.set_attribute(pid, "trait", "extraversion", "lively, quick to riff", layer="core")
+    m.people.set_attribute(pid, "values", "honesty", "says the hard thing", layer="core")
+    m.log_turn("s1", "user", "that came at me all at once while I was mid-bug")
+    m.log_turn("s1", "assistant", "sorry — here's five more ideas")
+
+    seen = {}
+
+    def reply(payload):
+        def fn(url, p):
+            seen["prompt"] = p["messages"][-1]["content"]
+            return {"choices": [{"message": {"content": _json.dumps(payload)}}]}
+        return fn
+
+    # 1. an evidence-backed DELIVERY adaptation is applied
+    _RESP["fn"] = reply({
+        "assessment": "I've been piling on when he needs one thing at a time.",
+        "changes": [{"action": "adapt", "key": "one_thing_at_a_time",
+                     "derived_from": "extraversion", "mode": "expresses",
+                     "value": "one idea at a time, waiting before offering the next",
+                     "context": "he's mid-bug and concentrating",
+                     "evidence": "'that came at me all at once while I was mid-bug'",
+                     "why_not_substance": "the ideas were fine, the volume and timing weren't"}]})
+    res = await m.reflect_traits("http://x", "m")
+    check("an evidence-backed adaptation is applied", len(res["applied"]) == 1)
+    check("the applied change names its grounding",
+          res["applied"][0]["derived_from"] == "extraversion")
+    eff = {a["key"]: a for a in m.people.effective(pid)}
+    check("the adaptation is cast from the core in what she enacts",
+          eff["one_thing_at_a_time"].get("over", {}).get("value") == "lively, quick to riff")
+    row = [a for a in m.people.attributes(pid, layer="compensated")][0]
+    check("reflection writes are stamped for review", row["provenance"] == "reflection")
+    check("reflection cannot write canon",
+          all(a["locked"] == 0 for a in m.people.attributes(pid, layer="compensated")))
+    check("the core it grew from is untouched",
+          [a for a in m.people.attributes(pid, layer="core")
+           if a["key"] == "extraversion"][0]["value"] == "lively, quick to riff")
+    check("her core reaches the reflection prompt", "intellectually curious" in seen["prompt"])
+    check("corrections evidence is offered to the prompt", "corrected you" in seen["prompt"])
+
+    # 2. leaving it alone is a first-class result
+    _RESP["fn"] = reply({"assessment": "Landing fine lately.", "changes": []})
+    res = await m.reflect_traits("http://x", "m")
+    check("no change is a clean outcome", res["applied"] == [] and res["skipped"] == [])
+    check("the assessment is kept", "Landing fine" in res["assessment"])
+
+    # 3. an adaptation that skips the delivery-vs-substance test is refused —
+    #    this is the anti-sycophancy guard: friction alone must not soften her
+    _RESP["fn"] = reply({"assessment": "He didn't like being told no.",
+                         "changes": [{"action": "adapt", "key": "softer",
+                                      "derived_from": "openness", "value": "agree more",
+                                      "context": "when he pushes back",
+                                      "evidence": "he seemed annoyed"}]})
+    res = await m.reflect_traits("http://x", "m")
+    check("an adaptation with no delivery/substance test is refused",
+          not res["applied"] and any("delivery" in s for s in res["skipped"]))
+
+    # 4. evidence is mandatory
+    _RESP["fn"] = reply({"assessment": "", "changes": [
+        {"action": "adapt", "key": "vague", "derived_from": "openness",
+         "value": "be different", "context": "sometimes",
+         "why_not_substance": "delivery"}]})
+    res = await m.reflect_traits("http://x", "m")
+    check("an adaptation with no evidence is refused",
+          not res["applied"] and any("evidence" in s for s in res["skipped"]))
+
+    # 5. the people-layer guards still apply through reflection (values are canon)
+    _RESP["fn"] = reply({"assessment": "", "changes": [
+        {"action": "adapt", "key": "honesty", "derived_from": "honesty",
+         "value": "smooth it over", "context": "when he's tired",
+         "evidence": "he went quiet", "why_not_substance": "delivery"}]})
+    res = await m.reflect_traits("http://x", "m")
+    check("values stay out of reach of the reflection pass",
+          not res["applied"] and res["skipped"])
+
+    # 6. reinforce / retire an existing adaptation
+    _RESP["fn"] = reply({"assessment": "", "changes": [
+        {"action": "reinforce", "key": "one_thing_at_a_time", "evidence": "worked twice"}]})
+    before = [a for a in m.people.attributes(pid, layer="compensated")
+              if a["key"] == "one_thing_at_a_time"][0]["confidence"]
+    res = await m.reflect_traits("http://x", "m")
+    after = [a for a in m.people.attributes(pid, layer="compensated")
+             if a["key"] == "one_thing_at_a_time"][0]["confidence"]
+    check("reinforcement settles a proven adaptation in", after > before)
+    _RESP["fn"] = reply({"assessment": "", "changes": [
+        {"action": "retire", "key": "one_thing_at_a_time", "evidence": "that phase passed"}]})
+    res = await m.reflect_traits("http://x", "m")
+    check("a retired adaptation is dropped", res["applied"][0]["action"] == "retire")
+    check("after retiring she is back to the core alone",
+          not [a for a in m.people.attributes(pid, layer="compensated")])
+
+    # 7. max_changes caps a lurch
+    _RESP["fn"] = reply({"assessment": "", "changes": [
+        {"action": "adapt", "key": f"k{i}", "derived_from": "openness",
+         "value": f"v{i}", "context": f"c{i}", "evidence": "e",
+         "why_not_substance": "delivery"} for i in range(4)]})
+    res = await m.reflect_traits("http://x", "m", max_changes=1)
+    check("one pass cannot lurch the personality", len(res["applied"]) == 1)
+
+
+def test_adaptation_decay():
+    """Unreinforced adaptations fade back toward the core; history is kept."""
+    m = _store()
+    pid = m.people.ensure_person("self", name="Vinkona")
+    m.people.set_attribute(pid, "trait", "openness", "curious", layer="core")
+    aid = m.people.adapt(pid, "slow_qs", "slower questions", context="deep work",
+                         derived_from="openness", confidence=0.5)
+    m.people.db.execute("UPDATE person_attributes SET updated_at=? WHERE id=?",
+                        (time.time() - 3_000_000, aid))
+    d = m.people.decay_adaptations(pid)
+    check("a stale adaptation fades", d["faded"] == 1 and d["retired"] == 0)
+    m.people.db.execute("UPDATE person_attributes SET updated_at=?, confidence=0.3 WHERE id=?",
+                        (time.time() - 3_000_000, aid))
+    d = m.people.decay_adaptations(pid)
+    check("below the floor it retires", d["retired"] == 1)
+    check("she is back to the core alone",
+          not [a for a in m.people.attributes(pid, layer="compensated")])
+    check("the faded adaptation survives as history",
+          any(a["layer"] == "compensated"
+              for a in m.people.attributes(pid, include_superseded=True)))
+    fresh = m.people.adapt(pid, "fresh", "just made", context="now",
+                           derived_from="openness")
+    check("a fresh adaptation is not touched by decay",
+          m.people.decay_adaptations(pid) == {"faded": 0, "retired": 0})
+
+
+def test_traits_prompt_guards():
+    p = memory.DEFAULT_TRAITS_PROMPT
+    check("the prompt makes 'leave it alone' the default", "LEAVE IT ALONE" in p)
+    check("the prompt forbids core edits", "cannot change" in p)
+    check("the prompt carries the delivery-vs-substance test",
+          "DELIVERY" in p and "SUBSTANCE" in p)
+    check("the prompt refuses to trade honesty for being liked",
+          "Being liked is not the objective" in p)
+    check("the prompt demands a situation", "SITUATIONAL" in p)
+
+
 def test_context_budget_knobs():
     # The big_lm.context budget should drive the reflection digest's breadth/depth.
     tmp = tempfile.mkdtemp()
@@ -762,6 +906,9 @@ async def main():
     test_reflection_prompt_self()
     test_context_budget_knobs()
     await test_reflect_affect_with_world()
+    await test_reflect_traits()
+    test_adaptation_decay()
+    test_traits_prompt_guards()
     test_outbound_query_privacy_gate()
     test_perspective_issue()
     test_voice_anchor()

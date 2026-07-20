@@ -1107,7 +1107,8 @@ async def main():
     # Idle-task focus: an override map {task: bool} so you can temporarily narrow idle work to
     # one area for bug-testing (e.g. only 'research_queue').  Absent / True = the task runs (still
     # subject to its own enabled flags).  Tasks: reembed, rhythms, calendar_sync, consolidate,
-    # perspective_audit, synthesis, reconcile, affect, reflect, plans, research_queue, crawl, ingest.
+    # perspective_audit, synthesis, reconcile, affect, traits, reflect, plans, research_queue,
+    # crawl, ingest.
     idle_tasks = idle_cfg.get("tasks") or {}
 
     def _task_on(name: str) -> bool:
@@ -1268,6 +1269,45 @@ async def main():
                                 text=memory.people.self_state())
             except Exception as e:
                 _log(f"affect reflection failed (continuing): {e}")
+        # Trait reflection: how has she been LANDING, and should how a core trait gets
+        # expressed change?  Own cadence (slow — personality shouldn't lurch), writes
+        # only situational adaptations, never canon.
+        tcfg = acfg.get("traits", {})
+        if _task_on("traits") and tcfg.get("enabled", True):
+            try:
+                last = float(memory.get_state("traits.last_run") or 0)
+            except (TypeError, ValueError):
+                last = 0.0
+            if time.time() - last >= float(tcfg.get("interval_s", 86400)):
+                try:
+                    if tcfg.get("decay", True):
+                        s = memory.people.by_kind("self")
+                        if s:
+                            d = memory.people.decay_adaptations(
+                                s["id"], older_than_s=float(tcfg.get("decay_after_s", 1209600)),
+                                amount=float(tcfg.get("decay_amount", 0.1)),
+                                floor=float(tcfg.get("decay_floor", 0.25)))
+                            if d["faded"] or d["retired"]:
+                                _log(f"adaptations decayed: {d['faded']} faded, "
+                                     f"{d['retired']} retired")
+                    res = await memory.reflect_traits(
+                        big["url"], big["model"], prompt=tcfg.get("prompt"),
+                        recent_turns=int(tcfg.get("recent_turns", 40)),
+                        max_changes=int(tcfg.get("max_changes", 1)))
+                    memory.set_state("traits.last_run", str(time.time()))
+                    if res.get("applied") or res.get("skipped"):
+                        trace.write(kind="traits", source="idle",
+                                    assessment=res.get("assessment", ""),
+                                    applied=res.get("applied", []),
+                                    skipped=res.get("skipped", []))
+                    for ch in res.get("applied", []):
+                        _log(f"personality: {ch['action']} {ch['key']}"
+                             + (f" — {ch.get('value', '')}" if ch.get("value") else "")
+                             + (f" (when {ch['context']})" if ch.get("context") else ""))
+                    for sk in res.get("skipped", []):
+                        _log(f"personality change declined: {sk}")
+                except Exception as e:
+                    _log(f"trait reflection failed (continuing): {e}")
         if not (force or args.idle_once or is_idle()):
             return                               # user came back mid-cycle
         # Reflect on the next window of past turns (queues new research topics).

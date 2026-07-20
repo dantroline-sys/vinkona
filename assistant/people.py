@@ -318,6 +318,31 @@ class PeopleStore:
             self.db.commit()
         return len(rows)
 
+    def decay_adaptations(self, person_id: str, *, older_than_s: float = 1209600,
+                          amount: float = 0.1, floor: float = 0.25) -> dict:
+        """Adaptations are maintained by recurrence: one that hasn't been reinforced
+        for `older_than_s` (default a fortnight) loses `amount` confidence, and below
+        `floor` it retires — she drifts back toward the core rather than accumulating
+        ways of being that no longer answer to anything.  Retired rows are superseded,
+        never deleted, so the trajectory stays legible.  Returns {faded, retired}."""
+        now = time.time()
+        faded = retired = 0
+        for a in self.attributes(person_id, layer="compensated"):
+            if now - (a.get("updated_at") or 0) < older_than_s:
+                continue
+            conf = (a.get("confidence") or 0.0) - amount
+            if conf < floor:
+                self.db.execute("UPDATE person_attributes SET status='superseded', "
+                                "updated_at=? WHERE id=?", (now, a["id"]))
+                retired += 1
+            else:
+                self.db.execute("UPDATE person_attributes SET confidence=?, updated_at=? "
+                                "WHERE id=?", (conf, now, a["id"]))
+                faded += 1
+        if faded or retired:
+            self.db.commit()
+        return {"faded": faded, "retired": retired}
+
     def adaptations(self, person_id: str, min_confidence: float = 0.0) -> list[dict]:
         """Live adaptations, strongest first — each with the core it is cast from."""
         out = []
