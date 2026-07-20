@@ -66,6 +66,7 @@
   .ev.research_queued, .ev.research_start, .ev.research_done, .ev.web_query, .ev.source_try, .ev.scholarly_pick, .ev.source_pick, .ev.rss_crawl, .ev.news_digest, .ev.research_export { border-left-color:#5ac8c8; }
   .ev.ingest_start, .ev.ingest, .ev.crawl_start, .ev.crawl { border-left-color:#6fb36f; }
   .ev.plan_created, .ev.plan_answer, .ev.plan_ask_user { border-left-color:#b58ad8; }
+  .ev.offer_shortlist, .ev.offer_raised, .ev.offer_outcome { border-left-color:#7fb3d5; }
   .plan-done { opacity:.72; }
   .plan-qs { margin-top:8px; display:flex; flex-direction:column; gap:6px; }
   .plan-q { font-size:14px; }
@@ -887,6 +888,13 @@ function renderEvent(e) {
     body = `<div class="body">🎯 answered <b>${escHtml(e.question || '')}</b>${f}</div>` +
       (e.answer ? `<details><summary>question → answer</summary><pre>Q: ${escHtml(e.question||'')}\n\nA: ${escHtml(e.answer||'')}</pre></details>` : '');
     if (e.found === false || e.error) cls += ' errored';
+  } else if (e.kind === 'offer_shortlist') {
+    const ks = (e.items || []).map(i => escHtml(i.kind || '')).join(', ');
+    body = `<div class="body">💬 a way in — offered herself ${(e.items||[]).length} thing(s) she's holding (${ks}); she may still say nothing</div>`;
+  } else if (e.kind === 'offer_raised') {
+    body = `<div class="body">💬 brought it up unprompted <span class="pill">${escHtml(e.kind_of || '')}</span> ${escHtml(e.text || '')}</div>`;
+  } else if (e.kind === 'offer_outcome') {
+    body = `<div class="body">💬 ${e.engaged ? 'they took it up' : 'they passed over it'} — ${escHtml(e.key || '')}</div>`;
   } else if (e.kind === 'plan_ask_user') {
     body = `<div class="body">🙋 raising with the user: ${escHtml((e.questions || []).join('; '))}</div>`;
   } else if (e.kind === 'doc_grounding') {

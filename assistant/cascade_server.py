@@ -166,6 +166,7 @@ class CascadeServer:
         self._capture_mod = _load("capture")    # durable orchestration-trace capture (skill-LoRA)
         self._cal_sync_mod = _load("calendar_sync")  # mirror-aware calendar folding (dedupe + notes)
         self._facade_mod = _load("tool_facade")   # simplified fast-LM tool surface (wrappers)
+        self._spont_mod = _load("spontaneity")    # things she's holding + the segue test
         self._wsauth = _load("wsauth")
         # Pre-shared WS access token (P1): the cascade listens on the network, so a client
         # must present this token (its first frame) before we'll talk.  Resolved/persisted
@@ -611,6 +612,11 @@ class _Session:
                                  if (self.s.memory
                                      and self.cfg.get("research", {}).get("plans", {}).get("enabled", True))
                                  else None),
+            offer_hook=(self._offer_block
+                        if (self.s.memory
+                            and self.cfg.get("spontaneity", {}).get("enabled", True)) else None),
+            offer_spoken_hook=(self._offer_spoken if self.s.memory else None),
+            offer_judge_hook=(self._offer_judge if self.s.memory else None),
             log_hook=self._log_turn if self.s.memory else None,
             trace_hook=self._trace if self.s.trace else None,
             inject_time=self.cfg["awareness"]["inject_time"],
@@ -1027,6 +1033,69 @@ class _Session:
             self._trace({"ts": time.time(), "kind": "plan_ask_user",
                          "count": len(qs), "questions": [q["question"] for q in qs]})
         return "\n".join(f"- {q['question']}" for q in qs)
+
+    # ── spontaneity: things she's holding, offered only when there's a way in ──
+    def _offer_block(self, user_text: str) -> str:
+        """One thing she could bring up, IF it touches what was just said.
+
+        Shortlisting is deterministic (freshness, watermark, rate limit, topical
+        overlap); whether it actually gets said is the LM's call, and the block
+        makes saying nothing an explicit option.  The shortlist is held so the
+        reply can be checked afterwards — a candidate she passed over must stay
+        available rather than being burnt by having been offered."""
+        self._offered = []
+        sp = self.s._spont_mod
+        try:
+            scfg = self.cfg.get("spontaneity", {})
+            mem = self.s.memory
+            cands = sp.candidates(mem, scfg)
+            self._offered = sp.shortlist(cands, user_text or "", mem.offers, scfg)
+        except Exception as exc:
+            _log(f"spontaneity: candidate pass failed ({exc})")
+            return ""
+        if not self._offered:
+            return ""
+        if self.s.trace:
+            self._trace({"ts": time.time(), "kind": "offer_shortlist",
+                         "items": [{"key": i["key"], "kind": i["kind"]}
+                                   for i in self._offered]})
+        return sp.block(self._offered)
+
+    def _offer_spoken(self, reply: str) -> None:
+        """Record only what she ACTUALLY worked into the reply."""
+        sp = self.s._spont_mod
+        for it in (getattr(self, "_offered", None) or []):
+            try:
+                if sp.was_spoken(it, reply):
+                    self.s.memory.offers.record(it, session_id=self.session_id)
+                    if self.s.trace:
+                        self._trace({"ts": time.time(), "kind": "offer_raised",
+                                     "key": it["key"], "kind_of": it["kind"],
+                                     "text": it["text"][:200]})
+            except Exception as exc:
+                _log(f"spontaneity: could not record an offer ({exc})")
+        self._offered = []
+
+    def _offer_judge(self, user_text: str) -> None:
+        """Did they take up the last thing she raised?  Engagement becomes an
+        acted-on row in the user model — the same evidence the trait reflection
+        weighs — so how she offers is shaped by how it lands, not by a knob."""
+        try:
+            mem = self.s.memory
+            pend = mem.offers.pending(self.session_id)
+            if not pend:
+                return
+            took = self.s._spont_mod.engaged_with(pend, user_text)
+            mem.offers.resolve(pend["key"], "engaged" if took else "passed")
+            if took:
+                mem.user.record_interaction(
+                    query=f"(unprompted) {pend['text'][:200]}",
+                    user_followed_up=True, user_acted_on_response=True)
+            if self.s.trace:
+                self._trace({"ts": time.time(), "kind": "offer_outcome",
+                             "key": pend["key"], "engaged": took})
+        except Exception as exc:
+            _log(f"spontaneity: could not judge an offer ({exc})")
 
     def _self_knowledge(self) -> str:
         """Ambient self/relational memories injected every turn (always-on, not keyed on

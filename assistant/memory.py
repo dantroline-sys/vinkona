@@ -86,6 +86,15 @@ except Exception:
     _news = _iluns.module_from_spec(_specns); _specns.loader.exec_module(_news)
     NewsStore = _news.NewsStore
 
+try:                                    # what she has brought up unprompted, and how it landed
+    from spontaneity import OfferLog
+except Exception:
+    import importlib.util as _ilusp
+    from pathlib import Path as _Pathsp
+    _specsp = _ilusp.spec_from_file_location("spontaneity", _Pathsp(__file__).resolve().parent / "spontaneity.py")
+    _spon = _ilusp.module_from_spec(_specsp); _specsp.loader.exec_module(_spon)
+    OfferLog = _spon.OfferLog
+
 try:                                    # consolidated-calendar local copy (calendar sync)
     from calendar_sync import CalendarStore
 except Exception:
@@ -696,6 +705,7 @@ class MemoryStore:
         self.people = PeopleStore(self.db)
         self.ambient = AmbientStore(self.db)
         self.news = NewsStore(self.db)
+        self.offers = OfferLog(self.db)               # things she raised unprompted + outcomes
         self.usage = UsageLog(self.db)                # when the user is active (rhythm)
         self.rhythms = RhythmStore(self.db)           # detected recurrences (every nth day/week)
         self.calendar = CalendarStore(self.db)        # consolidated schedule, instant-retrieval copy
@@ -1763,6 +1773,15 @@ class MemoryStore:
                     + (f"  · said: {r['explicit_feedback']}" if r["explicit_feedback"] else "")
                     for r in wrows)
         except sqlite3.Error:
+            pass
+        # Unprompted asides get their own line, counting BOTH halves: taken up and
+        # passed over.  Engagement alone would read as a licence to do more of it.
+        try:
+            spon = self.offers.summary(time.time() - 30 * 86400)
+            if spon:
+                well_txt = (f"- {spon}" if well_txt.startswith("(")
+                            else f"{well_txt}\n- {spon}")
+        except (AttributeError, sqlite3.Error):
             pass
         guidance = ""
         if open_qs and kb_lookup:

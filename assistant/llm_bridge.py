@@ -589,6 +589,9 @@ class LLMBridge:
         self_hook: tp.Optional[tp.Callable[[], str]] = None,
         reminder_hook: tp.Optional[tp.Callable[[], str]] = None,
         user_questions_hook: tp.Optional[tp.Callable[[], str]] = None,
+        offer_hook: tp.Optional[tp.Callable[[str], str]] = None,
+        offer_spoken_hook: tp.Optional[tp.Callable[[str], None]] = None,
+        offer_judge_hook: tp.Optional[tp.Callable[[str], None]] = None,
         log_hook: tp.Optional[tp.Callable[[str, str], None]] = None,
         trace_hook: tp.Optional[tp.Callable[[dict], None]] = None,
         inject_time: bool = True,
@@ -715,6 +718,13 @@ class LLMBridge:
         # user_questions_hook() -> open "ask the user" questions from learning plans, to
         # raise naturally when they fit (the EQ loop that pulls the user into its learning).
         self.user_questions_hook = user_questions_hook
+        # Spontaneity (the segue lane): offer_hook(user_text) -> at most one thing she's
+        # holding that touches what was just said; offer_spoken_hook(reply) records only
+        # what she actually worked in (a candidate she passed over stays available);
+        # offer_judge_hook(user_text) decides whether they took up the last one.
+        self.offer_hook = offer_hook
+        self.offer_spoken_hook = offer_spoken_hook
+        self.offer_judge_hook = offer_judge_hook
         self.log_hook = log_hook
         # Introspection hook (optional): trace_hook(event_dict) records what the
         # fast/big LM are doing (prompts, replies, briefings) so the config web UI
@@ -1151,6 +1161,14 @@ class LLMBridge:
         self._turn_tool_calls = []                  # reset per turn, for trace capture
         if self.log_hook:
             self.log_hook("user", user_text)
+        if self.offer_judge_hook:
+            # Whatever she raised last turn is judged by what they said back —
+            # before any early return, since a self-edit or a confirmation is
+            # still an answer to it (an answer about something else, i.e. a pass).
+            try:
+                self.offer_judge_hook(user_text)
+            except Exception as exc:
+                _log("warning", f"spontaneity outcome failed: {exc}")
 
         # If we staged a change to Vinkona's own character last turn, this turn is the
         # user's yes/no on it — resolve it before anything else (local, not a host write).
@@ -1255,6 +1273,14 @@ class LLMBridge:
                 system += ("\n\nThings you've been curious to ask the user (from your own "
                            "learning). If one genuinely fits this moment, ask it naturally — "
                            "otherwise don't force it:\n" + uq)
+        if self.offer_hook:
+            # Sits next to the curiosity questions on purpose: both are things she
+            # may raise, both are allowed to go unsaid.  The block carries its own
+            # rules (see spontaneity.block).
+            try:
+                system += self.offer_hook(user_text) or ""
+            except Exception as exc:                       # never cost a turn
+                _log("warning", f"spontaneity block failed: {exc}")
         # Recall and the live guidance pull run CONCURRENTLY, so the synchronous knowledge-host
         # fetch overlaps recall rather than adding to it — the turn waits max(recall, budget),
         # not their sum.  Live guidance self-gates to question turns and hard-times-out.
@@ -1351,6 +1377,11 @@ class LLMBridge:
         self.history.append({"role": "assistant", "content": response_text})
         if self.log_hook:
             self.log_hook("assistant", response_text)
+        if self.offer_spoken_hook:
+            try:
+                self.offer_spoken_hook(response_text)
+            except Exception as exc:
+                _log("warning", f"spontaneity record failed: {exc}")
         # Fire-and-forget: update the big LM briefing for the next turn.
         if self.big_url:
             if self._big_lm_task and not self._big_lm_task.done():

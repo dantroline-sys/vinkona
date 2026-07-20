@@ -76,7 +76,7 @@ barge-in via VAD.
 | Conscious reasoning | `user_model.py` (+ the corrections idle-reviewer in `memory.py`/`research_worker.py`) | [`CONSCIOUS_REASONING.md`](CONSCIOUS_REASONING.md), [`USER_MODEL_INTEGRATION.md`](USER_MODEL_INTEGRATION.md) |
 | Research loop | `research_worker.py`, `research_export.py`, `capture.py` | [`research_loop_spec.md`](research_loop_spec.md) |
 | Tools & hosts | `tools_client.py`, `knowledge_host.py`, `safety.py`, `wsauth.py` | [`MAC_TOOLS.md`](MAC_TOOLS.md), [`KNOWLEDGE.md`](KNOWLEDGE.md), [`MUSIC.md`](MUSIC.md), [`WS_AUTH.md`](WS_AUTH.md) |
-| Awareness | `timesense.py`, `spoken_time.py`, `ambient.py` | [`NOTIFICATIONS.md`](NOTIFICATIONS.md) |
+| Awareness | `timesense.py`, `spoken_time.py`, `ambient.py`, `spontaneity.py` | [`NOTIFICATIONS.md`](NOTIFICATIONS.md) |
 | Config & UI | `config.py`, `config_server.py`, `config_ui.html`, `chat_ui.html` | — |
 | Client | `vinkona_client/` (Flutter) | — |
 | Tests | `test_*.py` (stdlib-only, no pip installs) | — |

@@ -1006,6 +1006,26 @@ DEFAULTS: dict = {
     # something up timely ("you've got work in 20 — set for it?").  Reuses the notifications
     # scan; works even with the bell off.  Goals/habits are just recurring calendar events
     # Vinkona maintains, so this surfaces them too — no separate streaks subsystem.
+    # Spontaneity — the segue lane.  Things she's actually holding (headlines she
+    # crawled, findings from research she finished, questions she's still chasing,
+    # weather worth remarking on) may be brought up MID-REPLY when they touch what
+    # was just said.  There is deliberately no "the conversation went quiet, say
+    # something" path: an aside with no way in is worse than silence, which is why
+    # assistants avoid this entirely.  She is always free to say nothing, and only
+    # what she actually works into a reply is recorded — so a candidate she passes
+    # over stays available.  Whether the user takes it up becomes evidence in the
+    # user model, so how she offers is shaped by how it lands (see spontaneity.py).
+    "spontaneity": {
+        "enabled": True,
+        "kinds": ["news", "finding", "question", "weather"],
+        "min_overlap": 2,            # distinctive words shared with what they just said
+        "max_items": 1,              # never more than one thing in front of her
+        "min_gap_s": 900,            # …and not another for this long after she raises one
+        "max_per_day": 6,
+        "news_max_age_s": 172800,    # a two-day-old headline is not conversation
+        "finding_max_age_s": 604800,
+        "candidate_pool": 40,
+    },
     "proactive": {
         "enabled": True,
         "lookahead_min": 240,                # only surface events starting within this horizon
