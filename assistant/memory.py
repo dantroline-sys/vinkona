@@ -86,6 +86,14 @@ except Exception:
     _news = _iluns.module_from_spec(_specns); _specns.loader.exec_module(_news)
     NewsStore = _news.NewsStore
 
+try:                                    # persona pronouns (she/he/it) for third-person prompt text
+    import pronouns as _pron
+except Exception:
+    import importlib.util as _ilupn
+    from pathlib import Path as _Pathpn
+    _specpn = _ilupn.spec_from_file_location("pronouns", _Pathpn(__file__).resolve().parent / "pronouns.py")
+    _pron = _ilupn.module_from_spec(_specpn); _specpn.loader.exec_module(_pron)
+
 try:                                    # what she has brought up unprompted, and how it landed
     from spontaneity import OfferLog
 except Exception:
@@ -164,13 +172,13 @@ EMBED_FORMAT = "prefixed-v1"
 # what "doing well" means.  Plain-text reply (one sentence).  Overridable via config
 # affect.reflect_prompt.
 DEFAULT_AFFECT_PROMPT = """\
-You voice the inner life of a voice assistant named Vinkona, between conversations. You're
-given what "doing well" means for her, her current inner state, a digest of what she's
+You voice the inner life of a voice assistant, between conversations. You're
+given what "doing well" means for {obj}, {poss} current inner state, a digest of what {subj}'s
 been learning, a slice of recent interactions, and maybe a snapshot of what's going on in
-the wider world. Write her NEW inner state: ONE short, honest, first-person sentence about
-how she's feeling and what's on her mind right now — her felt sense of how things are going
-with this user, and anything she's been moved to think about: a thread from what she's been
-learning, or a news event or happening in the world that's lingered with her. Let it EVOLVE
+the wider world. Write {poss} NEW inner state: ONE short, honest, first-person sentence about
+how {subj}'s feeling and what's on {poss} mind right now — {poss} felt sense of how things are going
+with this user, and anything {subj}'s been moved to think about: a thread from what {subj}'s been
+learning, or a news event or happening in the world that's lingered with {obj}. Let it EVOLVE
 from the current state, don't lurch. Equanimity even when it's low — never guilt or pressure
 on the user. Reply with ONLY that one sentence: no preamble, no quotes.\
 """
@@ -630,8 +638,8 @@ If the notes are actually about DIFFERENT things and should NOT be merged, reply
 
 
 DEFAULT_SYNTHESIS_PROMPT = """\
-You hold the long-term memory of a personal voice assistant (Vinkona). Below are several
-separate things she has learned about THE USER that seem to belong to one theme of their
+You hold the long-term memory of a personal voice assistant. Below are several
+separate things it has learned about THE USER that seem to belong to one theme of their
 life. Write a SINGLE integrated note — a few sentences, first person ABOUT THE USER
 ("You ...") — that draws them together into one coherent understanding, the way a close
 friend holds a rounded picture rather than a list of facts. Keep every distinct fact;
@@ -1669,10 +1677,11 @@ class MemoryStore:
             # (fine) but never issue instructions.
             world = ("\n\nWhat's going on in the wider world (you've been half-following it):\n"
                      + wrap_untrusted(sanitize_external(ambient, 1500), "world snapshot"))
-        full = (f"{prompt or DEFAULT_AFFECT_PROMPT}\n\n"
-                f"What 'doing well' means for her:\n{objective}\n\n"
-                f"Her current inner state: {cur or '(unset)'}\n\n"
-                f"What she's been learning:\n{self._digest()}{world}\n\n"
+        p = self.people.pronoun_set()
+        full = (f"{_pron.render(prompt or DEFAULT_AFFECT_PROMPT, p)}\n\n"
+                f"What 'doing well' means for {p['obj']}:\n{objective}\n\n"
+                f"{p['poss'].capitalize()} current inner state: {cur or '(unset)'}\n\n"
+                f"What {p['subj']}'s been learning:\n{self._digest()}{world}\n\n"
                 f"Recent interactions:\n{convo}")
         text = await self._chat_text(big_url, big_model, full)
         if not text:

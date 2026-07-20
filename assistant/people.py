@@ -28,6 +28,14 @@ import sqlite3
 import time
 import uuid
 
+try:                                    # persona pronouns (she/he/it) — see pronouns.py
+    import pronouns as _pron
+except Exception:
+    import importlib.util as _ilupr
+    from pathlib import Path as _Pathpr
+    _specpr = _ilupr.spec_from_file_location("pronouns", _Pathpr(__file__).resolve().parent / "pronouns.py")
+    _pron = _ilupr.module_from_spec(_specpr); _specpr.loader.exec_module(_pron)
+
 # The HEXACO factors — the dial set the character is described in (the LLM can enact these).
 HEXACO = ("honesty_humility", "emotionality", "extraversion",
           "agreeableness", "conscientiousness", "openness")
@@ -276,14 +284,15 @@ class PeopleStore:
             raise ValueError(f"mode must be one of {ADAPT_MODES}")
         if facet in UNADAPTABLE_FACETS:
             raise ValueError(f"'{facet}' is canon and cannot be adapted — values and "
-                             "boundaries are what she can always fall back on")
+                             "boundaries are what "
+                             f"{self.pronoun_set()['subj']} can always fall back on")
         parent = self.core_attribute(person_id, parent_key)
         if not parent:
             raise ValueError(f"no core attribute '{parent_key}' to ground this in — "
                              "an adaptation is cast from the core, never freestanding")
         if parent["facet"] in UNADAPTABLE_FACETS:
-            raise ValueError(f"'{parent_key}' is a value, not a disposition — "
-                             "it grounds her rather than flexing")
+            raise ValueError(f"'{parent_key}' is a value, not a disposition — it grounds "
+                             f"{self.pronoun_set()['obj']} rather than flexing")
         low = v.lower()
         pval = (parent["value"] or "").lower()
         if any(low.startswith(n) or f" {n}" in f" {low}" for n in _NEGATORS) and \
@@ -698,12 +707,14 @@ class PeopleStore:
 
     # ── seeding ───────────────────────────────────────────────────────────────
     def seed_self(self, *, name: str = "Vinkona", pronouns: str = "she/her",
-                  summary: str = "", traits: dict | None = None,
-                  style: str | None = None) -> str:
+                  sex: str | None = None, summary: str = "",
+                  traits: dict | None = None, style: str | None = None) -> str:
         """Initialise Vinkona's core identity from her persona — but ONLY if she has no trait
         canon yet, so a self-determined character is never clobbered on restart.  Always
         refreshes name/pronouns/summary (cheap, and keeps the persona authoritative for
         those)."""
+        # A declared `sex` on the persona wins over the free-text pronoun field.
+        pronouns = _pron.label(_pron.for_identity({"sex": sex, "pronouns": pronouns}))
         pid = self.ensure_person("self", name=name, pronouns=pronouns)
         self.update_person(pid, name=name, pronouns=pronouns, summary=summary)
         if not any(a["facet"] == "trait" for a in self.attributes(pid)):
@@ -714,6 +725,17 @@ class PeopleStore:
                 self.set_attribute(pid, "style", "speech", style, layer="core",
                                    provenance="seed", locked=True)
         return pid
+
+    def pronoun_set(self) -> dict:
+        """The live pronoun set for the assistant, read from the self record the
+        persona seeded — so every prompt and panel that refers to the persona in
+        the third person follows the character the user chose."""
+        try:
+            row = self.db.execute(
+                "SELECT pronouns FROM people WHERE kind='self' LIMIT 1").fetchone()
+        except sqlite3.Error:
+            row = None
+        return _pron.for_identity({"pronouns": row["pronouns"] if row else ""})
 
     def ensure_user(self) -> str:
         """Make sure the user person exists (empty is fine — it fills in over time)."""

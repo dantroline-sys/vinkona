@@ -167,6 +167,7 @@ class CascadeServer:
         self._cal_sync_mod = _load("calendar_sync")  # mirror-aware calendar folding (dedupe + notes)
         self._facade_mod = _load("tool_facade")   # simplified fast-LM tool surface (wrappers)
         self._spont_mod = _load("spontaneity")    # things she's holding + the segue test
+        self._pron_mod = _load("pronouns")        # persona pronouns (she/he/it)
         self._wsauth = _load("wsauth")
         # Pre-shared WS access token (P1): the cascade listens on the network, so a client
         # must present this token (its first frame) before we'll talk.  Resolved/persisted
@@ -533,7 +534,7 @@ class _Session:
             seed = persona.get("identity") or people_cfg.get("seed") or {}
             self.s.memory.people.seed_self(
                 name=seed.get("name", pname.capitalize()),
-                pronouns=seed.get("pronouns", "they/them"),
+                pronouns=seed.get("pronouns", ""), sex=seed.get("sex"),
                 summary=seed.get("summary", persona.get("description", "")),
                 traits=seed.get("traits"), style=seed.get("style"))
             self.s.memory.people.ensure_user()
@@ -680,7 +681,8 @@ class _Session:
         )
         bridge.apply_persona(system_prompt=persona.get("system_prompt"),
                              greeting=persona.get("greeting"),
-                             voice_examples=(persona.get("identity") or {}).get("voice_examples"))
+                             voice_examples=(persona.get("identity") or {}).get("voice_examples"),
+                             pronouns=self.s._pron_mod.for_persona(persona))
 
         self.s.mark_activity(open=True)                       # idle worker stands down
         if self.s.memory and self.cfg.get("awareness", {}).get("time_meaning", True):

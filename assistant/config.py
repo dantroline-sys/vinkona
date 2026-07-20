@@ -573,7 +573,12 @@ DEFAULTS: dict = {
         # clobbers a self-determined character).  Override per-persona via a persona
         # "identity" block; this is the fallback for the default persona.
         "seed": {
-            "name": "Vinkona", "pronouns": "she/her",
+            # `sex` picks the pronouns everything uses for the assistant: "female"
+            # (she/her), "male" (he/him) or "none" (it/its).  Set it per-persona in
+            # personas.json under identity; unset falls back to the free-text
+            # `pronouns` field and then to female, so an existing install keeps the
+            # character it already had.
+            "name": "Vinkona", "sex": "female", "pronouns": "she/her",
             "summary": "a warm, witty, intellectually curious voice companion",
             "style": "concise, natural, plain-spoken; dry humour",
             "traits": {

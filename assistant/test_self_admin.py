@@ -105,6 +105,15 @@ def test_view_set_delete():
     check("an open deferral is marked unresolved",
           [r for r in refl if r["action"] == "defer"][0]["resolved"] == 0)
 
+    # the panel's own prose follows the persona's pronouns rather than assuming
+    check("the pronoun set reaches the Self tab",
+          sa.view()["pronouns"]["subj"] == "she")
+    c = sqlite3.connect(cfg["memory"]["db_path"]); c.row_factory = sqlite3.Row
+    people.PeopleStore(c).seed_self(name="Aleks", sex="male")
+    c.close()
+    check("a masculine persona reports he/him to the panel",
+          sa.view()["pronouns"]["label"] == "he/him")
+
 
 def main():
     test_view_set_delete()

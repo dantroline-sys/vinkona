@@ -324,25 +324,14 @@
 
   <!-- ── Self ─────────────────────────────────────────────────────────────── -->
   <section id="tab-self" class="tab">
-    <h2>Self <span class="muted">— Vinkona's personality, as she's defined it for herself</span></h2>
+    <h2>Self <span class="muted" id="selfHeading">— the assistant's personality, as defined for itself</span></h2>
     <div class="bar">
       <button class="btn secondary" onclick="loadSelf()">Refresh</button>
       <button class="btn secondary" onclick="addTrait()">+ Add trait</button>
       <span id="selfStatus" class="status"></span>
     </div>
-    <div class="hint">Two layers of self. <b>Character traits</b> are her structured identity
-      (declared, always in the prompt) across depth layers — <i>core</i> (innate canon, locked:
-      her grounding and effectively part of her values), <i>compensated</i> (characteristic
-      adaptations: learned, situational ways a core trait gets expressed), <i>surface</i> (how
-      she's being for now). An adaptation never replaces the core it grew from — it is always
-      cast from it ("curious — expressed as patient and unhurried when he's debugging"), so the
-      grounding stays present in what she enacts and <i>revert to core</i> always leads back.
-      Adaptations need a core parent and a context, can't invert what they express, and can't
-      touch values or boundaries — that's what keeps her able to disagree. <b>Self-memories</b>
-      are the looser relational insights she writes over time. You're the owner here, so you can
-      edit anything — including core canon (the conversation-only restriction exists to keep
-      untrusted data out, not you). Changes apply on the cascade's next connection.</div>
-    <h3 style="margin:16px 0 6px">Inner state <span class="muted">— her current mood, as one evolving line</span></h3>
+    <div class="hint" id="selfHint"></div>
+    <h3 style="margin:16px 0 6px">Inner state <span class="muted" id="selfStateCaption">— the current mood, as one evolving line</span></h3>
     <div id="selfState"></div>
     <h3 style="margin:18px 0 6px">Character traits</h3>
     <div id="selfTraits"></div>
@@ -890,7 +879,7 @@ function renderEvent(e) {
     if (e.found === false || e.error) cls += ' errored';
   } else if (e.kind === 'offer_shortlist') {
     const ks = (e.items || []).map(i => escHtml(i.kind || '')).join(', ');
-    body = `<div class="body">💬 a way in — offered herself ${(e.items||[]).length} thing(s) she's holding (${ks}); she may still say nothing</div>`;
+    body = `<div class="body">💬 a way in — offered itself ${(e.items||[]).length} thing(s) it's holding (${ks}); it may still say nothing</div>`;
   } else if (e.kind === 'offer_raised') {
     body = `<div class="body">💬 brought it up unprompted <span class="pill">${escHtml(e.kind_of || '')}</span> ${escHtml(e.text || '')}</div>`;
   } else if (e.kind === 'offer_outcome') {
@@ -1128,13 +1117,40 @@ async function reembedMemory() {
 
 // ── Self (Vinkona's self-authored personality: identity store + self-memories) ─
 const LAYERS = ['core', 'compensated', 'surface'];
-let selfData = { self: null, attributes: [], self_memories: [], reflections: [] };
+let selfData = { self: null, attributes: [], self_memories: [], reflections: [],
+                 pronouns: { subj: 'she', obj: 'her', poss: 'her', possp: 'hers', refl: 'herself' } };
+// The persona chooses its own pronouns (identity.sex: female | male | none), so the
+// panel that edits it follows suit rather than calling every assistant "she".
+function P(tok) { const p = selfData.pronouns || {}; return p[tok] || ''; }
+function Pc(tok) { const w = P(tok); return w ? w[0].toUpperCase() + w.slice(1) : ''; }
+function renderSelfCopy() {
+  const name = (selfData.self && selfData.self.name) || 'the assistant';
+  const h = document.getElementById('selfHeading');
+  if (h) h.textContent = `— ${name}'s personality, as ${P('subj')} has defined it for ${P('refl')}`;
+  const c = document.getElementById('selfStateCaption');
+  if (c) c.textContent = `— ${P('poss')} current mood, as one evolving line`;
+  const hint = document.getElementById('selfHint');
+  if (!hint) return;
+  hint.innerHTML = `Two layers of self. <b>Character traits</b> are ${P('poss')} structured identity
+    (declared, always in the prompt) across depth layers — <i>core</i> (innate canon, locked:
+    ${P('poss')} grounding and effectively part of ${P('poss')} values), <i>compensated</i> (characteristic
+    adaptations: learned, situational ways a core trait gets expressed), <i>surface</i> (how
+    ${P('subj')}'s being for now). An adaptation never replaces the core it grew from — it is always
+    cast from it ("curious — expressed as patient and unhurried when he's debugging"), so the
+    grounding stays present in what ${P('subj')} enacts and <i>revert to core</i> always leads back.
+    Adaptations need a core parent and a context, can't invert what they express, and can't
+    touch values or boundaries — that's what keeps ${P('obj')} able to disagree. <b>Self-memories</b>
+    are the looser relational insights ${P('subj')} writes over time. You're the owner here, so you can
+    edit anything — including core canon (the conversation-only restriction exists to keep
+    untrusted data out, not you). Changes apply on the cascade's next connection.`;
+}
 async function loadSelf() {
   try { selfData = await (await fetch('/api/self')).json(); }
   catch (e) { return flash(document.getElementById('selfStatus'), false, 'load error'); }
   renderSelf();
 }
 function renderSelf() {
+  renderSelfCopy();
   renderSelfState();
   const box = document.getElementById('selfTraits'); box.innerHTML = '';
   const attrs = selfData.attributes || [];
@@ -1143,7 +1159,7 @@ function renderSelf() {
   if (presented.length) {
     const p = document.createElement('div'); p.className = 'card';
     p.style.cssText = 'padding:8px 10px;margin-bottom:8px';
-    p.innerHTML = '<div class="muted" style="text-transform:uppercase;font-size:11px;letter-spacing:.04em;margin-bottom:4px">presented — what she enacts</div>'
+    p.innerHTML = '<div class="muted" style="text-transform:uppercase;font-size:11px;letter-spacing:.04em;margin-bottom:4px">presented — what ' + P('subj') + ' enacts</div>'
       + presented.map(t => `<div class="mem-meta">${escHtml(t)}</div>`).join('');
     box.appendChild(p);
   }
@@ -1155,7 +1171,7 @@ function renderSelf() {
     if (!inLayer.length) continue;
     const h = document.createElement('div'); h.className = 'muted';
     h.style.cssText = 'margin:8px 0 4px;text-transform:uppercase;font-size:11px;letter-spacing:.04em';
-    h.textContent = layer === 'core' ? 'core · canon (locked — her grounding)'
+    h.textContent = layer === 'core' ? 'core · canon (locked — ' + P('poss') + ' grounding)'
       : layer === 'compensated' ? 'adaptations · learned, situational, always cast from a core trait'
       : layer;
     box.appendChild(h);
@@ -1176,14 +1192,14 @@ function renderSelf() {
       }
     });
   }
-  if (!attrs.length) box.innerHTML = '<div class="muted">No traits yet — seeded from the persona on her next connect, or add one.</div>';
+  if (!attrs.length) box.innerHTML = '<div class="muted">No traits yet — seeded from the persona on ' + P('poss') + ' next connect, or add one.</div>';
   if (newTrait) box.appendChild(traitRow({ _new: true, facet: 'trait', layer: 'core' }));
 
   renderSelfReflections();
 
   const m = document.getElementById('selfMems'); m.innerHTML = '';
   const mems = selfData.self_memories || [];
-  if (!mems.length) m.innerHTML = '<div class="muted">No self-memories yet — she writes these as she reflects.</div>';
+  if (!mems.length) m.innerHTML = '<div class="muted">No self-memories yet — ' + P('subj') + ' writes these as ' + P('subj') + ' reflects.</div>';
   mems.forEach(e => m.appendChild(selfMemCard(e)));
 }
 // Reflection record — every idle personality pass, including the ones that changed
@@ -1215,9 +1231,9 @@ function renderSelfReflections() {
   box.innerHTML = `<details class="cfg-group" style="margin-top:14px">
       <summary>Reflection record <span class="muted" style="font-weight:400">— ${rows.length} recent pass${rows.length === 1 ? '' : 'es'}${open ? `, ${open} open question${open === 1 ? '' : 's'}` : ''}</span></summary>
       <div style="padding:10px 16px 14px">
-        <div class="hint" style="margin-bottom:8px">What she decided about her own character on each idle pass, and why —
-          including the passes that changed nothing (—), the ones a guard declined (✕), and the questions she deferred (…)
-          to the knowledge base or research. Read this to see whether her reasoning is any good; the record is written
+        <div class="hint" style="margin-bottom:8px">What ${P('subj')} decided about ${P('poss')} own character on each idle pass, and why —
+          including the passes that changed nothing (—), the ones a guard declined (✕), and the questions ${P('subj')} deferred (…)
+          to the knowledge base or research. Read this to see whether ${P('poss')} reasoning is any good; the record is written
           whether or not anything changed.</div>
         ${body}
       </div></details>`;
@@ -1228,8 +1244,8 @@ function renderSelfState() {
   const hist = (selfData.state_history || []).slice(1, 6).map(h =>
     `<div class="mem-meta">${escHtml((h.text||'').slice(0,120))} <span class="muted">· ${escHtml(h.source||'')} · ${h.created_at?new Date(h.created_at*1000).toLocaleDateString():''}</span></div>`).join('');
   c.innerHTML = `
-    <textarea class="prompt" data-f="state" style="min-height:46px" placeholder="(unset — she'll form one as she reflects)">${escHtml(selfData.state||'')}</textarea>
-    <div class="bar"><span class="muted" style="flex:1">how she's feeling right now</span>
+    <textarea class="prompt" data-f="state" style="min-height:46px" placeholder="(unset — ${P('subj')}'ll form one as ${P('subj')} reflects)">${escHtml(selfData.state||'')}</textarea>
+    <div class="bar"><span class="muted" style="flex:1">how ${P('subj')}'s feeling right now</span>
       <button class="btn" onclick="saveSelfState(this)">Save</button><span class="status"></span></div>
     ${hist ? '<div class="muted" style="margin-top:6px">earlier:</div>'+hist : ''}`;
   box.appendChild(c);
@@ -1250,7 +1266,7 @@ function traitRow(a) {
   row.innerHTML = `
     <div class="row" style="align-items:end;gap:8px">
       <div style="flex:0 0 140px"><label>Trait (key)</label><input data-f="key" value="${escAttr(a.key||'')}" placeholder="e.g. extraversion"></div>
-      <div style="flex:1"><label>Value</label><input data-f="value" value="${escAttr(a.value||'')}" placeholder="how she is on this"></div>
+      <div style="flex:1"><label>Value</label><input data-f="value" value="${escAttr(a.value||'')}" placeholder="how ${P('subj')} is on this"></div>
       <div style="flex:0 0 120px"><label>Layer</label><select data-f="layer" onchange="renderSelfAdaptFields(this)">${opts}</select></div>
       <div style="flex:0 0 70px"><label>Locked</label><input data-f="locked" type="checkbox" ${a.locked?'checked':''} style="width:auto"></div>
       <input data-f="facet" type="hidden" value="${escAttr(a.facet||'trait')}">

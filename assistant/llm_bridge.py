@@ -63,6 +63,14 @@ except Exception:
     _spec4 = _ilu4.spec_from_file_location("spoken_time", _Path4(__file__).resolve().parent / "spoken_time.py")
     spoken_time = _ilu4.module_from_spec(_spec4); _spec4.loader.exec_module(spoken_time)
 
+try:                                    # persona pronouns (she/he/it) for third-person prompt text
+    import pronouns as pronouns_mod
+except Exception:
+    import importlib.util as _ilu6
+    from pathlib import Path as _Path6
+    _spec6 = _ilu6.spec_from_file_location("pronouns", _Path6(__file__).resolve().parent / "pronouns.py")
+    pronouns_mod = _ilu6.module_from_spec(_spec6); _spec6.loader.exec_module(pronouns_mod)
+
 try:                                    # deterministic calendar date resolver (symbolic → concrete)
     import calendar_resolve
 except Exception:
@@ -818,6 +826,7 @@ class LLMBridge:
         # sound" exchanges, injected in the cached static band — high-leverage for a small
         # fast LM's register (showing beats telling).  Set via apply_persona.
         self.voice_examples: list = []
+        self.pronouns: dict = pronouns_mod.SETS[pronouns_mod.DEFAULT_SEX]
 
         # Full conversation history (role / content dicts).
         self.history: list[dict] = []
@@ -1097,7 +1106,8 @@ class LLMBridge:
 
     def apply_persona(self, system_prompt: tp.Optional[str] = None,
                       greeting: tp.Optional[str] = None,
-                      voice_examples: tp.Optional[list] = None) -> None:
+                      voice_examples: tp.Optional[list] = None,
+                      pronouns: tp.Optional[dict] = None) -> None:
         """
         Reconfigure the bridge for a new session's persona.  Called by handle_chat
         before run() starts, so the chosen personality and greeting take effect for
@@ -1109,6 +1119,10 @@ class LLMBridge:
             self.greeting = greeting
         if voice_examples is not None:
             self.voice_examples = voice_examples or []
+        if pronouns:
+            # How the planner prompts refer to the persona — a persona configured
+            # as a man must not be described to the big LM as "she".
+            self.pronouns = pronouns
         self.history = []
         self._big_lm_briefing = ""
         self._working_memory = {}          # ephemeral: a fresh blackboard per conversation
@@ -2327,12 +2341,14 @@ class LLMBridge:
         affect = ""
         if self.affect_update_cb:
             cur = self.affect_hook() if self.affect_hook else ""
+            p = self.pronouns
             affect = (
-                "\n\nVinkona's inner life. What 'doing well' means for her: "
-                f"{self.affect_objective}\nHer current inner state: "
+                f"\n\nThe assistant's inner life. What 'doing well' means for {p['obj']}: "
+                f"{self.affect_objective}\n{p['poss'].capitalize()} current inner state: "
                 f"{cur or '(unset)'}\nIf — and ONLY if — this exchange has meaningfully "
-                "shifted how she's doing (a real connection, friction, something she's "
-                "moved to ponder, or the user asking how she is), end your whole reply with "
+                f"shifted how {p['subj']}'s doing (a real connection, friction, something "
+                f"{p['subj']}'s moved to ponder, or the user asking how {p['subj']} is), "
+                "end your whole reply with "
                 "a line `STATE: <one short, honest, first-person sentence>`. Otherwise omit "
                 "it entirely. Don't restate the current one; only a genuine shift.")
         # Working memory: hand the big LM the current blackboard and have it rewrite the

@@ -137,6 +137,14 @@ each tier (fast/big/embed) has its own model, GPU, and context settings.
 examples (they're user data, never committed). Edit them directly or in the
 web UI (`./serve_config.sh`, then http://localhost:8090).
 
+A persona's `identity.sex` picks the pronouns the whole app uses for it —
+`"female"` (she/her), `"male"` (he/him) or `"none"` (it/its). Prompts and the
+config panel follow that choice, so a masculine persona isn't described as
+"she" by its own planner. It's optional: unset falls back to the free-text
+`identity.pronouns` field and then to the shipped Vinkona persona's she/her, so
+upgrading changes nothing. This governs how the app refers to the *assistant*
+only — never how the user is addressed.
+
 ### 4. Run everything
 
 ```bash

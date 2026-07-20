@@ -502,7 +502,10 @@ class SelfAdmin:
                     # her reflection record — applied/refused/deferred/no-change, with
                     # the reasoning.  Collapsed in the panel: it's for perusal and
                     # debugging, not something to put in the owner's face.
-                    "reflections": ps.trait_decisions(25) if s else []}
+                    "reflections": ps.trait_decisions(25) if s else [],
+                    # the persona's own pronouns, so the panel's prose follows the
+                    # character the user chose rather than assuming one
+                    "pronouns": ps.pronoun_set()}
         finally:
             c.close()
 
