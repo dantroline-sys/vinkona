@@ -30,11 +30,13 @@ dependencies = [
     "faster-whisper",
     "soxr",
     "soundfile",
-    # HTTP server + async client (cascade WS/web, llm_bridge, research worker, knowledge host)
+    # HTTP server + async client (cascade WS/web, llm_bridge, research worker,
+    # knowledge host).  aiohttp is the ONLY web framework here — the cascade
+    # serves and calls through it.  (fastapi/uvicorn/pydantic were declared for
+    # an earlier design and imported nowhere; removed 2026-07 — uvicorn[standard]
+    # alone dragged in uvloop/httptools/websockets/watchfiles.  test_dependencies
+    # now fails if a declared dep goes unused again.)
     "aiohttp",
-    "fastapi",
-    "uvicorn[standard]",
-    "pydantic<3",       # v3 will break (pydantic has a history of major-version breaks)
     # Utilities
     "numpy<3",          # cap the next major; 1.x/2.x both fine
     "huggingface-hub",  # hf_hub_download for fetch_models.sh / vk_hf_download
