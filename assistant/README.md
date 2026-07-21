@@ -83,14 +83,28 @@ barge-in via VAD.
 
 ## Setup
 
-### 1. Install
+### The short way
+
+```bash
+./vinkona.sh setup         # install + models + start — no questions asked
+```
+
+One command from clone to chatting: it installs the Python env, downloads a
+**prebuilt** llama-server for this OS/GPU (sha256-verified from llama.cpp's
+official releases — nothing compiles unless no prebuilt fits), fetches a model
+set sized to this machine's RAM, starts everything, and prints the chat URL.
+When something isn't right, `./vinkona.sh doctor` prints every readiness check
+in one table, each failure with the one command that fixes it.
+
+### The long way (step by step)
 
 ```bash
 ./install.sh               # core: vinkona_env + cascade/ASR/memory deps + rnnoise (in-tree)
 ./install.sh tts           # TTS: orpheus_gguf (llama.cpp + SNAC — default, no extra venv)
                            #   or: tts neutts (cloned voice, own venv)
 ./install.sh models        # download the default GGUFs into Models/
-./install.sh llama         # build llama.cpp's llama-server into ./bin (if not on PATH)
+./install.sh llama         # llama-server into ./bin: prebuilt release first
+                           #   (LLAMA_CPP_REF pins; `llama --build` compiles instead)
 # or all four at once:  ./install.sh all
 # later:                ./install.sh status | uninstall [--with-models] [--purge]
 ```

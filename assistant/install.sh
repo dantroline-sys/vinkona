@@ -184,6 +184,23 @@ step_llama() {
         ok "llama-server already on PATH: $(command -v llama-server) — skipping build (run './install.sh llama --force' to build in-tree anyway)"
         [ "${1:-}" = "--force" ] || return 0
     fi
+    # Prebuilt first — the LM-Studio move: a novice's install never compiles.
+    # fetch_llama.py grabs the official release binary for this OS/arch (CUDA >
+    # Vulkan > CPU on an NVIDIA box; Metal is in the default macOS build),
+    # verifies its sha256, and symlinks bin/llama-server.  Falls back to the
+    # source build below when there's no matching asset or no network.
+    # VINKONA_LLAMA_BUILD=1 (or './install.sh llama --build') forces the build —
+    # e.g. squeezing max CUDA-arch performance out of a bleeding-edge card.
+    if [ "${1:-}" != "--build" ] && [ "${VINKONA_LLAMA_BUILD:-0}" != 1 ]; then
+        local rc=0
+        python3 fetch_llama.py || rc=$?
+        if [ "$rc" -eq 0 ]; then
+            ok "prebuilt llama-server installed (LLAMA_CPP_REF pins a release; './install.sh llama --build' compiles from source instead)"
+            return 0
+        fi
+        [ "$rc" -eq 3 ] || die "prebuilt fetch failed hard (rc=$rc) — see above; './install.sh llama --build' to compile from source"
+        say "llama: no usable prebuilt — building from source"
+    fi
     local platform_flags=""
     if [ "$(uname -s)" = Darwin ]; then
         # clang + make ship with the Xcode Command Line Tools; llama.cpp turns
