@@ -346,6 +346,26 @@ def test_notifications():
     check("only one row for the dedup_key",
           len([p for p in m.pending_notifications() if p["text"] == "evt lead 60"]) == 1)
 
+    # prune: the calendar lane reconciles its still-future queue against the
+    # current scan — churned-uid duplicates and cancelled events vanish;
+    # already-due rows, other sources, and delivered rows are untouchable
+    m2 = _store()
+    m2.add_notification("keep me", now + 100, source="calendar", dedup_key="cal:A@1:60")
+    m2.add_notification("stale uid dupe", now + 100, source="calendar", dedup_key="cal:OLD:60")
+    m2.add_notification("cancelled event", now + 900, source="calendar", dedup_key="cal:GONE:15")
+    m2.add_notification("due already", now - 5, source="calendar", dedup_key="cal:DUE:60")
+    m2.add_notification("user reminder", now + 100, source="user")
+    dropped = m2.prune_notifications("calendar", {"cal:A@1:60"}, now=now)
+    left = {p["text"] for p in m2.pending_notifications()}
+    check("prune drops future rows not in the keep set", dropped == 2)
+    check("prune keeps the matching row", "keep me" in left)
+    check("prune never touches a row already due", "due already" in left)
+    check("prune never touches other sources", "user reminder" in left)
+    check("pruned rows are gone", "stale uid dupe" not in left and "cancelled event" not in left)
+    check("empty keep set clears every future calendar row",
+          m2.prune_notifications("calendar", set(), now=now) == 1
+          and "keep me" not in {p["text"] for p in m2.pending_notifications()})
+
 
 def test_review_window_sweeps_back_and_wraps():
     m = _store()

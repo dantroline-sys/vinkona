@@ -255,6 +255,80 @@ def test_guidance_live_mode():
     asyncio.run(run())
 
 
+def test_swap_in_client():
+    async def run():
+        STATE["mode"] = "ok"
+        c = kh_mod.KnowledgeHost("http://h", timeout_s=1.0)
+        note = await c.swap_in("org/Big-122B")
+        check("swap_in returns the host's note on ok", note is not None)
+        STATE["mode"] = "raise"
+        check("swap_in fail-soft on client error", (await c.swap_in("m")) is None)
+        STATE["mode"] = "notok"
+        check("swap_in fail-soft on ok=false (unknown model)", (await c.swap_in("m")) is None)
+        STATE["mode"] = "ok"
+        check("swap_in refuses empty name without a call", (await c.swap_in("  ")) is None)
+        c2 = kh_mod.KnowledgeHost("", timeout_s=1.0)
+        check("swap_in without a url → None", (await c2.swap_in("m")) is None)
+    asyncio.run(run())
+
+
+def test_same_host_guard():
+    same = cascade._same_host
+    check("loopback aliases match", same("http://127.0.0.1:8771", "http://localhost:11438"))
+    check("same LAN host matches", same("http://10.0.0.7:8771", "http://10.0.0.7:11438"))
+    check("different hosts do not", not same("http://10.0.0.7:8771", "http://10.0.0.9:11438"))
+    check("empty urls do not", not same("", "http://10.0.0.9:11438"))
+
+
+def test_request_swap_cooldown():
+    asked: list = []
+
+    class _KH:
+        async def swap_in(self, name):
+            asked.append(name)
+            return "poll GET /serving/swap"
+
+    sh = types.SimpleNamespace()
+    sh._kh = _KH()
+    sh._swap_asked = {}
+    sh.s = types.SimpleNamespace(trace=False)
+    sh._request_swap = cascade._Session._request_swap.__get__(sh)
+
+    async def run():
+        sh._request_swap("http://127.0.0.1:11438", "org/Big-122B")
+        sh._request_swap("http://127.0.0.1:11438", "org/Big-122B")   # inside cooldown
+        await asyncio.sleep(0)                                       # let the task run
+        check("swap requested exactly once inside the cooldown", asked == ["org/Big-122B"])
+        sh._swap_asked["org/Big-122B"] = 0.0                         # cooldown expired
+        sh._request_swap("http://127.0.0.1:11438", "org/Big-122B")
+        await asyncio.sleep(0)
+        check("a new request goes out after the cooldown", asked == ["org/Big-122B"] * 2)
+    asyncio.run(run())
+
+
+def test_due_reminders_capped():
+    class _Mem:
+        def __init__(self, texts):
+            self._t = texts
+        def due_notifications(self):
+            return [{"text": t} for t in self._t]
+
+    def block(texts):
+        sh = types.SimpleNamespace()
+        sh.s = types.SimpleNamespace(memory=_Mem(texts), trace=False)
+        return cascade._Session._due_reminders.__get__(sh)()
+
+    # the uid-churn shape: the same reminder queued 300 times → ONE line
+    check("hundreds of duplicates collapse to one line",
+          block(["dentist — today at 15:00"] * 300) == "- dentist — today at 15:00")
+    many = block([f"reminder {i}" for i in range(40)])
+    lines = many.splitlines()
+    check("40 distinct reminders cap at 10 + remainder", len(lines) == 11)
+    check("the remainder line carries the honest count", "30 more" in lines[-1])
+    check("no reminders → empty block", block([]) == "")
+    asyncio.run(asyncio.sleep(0))
+
+
 def main():
     test_client_ask_and_search()
     test_client_fail_soft()
@@ -263,6 +337,10 @@ def main():
     test_guidance_relays_typed_card_payload()
     test_guidance_gate_and_disabled()
     test_guidance_live_mode()
+    test_swap_in_client()
+    test_same_host_guard()
+    test_request_swap_cooldown()
+    test_due_reminders_capped()
     print(f"\n{PASS} passed, {FAIL} failed")
     raise SystemExit(1 if FAIL else 0)
 

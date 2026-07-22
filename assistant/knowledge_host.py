@@ -113,3 +113,33 @@ class KnowledgeHost:
         if intent:
             args["intent"] = intent
         return await self._call("kb_search", args, http=http)
+
+    async def swap_in(self, name: str,
+                      http: tp.Optional[aiohttp.ClientSession] = None) -> tp.Optional[str]:
+        """Ask the host's box to swap an exclusive model in (POST /serving/swap).
+
+        Under Vinur's exclusive-swap serving, a big LM that is not resident
+        REFUSES connections by design — this is the remedy, not an error.  The
+        host accepts the entry name, the model id, or its served_model_name,
+        so the name this client already sends in requests is enough.  Returns
+        the host's note (weights load for minutes; the caller should retry
+        later, not wait), or None on any failure — fail-soft like the rest."""
+        name = (name or "").strip()
+        if not (self.url and name):
+            return None
+        payload = json.dumps({"name": name}).encode()
+        own = http is None
+        sess = http or aiohttp.ClientSession()
+        try:
+            async with sess.post(f"{self.url}/serving/swap", data=payload,
+                                 headers=self._headers(), timeout=self.timeout) as resp:
+                body = await resp.json()
+                if resp.status != 200 or not body.get("ok"):
+                    return None
+                return str(body.get("note") or "swap requested")
+        except (aiohttp.ClientError, OSError, ValueError, json.JSONDecodeError,
+                asyncio.TimeoutError):
+            return None
+        finally:
+            if own:
+                await sess.close()

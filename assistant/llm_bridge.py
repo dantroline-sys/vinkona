@@ -612,6 +612,7 @@ class LLMBridge:
         guidance_hook: tp.Optional[tp.Callable[[str], tp.Awaitable[tp.Optional[str]]]] = None,
         self_hook: tp.Optional[tp.Callable[[], str]] = None,
         reminder_hook: tp.Optional[tp.Callable[[], str]] = None,
+        swap_hook: tp.Optional[tp.Callable[[str, str], None]] = None,
         user_questions_hook: tp.Optional[tp.Callable[[], str]] = None,
         offer_hook: tp.Optional[tp.Callable[[str], str]] = None,
         offer_spoken_hook: tp.Optional[tp.Callable[[str], None]] = None,
@@ -739,6 +740,11 @@ class LLMBridge:
         # reminder_hook() -> due reminders to mention now (consumed when fetched), so
         # Vinkona voices upcoming events during a live chat instead of only via the bell.
         self.reminder_hook = reminder_hook
+        # swap_hook(base_url, model): a remote tier refused the connection — under an
+        # exclusive-swap serving box (Vinur) that means "not resident", not "broken";
+        # the hook asks the box to swap the model in (fire-and-forget, cooled down by
+        # the caller).  This turn degrades gracefully; the next one finds it loaded.
+        self.swap_hook = swap_hook
         # user_questions_hook() -> open "ask the user" questions from learning plans, to
         # raise naturally when they fit (the EQ loop that pulls the user into its learning).
         self.user_questions_hook = user_questions_hook
@@ -2539,7 +2545,19 @@ class LLMBridge:
                         if tc_acc[i]["name"]:
                             tool_calls_out.append(tc_acc[i])
         except aiohttp.ClientConnectorError as exc:
-            _log("error", f"Cannot reach LM at {base_url}: {exc}")
+            if self.swap_hook:
+                # not an outage on an exclusive-swap box — the model just isn't
+                # resident.  Ask for it; weights load in minutes, so THIS turn
+                # proceeds without the tier and the next one finds it up.
+                _log("warning", f"LM at {base_url} refused the connection — requesting a "
+                                "swap-in (exclusive serving); this turn continues without it")
+                self._trace("lm_swap_requested", model=model, status=0, detail=str(exc))
+                try:
+                    self.swap_hook(base_url, model)
+                except Exception as hexc:              # the hook must never cost a turn
+                    _log("warning", f"swap request failed: {hexc}")
+            else:
+                _log("error", f"Cannot reach LM at {base_url}: {exc}")
             self._trace("lm_error", model=model, status=0, detail=f"unreachable: {exc}")
             return
         except asyncio.TimeoutError:

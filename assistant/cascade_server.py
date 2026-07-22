@@ -88,6 +88,18 @@ def _parse_iso(s):
         return None
 
 
+def _same_host(a: str, b: str) -> bool:
+    """True when two urls name the same machine — the guard that keeps the big-LM
+    swap hook from asking one box to load a model that lives on another."""
+    from urllib.parse import urlparse
+    ha = (urlparse(a or "").hostname or "").lower()
+    hb = (urlparse(b or "").hostname or "").lower()
+    loop = {"localhost", "127.0.0.1", "::1"}
+    if ha in loop and hb in loop:
+        return True
+    return bool(ha) and ha == hb
+
+
 def _humanize_when(start_ts, lead_min):
     """A short, speakable 'when' for a reminder, e.g. 'tomorrow at 15:00' / 'in 1 hour'."""
     import datetime
@@ -338,6 +350,18 @@ class CascadeServer:
                 continue
             if not raw or str(raw).startswith("("):       # tool error strings start with "("
                 continue
+            if stype == "calendar" and self._cal_sync_mod:
+                # same folding the reminder lane does: Vinkona's own mirror
+                # copies collapse onto their originals, or every entry shows
+                # twice on a consolidated calendar
+                try:
+                    data = json.loads(raw)
+                    events = data.get("events", data) if isinstance(data, dict) else data
+                    if isinstance(events, list):
+                        vc = cfg.get("calendar_sync", {}).get("vinkona_calendar", "Vinkona")
+                        raw = json.dumps(self._cal_sync_mod.fold_mirrors(events, vc))
+                except Exception:
+                    pass                                  # unfoldable: format as-is
             trust = src.get("trust") or self._ambient_mod.default_trust(stype)
             items = self._ambient_mod.format_source(stype, raw, src.get("max_items", default_max))
             amb.replace_source(source, items, ttl, trust=trust, priority=src.get("priority", 5))
@@ -382,19 +406,32 @@ class CascadeServer:
             return
         now = time.time()
         made = 0
+        wanted: set[str] = set()
         for ev in cache:
+            # UID-churn-proof: Hosportal regenerates uids on every export, so
+            # keying dedup on ev['id'] queued the SAME reminder afresh every
+            # sync — hundreds deep by the time they came due.  The key is the
+            # event's content signature (calendar_sync's matching idiom).
+            sig = f"{ev['title']}@{int(ev['start'])}"
             for lead in ncfg.get("lead_times_min", [1440, 60]):
                 deliver_at = ev["start"] - lead * 60
                 if deliver_at < now - 60:            # the lead time already passed
                     continue
+                wanted.add(f"cal:{sig}:{lead}")
                 when = _humanize_when(ev["start"], lead)
                 if self.memory.add_notification(
                         f"{ev['title']} — {when}", deliver_at, kind="appointment",
-                        source="calendar", dedup_key=f"cal:{ev['id']}:{lead}"):
+                        source="calendar", dedup_key=f"cal:{sig}:{lead}"):
                     made += 1
-        if made and self.trace:
+        # The calendar lane OWNS its still-future queue: anything queued that
+        # matches no current event — churned-uid duplicates, cancelled or
+        # moved events — is pruned instead of firing.  This also drains the
+        # backlog an older Vinkona built up, on the first scan after upgrade.
+        dropped = self.memory.prune_notifications("calendar", wanted)
+        if (made or dropped) and self.trace:
             self.trace.write({"ts": time.time(), "session": "scheduler",
-                              "kind": "notify_scheduled", "count": made})
+                              "kind": "notify_scheduled", "count": made,
+                              "pruned": dropped})
 
     async def _authenticate(self, ws) -> bool:
         """Gate a fresh connection on the pre-shared token: the client's FIRST frame must
@@ -471,6 +508,7 @@ class _Session:
         self._shared = types.SimpleNamespace(user_turn_queue=self.user_turn_queue,
                                              deliberating=False)
         self.session_id = uuid.uuid4().hex
+        self._swap_asked: dict = {}                           # model → last swap-in request ts
         self.active_tags: set = set()                         # rolling conversation tags
         self._rhythm = ""                                     # usage-rhythm line (set at session open)
         self._user_profile_cache = None                       # learned user model (per session)
@@ -581,6 +619,15 @@ class _Session:
                         kc.get("url", ""), token=kc.get("token", ""),
                         timeout_s=kc.get("timeout_s", 4.0))
                     if kc.get("enabled") else None)
+        # Under Vinur's exclusive-swap serving, a non-resident big LM REFUSES
+        # connections by design.  When the knowledge host runs on the same box,
+        # Vinkona asks that box to swap the model in instead of treating the
+        # tier as down (big_lm.auto_swap = false disables).
+        big_swap = (self._request_swap
+                    if (self._kh and big.get("remote") and big.get("url")
+                        and big.get("auto_swap", True)
+                        and _same_host(kc.get("url", ""), big.get("url", "")))
+                    else None)
         bridge = self.s._bridge_mod.LLMBridge(
             server_state=self._shared,
             fast_lm_url=self.cfg["fast_lm"]["url"],
@@ -609,6 +656,7 @@ class _Session:
             reminder_hook=(self._due_reminders
                            if (self.s.memory and self.cfg.get("notifications", {}).get("enabled"))
                            else None),
+            swap_hook=big_swap,
             user_questions_hook=(self._pending_user_questions
                                  if (self.s.memory
                                      and self.cfg.get("research", {}).get("plans", {}).get("enabled", True))
@@ -683,6 +731,12 @@ class _Session:
                              greeting=persona.get("greeting"),
                              voice_examples=(persona.get("identity") or {}).get("voice_examples"),
                              pronouns=self.s._pron_mod.for_persona(persona))
+
+        if big_swap:
+            # warm the big tier at session open: if it is not resident, the swap
+            # starts NOW, so by the time the first briefing wants it the weights
+            # are loaded (or loading) instead of the tier failing its first call
+            big_swap(big.get("url", ""), big.get("model", ""))
 
         self.s.mark_activity(open=True)                       # idle worker stands down
         if self.s.memory and self.cfg.get("awareness", {}).get("time_meaning", True):
@@ -1010,16 +1064,52 @@ class _Session:
         except asyncio.CancelledError:
             pass
 
+    def _request_swap(self, base_url: str, model: str) -> None:
+        """llm_bridge's swap_hook: fire-and-forget "load this model" at the serving
+        box, through the knowledge host's /serving/swap (which accepts the model
+        name this client already sends in requests).  Cooled down per model:
+        weights take minutes to load, and retries during that window must not
+        spam the swap queue.  Never blocks a turn — the tier comes up behind us."""
+        now = time.time()
+        if not (self._kh and model) or now - self._swap_asked.get(model, 0.0) < 180:
+            return
+        self._swap_asked[model] = now
+
+        async def go():
+            note = await self._kh.swap_in(model)
+            _log(f"swap-in requested for '{model}': "
+                 f"{note or 'the serving host refused or is unreachable'}")
+            if self.s.trace:
+                self._trace({"ts": time.time(), "kind": "swap_requested",
+                             "model": model, "url": base_url,
+                             "note": note or "request failed"})
+
+        asyncio.create_task(go())
+
     def _due_reminders(self) -> str:
         """Due reminders to voice in this turn.  Consumes them (marks delivered) so the
-        client bell won't also fire — during a live chat, saying it aloud is delivery."""
+        client bell won't also fire — during a live chat, saying it aloud is delivery.
+        Deduped and CAPPED: a backlog (uid churn once queued the same reminder hundreds
+        of times) must never blow the fast LM's context — the prompt gets at most ten
+        distinct lines and an honest remainder count."""
         items = self.s.memory.due_notifications()
         if not items:
             return ""
+        distinct: list[str] = []
+        for i in items:
+            t = (i["text"] or "").strip()
+            if t and t not in distinct:
+                distinct.append(t)
+        lines = [f"- {t}" for t in distinct[:10]]
+        extra = len(distinct) - 10
+        if extra > 0:
+            lines.append(f"- …plus {extra} more due reminders — mention the count and "
+                         "offer to go through them if the user wants")
         if self.s.trace:
             self._trace({"ts": time.time(), "kind": "notify_spoken",
-                         "count": len(items), "texts": [i["text"] for i in items]})
-        return "\n".join(f"- {i['text']}" for i in items)
+                         "count": len(items), "distinct": len(distinct),
+                         "texts": distinct[:10]})
+        return "\n".join(lines)
 
     def _pending_user_questions(self) -> str:
         """Open 'ask the user' questions from learning plans, surfaced for the fast LM to

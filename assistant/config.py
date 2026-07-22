@@ -306,6 +306,11 @@ DEFAULTS: dict = {
         # server's /v1/models (resolve_remote_lms) — a stale name is adopted
         # when the server hosts exactly one model, warned about otherwise.
         "remote": False,
+        # Exclusive-swap awareness: when remote AND the knowledge host runs on
+        # the SAME box, a refused connection means "not resident", not "down" —
+        # Vinkona then asks that box to swap the model in (POST /serving/swap,
+        # model name accepted) and warms it at session open.  False disables.
+        "auto_swap": True,
         "model": "Qwen2.5-32B-Instruct-Q4_K_M.gguf",
         "gpu": 0,                            # 3090 (dedicated; never on Ollama's 11434)
         "ctx_size": 65536,                   # background tier; needs the VRAM (keep KV q8_0)

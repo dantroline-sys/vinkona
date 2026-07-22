@@ -1114,6 +1114,27 @@ class MemoryStore:
             "SELECT id,created_at,deliver_at,text,kind,source FROM notifications "
             "WHERE delivered_at IS NULL ORDER BY deliver_at")]
 
+    def prune_notifications(self, source: str, keep_keys=None,
+                            now: float | None = None) -> int:
+        """Reconcile one source's queue against its external truth: drop
+        UNDELIVERED, still-FUTURE notifications from `source` whose dedup_key
+        is not in keep_keys.  For lanes that re-derive their queue every scan
+        (the calendar): uid-churn duplicates and cancelled/moved events vanish
+        instead of firing.  Rows already due stay (they are about to be
+        voiced), as do other sources' rows and everything delivered."""
+        now = now if now is not None else time.time()
+        keys = sorted(keep_keys or [])
+        q = ("DELETE FROM notifications WHERE source=? AND delivered_at IS NULL "
+             "AND deliver_at>?")
+        args: list = [source, now]
+        if keys:
+            q += (" AND (dedup_key IS NULL OR dedup_key NOT IN ("
+                  + ",".join("?" * len(keys)) + "))")
+            args += keys
+        cur = self.db.execute(q, args)
+        self.db.commit()
+        return cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+
     # ── small key/value store for worker cursors (e.g. the idle review position) ──
     def get_state(self, key: str, default: str | None = None) -> str | None:
         r = self.db.execute("SELECT value FROM worker_state WHERE key=?", (key,)).fetchone()

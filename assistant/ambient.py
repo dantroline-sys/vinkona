@@ -71,11 +71,18 @@ def _when(iso: str) -> str:
 
 def format_calendar(raw, max_items: int) -> list[dict]:
     out = []
-    for ev in (_items(raw) or [])[:max_items]:
+    seen: set[str] = set()                # mirror copies / uid churn: same line twice
+    for ev in (_items(raw) or []):
+        if len(out) >= max_items:
+            break
         title = (ev.get("title") or ev.get("summary") or "an event").strip()
         when = _when(ev.get("start") or ev.get("when") or "")
+        line = f"{when} — {title}".strip(" —")
+        if line in seen:
+            continue
+        seen.add(line)
         out.append({"key": str(ev.get("id") or f"{title}@{ev.get('start')}"),
-                    "payload": f"{when} — {title}".strip(" —")})
+                    "payload": line})
     return out
 
 
