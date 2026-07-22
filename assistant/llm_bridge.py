@@ -264,7 +264,19 @@ async def wiki_lookup(query: str, lang: str = "en", timeout_s: float = 8.0,
     summary = summary_base or f"https://{lang}.wikipedia.org/api/rest_v1/page/summary/"
     ua = {"User-Agent": "Vinkona/1.0 (local personal assistant)"}
     tmo = aiohttp.ClientTimeout(total=timeout_s)
-    async with aiohttp.ClientSession(timeout=tmo) as session:
+    # The real external lookup goes through the egress broker (deny-by-default
+    # + audited).  Test injections (api_base/summary_base, loopback fakes) use
+    # a plain session — they exercise the parsing, not the egress policy.
+    from .amiga_net import broker
+    injected = bool(api_base or summary_base)
+    session_cm = (broker.session("wikipedia tool", rule_name="wikipedia",
+                                 timeout=timeout_s) if not injected
+                  else aiohttp.ClientSession(timeout=tmo))
+    try:
+        session = await session_cm.__aenter__()
+    except broker.EgressDenied as e:
+        return f"(Wikipedia lookup blocked by the egress policy: {e})"
+    try:
         async with session.get(api, headers=ua, params={
                 "action": "opensearch", "search": query, "limit": "4",
                 "namespace": "0", "format": "json"}) as r:
@@ -281,6 +293,10 @@ async def wiki_lookup(query: str, lang: str = "en", timeout_s: float = 8.0,
                 return (f"(found the article '{top}' but couldn't fetch its "
                         f"summary: HTTP {r.status})")
             s = await r.json(content_type=None)
+    except broker.EgressDenied as e:
+        return f"(Wikipedia lookup blocked by the egress policy: {e})"
+    finally:
+        await session_cm.__aexit__(None, None, None)
     extract = (s.get("extract") or "").strip()
     desc = (s.get("description") or "").strip()
     out = f"Wikipedia — {s.get('title', top)}"

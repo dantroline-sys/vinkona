@@ -1,0 +1,76 @@
+# egress.toml — Vinkona's outbound network policy (AMIGA-OPS-01 §3.3).
+#
+# DENY BY DEFAULT: code in this repository can reach ONLY what a rule below
+# permits, and every decision — allowed or refused — lands in
+# var/log/egress.jsonl.  Read the current state any time:
+#
+#     python3 -m assistant.amiga_net.status
+#
+# A rule with ttl_seconds/max_uses is a LEASE: it grants nothing on its own.
+# An operation (a research turn, a binary fetch) opens the lease, the calls
+# happen, the lease closes itself — so an idle Vinkona has zero standing
+# permission to leave this machine.
+#
+# SAME format as Vinur's egress.toml, deliberately: the future native snitch
+# reads both.  Edit it like a firewall: on purpose.
+#
+# NOT here (and correctly so): the Mac tool host carries the primary research
+# egress (RSS/news/weather/most sources); the cascade WSS, the llama-servers,
+# the config server and supervisor probes are all loopback.  This file covers
+# the DIRECT external calls the inventory found — the keyless research
+# fallbacks, the live Wikipedia tool, and supply-chain-sensitive acquisition.
+
+# ── research: the keyless scholarly fallbacks (research_worker.py) ────────────
+# One lease wraps a whole research turn; the LM picks which sources to hit.
+
+[[rule]]
+name        = "research"
+hosts       = ["export.arxiv.org", "eutils.ncbi.nlm.nih.gov",
+               "pubmed.ncbi.nlm.nih.gov", "api.semanticscholar.org",
+               "api.crossref.org", "doi.org", "*.wikipedia.org"]
+port        = 443
+methods     = ["GET"]
+purpose     = "keyless scholarly lookups (arxiv, PubMed, Semantic Scholar, Crossref, Wikipedia) when a research turn needs them and the Mac host can't serve them"
+ttl_seconds = 900            # one research turn
+max_uses    = 200            # a turn hits several sources, each a couple of GETs
+
+# arxiv over plain HTTP (its API answers on :80 too)
+[[rule]]
+name        = "research-http"
+hosts       = ["export.arxiv.org"]
+port        = 80
+methods     = ["GET"]
+purpose     = "arxiv Atom API over http (some deployments)"
+ttl_seconds = 900
+max_uses    = 50
+
+# ── live Wikipedia tool (llm_bridge wiki_lookup) — a single turn's lookup ─────
+[[rule]]
+name        = "wikipedia"
+hosts       = ["*.wikipedia.org"]
+port        = 443
+methods     = ["GET"]
+purpose     = "the built-in Wikipedia tool: one opensearch + one summary GET when the fast LM asks and no tool host is wired"
+ttl_seconds = 60
+max_uses    = 6
+
+# ── supply-chain-sensitive acquisition (leased, verify digests) ──────────────
+[[rule]]
+name        = "llama-release"
+hosts       = ["api.github.com", "github.com", "*.githubusercontent.com",
+               "objects.githubusercontent.com"]
+port        = 443
+methods     = ["GET"]
+purpose     = "fetch a prebuilt llama-server release binary (fetch_llama.py) — digest-verified"
+ttl_seconds = 3600
+max_uses    = 100
+
+[[rule]]
+name        = "huggingface"
+hosts       = ["huggingface.co", "*.huggingface.co", "*.hf.co"]
+port        = 443
+methods     = ["GET", "HEAD"]
+purpose     = "download voice/vocoder GGUF assets (tts_orpheus_gguf) or a model you asked for"
+ttl_seconds = 14400
+max_uses    = 20000
+auth        = "hf_token"     # attached by the broker; engines never see it
