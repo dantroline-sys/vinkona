@@ -43,17 +43,30 @@ def _dest_of(url: str) -> tuple:
     return host, port
 
 
+def _config() -> dict:
+    """The merged config, however this package was loaded.  Vinkona is a
+    script-tree (no `assistant` package at runtime), so `from ..config` only
+    works under test/package context — fall back to the top-level `config`
+    module that sits on sys.path beside us."""
+    try:
+        from ..config import load_config        # package context (tests / vinur-style)
+        return load_config()
+    except Exception:
+        pass
+    try:
+        import config                            # script-tree top-level (runtime)
+        return config.load_config()
+    except Exception:
+        return {}
+
+
 def _secret(name: str) -> str:
     """A named secret for rule auth: config first, then the environment."""
     if not name:
         return ""
-    try:
-        from ..config import load_config
-        val = str(load_config().get(name) or "").strip()
-        if val:
-            return val
-    except Exception:
-        pass
+    val = str(_config().get(name) or "").strip()
+    if val:
+        return val
     return os.environ.get(name.upper(), "").strip()
 
 
@@ -142,13 +155,9 @@ def _engine() -> str:
     forced = os.environ.get("AMIGA_FETCH_ENGINE", "").strip()
     if forced:
         return forced
-    try:                                      # the fetch_engine config key
-        from ..config import load_config      # (Settings › Network)
-        pick = str(load_config().get("fetch_engine") or "").strip()
-        if pick:
-            return pick
-    except Exception:
-        pass
+    pick = str(_config().get("fetch_engine") or "").strip()   # Network tab
+    if pick:
+        return pick
     for cand in ("aria2c", "wget"):
         if shutil.which(cand):
             return cand
@@ -330,12 +339,12 @@ class _Resp:
     async def __aenter__(self):
         self._r = await self._cm.__aenter__()
         host, port = _dest_of(self._url)
-        if self._r.status in (401, 403):
+        if getattr(self._r, "status", 200) in (401, 403):
             audit.write("AUTH_REJECT", purpose=self._purpose, host=host, port=port,
                         rule=self._rule.name, detail=f"HTTP {self._r.status}")
         else:
             policy.lease_use(self._rule)
-            n = int(self._r.headers.get("Content-Length") or 0)
+            n = int((getattr(self._r, "headers", None) or {}).get("Content-Length") or 0)
             audit.write("ALLOWED", purpose=self._purpose, host=host, port=port,
                         rule=self._rule.name, bytes_in=n)
         return self._r

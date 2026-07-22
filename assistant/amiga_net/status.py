@@ -1,6 +1,6 @@
 """The user's window onto the broker (B-11):
 
-    python3 -m knowledgehost.amiga_net.status [--n 40]
+    python3 -m assistant.amiga_net.status [--n 40]
 
 Plain language, three sections: what this machine is ALLOWED to reach and why;
 any lease open right now; and the last N things that actually happened.  If

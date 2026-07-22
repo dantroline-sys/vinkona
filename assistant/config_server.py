@@ -641,6 +641,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, {"help": HELPMOD.load(Path(__file__).parent)})
             except Exception as e:
                 return self._json(500, {"error": str(e)})
+        if path == "/api/net":                        # the egress broker's window
+            try:
+                netadmin = _load_mod("netadmin")
+                return self._json(200, netadmin.view(self._cfg()))
+            except Exception as e:
+                return self._json(200, {"ok": False, "error": f"{type(e).__name__}: {e}"})
         if path == "/api/personas":
             return self._send(200, CFGMOD.resolve_read(self._personas_path()).read_text())
         if path == "/api/models":
@@ -778,6 +784,18 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/config":
             _atomic_json(Path(self.config_path), obj)
             return self._json(200, {"ok": True})
+        if path == "/api/net":                        # broker action (revoke / rule toggle)
+            try:
+                return self._json(200, _load_mod("netadmin").action(obj))
+            except Exception as e:
+                return self._json(500, {"error": str(e)})
+        if path == "/api/net/setting":                # save one redacted network setting
+            try:
+                netadmin = _load_mod("netadmin")
+                return self._json(200, netadmin.set_setting(
+                    self.config_path, str(obj.get("key") or ""), obj.get("value")))
+            except Exception as e:
+                return self._json(500, {"error": str(e)})
         if path == "/api/personas":
             _atomic_json(Path(self._personas_path()), obj)
             return self._json(200, {"ok": True})

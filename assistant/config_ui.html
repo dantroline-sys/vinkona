@@ -172,6 +172,7 @@
   <button data-tab="self">Self</button>
   <button data-tab="research">Research</button>
   <button data-tab="plans">Plans</button>
+  <button data-tab="network">Network</button>
   <button data-tab="settings">Settings</button>
 </nav>
 <main>
@@ -467,6 +468,11 @@
   </section>
 
   <!-- ── Settings ─────────────────────────────────────────────────────────── -->
+  <section id="tab-network" class="tab">
+    <h2>Network <span class="muted">— the egress broker: every byte that leaves this box goes through it.</span></h2>
+    <div id="netBox">loading…</div>
+  </section>
+
   <section id="tab-settings" class="tab">
     <h2>Settings <span class="muted">— every option in config.json, structured. New options appear here automatically.</span></h2>
     <input id="cfgSearch" class="cfg-search" placeholder="Filter settings…  (e.g. calendar, timeout, port)" oninput="filterConfig(this.value)">
@@ -491,7 +497,7 @@
 
 <script>
 // ── Tabs ────────────────────────────────────────────────────────────────────
-const loaders = { profiles: loadProfiles, models: loadModels, tuning: loadTuning, services: startServices, live: startLive, memory: loadMemory, self: loadSelf, research: loadResearch, plans: loadPlans, settings: loadConfig };
+const loaders = { profiles: loadProfiles, models: loadModels, tuning: loadTuning, services: startServices, live: startLive, memory: loadMemory, self: loadSelf, research: loadResearch, plans: loadPlans, network: loadNetwork, settings: loadConfig };
 
 let planFilter = 'open';
 function setPlanFilter(f) { planFilter = f; loadPlans(); }
@@ -1578,6 +1584,92 @@ async function saveResearch() {
   idle.consolidate_prompt = orNull('rConsolidatePrompt');
   const d = await (await fetch('/api/config', { method: 'POST', body: JSON.stringify(cfg) })).json();
   flash(document.getElementById('rstatus'), d.ok, d.ok ? 'saved ✓ (applies on next research pass)' : ('error: ' + (d.error || '')));
+}
+
+// ── Network: the egress broker (posture, rules/leases, traffic, settings) ─────
+const POSTC = { good:'#3fb950', warn:'#d29922', bad:'#f85149', unknown:'#8b93a1' };
+const POSTW = { good:'good', warn:'worth fixing', bad:'UNSAFE / broken', unknown:'not verified' };
+const NETHELP = {
+  http_proxy:'proxy for plain-HTTP egress (http://host:3128); credentials allowed, shown redacted',
+  https_proxy:'proxy for HTTPS egress — research/wikipedia/asset fetches ride this',
+  all_proxy:'catch-all (socks5://host:1080) when the scheme-specific keys are empty',
+  no_proxy:'hosts that bypass the proxy — loopback is always kept local',
+  fetch_engine:'download engine for asset fetches: auto = aria2c > wget > built-in stream',
+};
+function gbfmt(b){ return b>=2**30 ? (b/2**30).toFixed(2)+' GB' : b>=2**20 ? (b/2**20).toFixed(1)+' MB' : b+' B'; }
+async function loadNetwork(){
+  const box = document.getElementById('netBox');
+  let r; try { r = await (await fetch('/api/net')).json(); } catch(e){ box.textContent = 'request failed: '+e; return; }
+  if (!r.ok){ box.textContent = 'error: '+(r.error||'failed'); return; }
+  box.innerHTML = netPosture(r.posture||{}) + netSettings(r) + netRules(r.rules||[]) + netTraffic(r.stats||{}) + netEvents(r.events||[], r.audit_path||'');
+}
+function netDot(st){ return '<span style="color:'+(POSTC[st]||'#888')+';font-size:15px">●</span>'; }
+function netPosture(p){
+  const s = p.summary||{};
+  const rows = (p.checks||[]).map(c => '<tr><td style="white-space:nowrap">'+netDot(c.state)+' <b>'+escHtml(c.name)+'</b></td>'
+    + '<td class="muted" style="font-size:13px">'+escHtml(c.detail)+(c.fix? '<div style="opacity:.8">→ '+escHtml(c.fix)+'</div>':'')+'</td></tr>').join('');
+  const head = s.error ? 'posture scan failed: '+escHtml(s.error)
+    : netDot(s.overall||'unknown')+' overall: <b>'+(POSTW[s.overall]||'?')+'</b> — '+(s.good||0)+' good · '+(s.warn||0)+' worth fixing · '+(s.bad||0)+' unsafe · '+(s.unknown||0)+' not verified';
+  return '<div class="card"><h3>Leak check</h3><div class="muted" style="font-size:13px;margin-bottom:6px">read-only: what listens where, is the policy tight, is there an overlay. Reloads on tab open.</div>'
+    + '<div style="margin:4px 0 8px">'+head+'</div><table class="grid">'+rows+'</table></div>';
+}
+function netSettings(r){
+  const s = r.settings||{}, eng = r.engines||{};
+  const prox = ['http_proxy','https_proxy','all_proxy','no_proxy'].map(k =>
+    '<tr><td><code>'+k+'</code></td><td><input data-nk="'+k+'" value="'+escAttr(s[k]||'')+'" style="width:300px" placeholder="(empty = direct)"></td>'
+    + '<td class="muted" style="font-size:12px">'+escHtml(NETHELP[k])+'</td>'
+    + '<td><button class="btn secondary" onclick="saveNet(\''+k+'\')">Save</button></td></tr>').join('');
+  const engOpts = ['','aria2c','wget','stdlib'].map(v => '<option value="'+v+'"'+((s.fetch_engine||'')===v?' selected':'')+'>'+(v||'auto')+'</option>').join('');
+  const engRow = '<tr><td><code>fetch_engine</code></td><td><select data-nk="fetch_engine">'+engOpts+'</select> '
+    + '<span class="muted" style="font-size:12px">installed: aria2c '+(eng.aria2c?'✓':'✗')+' · wget '+(eng.wget?'✓':'✗')+' → using <b>'+escHtml(r.engine_resolved||'?')+'</b></span></td>'
+    + '<td class="muted" style="font-size:12px">'+escHtml(NETHELP.fetch_engine)+'</td><td><button class="btn secondary" onclick="saveNet(\'fetch_engine\')">Save</button></td></tr>';
+  const tokRow = '<tr><td><code>hf_token</code></td><td>'
+    + (s.hf_token_set ? '<span class="pill">set'+(s.hf_token_hint?' · '+escHtml(s.hf_token_hint):'')+'</span>' : '<span class="pill" style="opacity:.6">not set</span>')
+    + ' <input data-nk="hf_token" type="password" style="width:200px" placeholder="paste a new token (write-only)"></td>'
+    + '<td class="muted" style="font-size:12px">Hugging Face auth for gated asset repos — held by the BROKER (egress.toml rule auth); nothing else sees it</td>'
+    + '<td><button class="btn secondary" onclick="saveNet(\'hf_token\')">Save</button></td></tr>';
+  return '<div class="card"><h3>Settings</h3><div class="muted" style="font-size:12px;margin-bottom:6px">proxy credentials shown REDACTED (***): retype to change; saving the *** form is refused</div>'
+    + '<table class="grid"><tr><th>key</th><th>value</th><th>what it is</th><th></th></tr>'+prox+engRow+tokRow+'</table><span id="netStatus" class="status"></span></div>';
+}
+function netRules(rules){
+  const rows = rules.map(x => {
+    const lease = x.lease
+      ? '<span class="pill" style="background:#4a3d1a">OPEN · '+Math.round((x.lease.remaining_s||0)/60)+'m · '+(x.lease.uses||0)+' uses</span> <button class="btn secondary" onclick="netAct(\'revoke_lease\',\''+escAttr(x.name)+'\')">Revoke</button>'
+      : (x.leased ? '<span class="muted" style="font-size:12px">lease-only · closed</span>' : '<span class="pill" style="background:#4a1a1a">standing</span>');
+    const en = x.enabled
+      ? '<button class="btn secondary" onclick="netAct(\'rule\',\''+escAttr(x.name)+'\',false)">Disable</button>'
+      : '<span class="pill" style="background:#4a1a1a">DISABLED</span> <button class="btn secondary" onclick="netAct(\'rule\',\''+escAttr(x.name)+'\',true)">Enable</button>';
+    return '<tr'+(x.enabled?'':' style="opacity:.55"')+'><td><b>'+escHtml(x.name)+'</b>'+(x.auth?' 🔑':'')+'</td>'
+      + '<td class="muted" style="font-size:12px">'+escHtml(x.hosts.join(', '))+' :'+x.port+' '+escHtml(x.methods.join('/'))+'</td>'
+      + '<td class="muted" style="font-size:12px">'+escHtml(x.purpose)+'</td><td>'+lease+'</td><td>'+en+'</td></tr>';
+  }).join('');
+  return '<div class="card"><h3>Rules &amp; leases</h3><div class="muted" style="font-size:12px;margin-bottom:6px">deny by default; leased rules also need an open lease. Revoke kills a transfer mid-flight; Disable is the per-rule kill switch (audited).</div>'
+    + '<table class="grid"><tr><th>rule</th><th>allows</th><th>why</th><th>lease</th><th></th></tr>'+(rows||'<tr><td colspan="5" class="muted">no rules — everything is denied</td></tr>')+'</table></div>';
+}
+function netTraffic(s){
+  const rows = (s.rules||[]).filter(x=>x.rule!=='-').map(x =>
+    '<tr><td><b>'+escHtml(x.rule)+'</b></td><td style="text-align:right">'+x.requests+'</td><td style="text-align:right">'+gbfmt(x.bytes_in)+'</td>'
+    + '<td style="text-align:right'+(x.denied?';color:#d29922':'')+'">'+x.denied+'</td><td style="text-align:right'+(x.auth_rejects?';color:#d29922':'')+'">'+x.auth_rejects+'</td>'
+    + '<td class="muted" style="font-size:12px">'+escHtml((x.last_ts||'').replace('T',' ').replace('Z',''))+' '+escHtml(x.last_purpose||'')+'</td></tr>').join('');
+  return '<div class="card"><h3>Traffic <span class="muted" style="font-weight:normal;font-size:12px">'+escHtml(s.window||'')+'; byte counts only, bodies never logged</span></h3>'
+    + '<table class="grid"><tr><th>rule</th><th>requests</th><th>in</th><th>denied</th><th>auth ✗</th><th>last activity</th></tr>'+(rows||'<tr><td colspan="6" class="muted">no traffic yet</td></tr>')+'</table></div>';
+}
+function netEvents(evs, auditPath){
+  const lines = evs.map(e => (e.ts||'').replace('T',' ').replace('Z','')+'  '+e.verdict+'  '+(e.rule||'-')+'  '+(e.purpose||'')+(e.bytes_in?'  in:'+gbfmt(e.bytes_in):'')+(e.detail?'  — '+e.detail:'')).join('\n');
+  return '<div class="card"><h3>Recent decisions <span class="muted" style="font-weight:normal;font-size:12px">audit log: '+escHtml(auditPath)+'</span></h3>'
+    + '<pre style="font-size:12px;white-space:pre-wrap;margin:0">'+escHtml(lines||'(none yet)')+'</pre></div>';
+}
+async function saveNet(key){
+  const el = document.querySelector('#netBox [data-nk="'+key+'"]'); if (!el) return;
+  const st = document.getElementById('netStatus');
+  const r = await (await fetch('/api/net/setting', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({key, value: el.value})})).json().catch(e=>({ok:false,error:''+e}));
+  if (st) flash(st, r.ok, r.ok ? '✓ '+key+' saved — '+(r.note||'') : '✗ '+(r.error||'failed'));
+  if (r.ok) loadNetwork();
+}
+async function netAct(action, rule, enabled){
+  const body = action==='rule' ? {action, rule, enabled} : {action, rule};
+  const r = await (await fetch('/api/net', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)})).json().catch(e=>({ok:false,error:''+e}));
+  loadNetwork();
 }
 
 // ── Settings: schema-driven form, auto-generated from the merged config ───────

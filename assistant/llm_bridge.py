@@ -267,7 +267,7 @@ async def wiki_lookup(query: str, lang: str = "en", timeout_s: float = 8.0,
     # The real external lookup goes through the egress broker (deny-by-default
     # + audited).  Test injections (api_base/summary_base, loopback fakes) use
     # a plain session — they exercise the parsing, not the egress policy.
-    from .amiga_net import broker
+    from amiga_net import broker
     injected = bool(api_base or summary_base)
     session_cm = (broker.session("wikipedia tool", rule_name="wikipedia",
                                  timeout=timeout_s) if not injected

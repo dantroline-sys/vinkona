@@ -1121,6 +1121,15 @@ DEFAULTS: dict = {
     },
     "default_persona": "vinkona",
     "personas_path": "config/personas.json",
+
+    # ── egress broker (amiga_net) — the Network tab edits these ──────────────
+    # Hugging Face auth for gated asset repos: held by the BROKER only (rule
+    # auth = "hf_token" in egress.toml), never seen by an engine.  Outbound
+    # proxy for the broker; empty = direct.  fetch_engine: "" = auto
+    # (aria2c > wget > built-in stream).  Redacted on the Network tab.
+    "hf_token": "",
+    "http_proxy": "", "https_proxy": "", "all_proxy": "", "no_proxy": "",
+    "fetch_engine": "",
 }
 
 

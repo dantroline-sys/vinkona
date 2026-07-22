@@ -366,13 +366,15 @@ async def mac_source(tools, session, key: str, query: str, *, max_chars: int = 6
     if not text and spec.get("fallback"):               # tunnel down / tool missing / empty
         fn = SCHOLARLY_FUNCS.get(spec["fallback"])
         if fn:
-            # direct external egress — through the broker (deny-by-default +
-            # audited); a blocked source raises EgressDenied, which the
-            # scholarly fn's own try/except turns into "no result".
-            from .amiga_net import broker
+            # direct external egress — WRAP the caller's session in the broker
+            # (deny-by-default + audited under one 'research' lease).  A blocked
+            # source raises EgressDenied, which the scholarly fn's own
+            # try/except turns into "no result".
+            from amiga_net import broker
+            got = None
             try:
-                async with broker.session(f"research: {spec['fallback']}",
-                                          rule_name="research") as bs:
+                with broker.lease(f"research: {spec['fallback']}", "research"):
+                    bs = broker.BrokerSession(session, f"research: {spec['fallback']}")
                     got = await fn(bs, query, max_chars=max_chars, max_items=max_items)
             except broker.EgressDenied:
                 got = None
