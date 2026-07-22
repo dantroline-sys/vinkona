@@ -420,6 +420,22 @@ confinement begins post-install.
 
 ## Annotations (curated — everything BELOW this line is maintained by hand; regenerate the sections above with `python3 scripts/net_inventory.py`, then re-append this block)
 
+### STATUS 2026-07-22 — broker LANDED (commits 6f646d9, 58892fc)
+
+The egress broker (`amiga_net/`, SAME formats as Vinur) is in, with the
+async `BrokerSession` lane its aiohttp egress needs.  DONE:
+- **research fallbacks** (arxiv/PubMed/Semantic Scholar/Crossref/Wikipedia):
+  migrated — `mac_source` wraps the caller's session in a BrokerSession under
+  one `research` lease.  → `research` rule.
+- **wikipedia builtin** (`wiki_lookup`): migrated — real path through the
+  broker (`wikipedia` rule); test injections keep a plain session.
+- **posture** leak-check + **Network tab** (config UI): shipped.
+- **egress.toml**: lease-only, the enumerated endpoints below ARE the rules.
+STILL interim (acquisition, "confinement begins post-install"): `fetch_llama`
+(GitHub release binary — `llama-release` rule exists, call-site not yet
+routed) and `tts_orpheus_gguf` HF assets (`huggingface` rule exists, not yet
+routed).  Loopback services + LAN peers unchanged (dispositions below stand).
+
 ### The real egress surface, grouped for disposition
 
 **1. Direct EXTERNAL calls in runtime code — all enumerable, all named.**
