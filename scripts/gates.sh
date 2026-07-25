@@ -37,6 +37,9 @@ run "compile sweep"     ""     "$PY" -W error::SyntaxWarning -m py_compile \
                                    assistant/test_posture.py
 run "broker battery"    ""     "$PY" assistant/test_amiga_net.py
 run "posture battery"   ""     "$PY" assistant/test_posture.py
+run "local-kb compile"  ""     "$PY" -W error::SyntaxWarning -m py_compile \
+                                   assistant/local_kb.py assistant/test_local_kb.py
+run "local-kb battery"  ""     "$PY" assistant/test_local_kb.py
 run "G-8 broker size"   ""     "$PY" - <<'EOF'
 import pathlib, sys
 n = sum(len(p.read_text().splitlines())

@@ -174,6 +174,7 @@ class CascadeServer:
         self._asr_mod = _load("asr")            # for should_clarify (pure helper)
         self._ambient_mod = _load("ambient")    # ambient-snapshot formatters
         self._kh_mod = _load("knowledge_host")  # client for the standalone knowledge-host
+        self._localkb_mod = _load("local_kb")   # in-process tier over imported packs
         self._lease_mod = _load("lm_lease")     # per-LM busy leases (yield to the live path)
         self._capture_mod = _load("capture")    # durable orchestration-trace capture (skill-LoRA)
         self._cal_sync_mod = _load("calendar_sync")  # mirror-aware calendar folding (dedupe + notes)
@@ -615,17 +616,20 @@ class _Session:
                 cap_dir, format_version=cap_cfg.get("format_version", "v0-unfrozen"),
                 base_model=self.cfg["fast_lm"].get("model", ""), enabled=True)
         kc = self.cfg.get("knowledge_host", {})
-        self._kh = (self.s._kh_mod.KnowledgeHost(
-                        kc.get("url", ""), token=kc.get("token", ""),
-                        timeout_s=kc.get("timeout_s", 4.0))
-                    if kc.get("enabled") else None)
+        # The knowledge tier ladder (choose_backend): remote host > in-process
+        # local packs > None.  LocalKB duck-types the client, so everything
+        # downstream is tier-blind.
+        self._kh = self.s._localkb_mod.choose_backend(self.cfg, self.s._kh_mod)
+        # live guidance reads whichever tier's block is active
+        k_live = kc if kc.get("enabled") else self.cfg.get("local_kb", {})
         # Under Vinur's exclusive-swap serving, a non-resident big LM REFUSES
         # connections by design.  When the knowledge host runs on the same box,
         # Vinkona asks that box to swap the model in instead of treating the
-        # tier as down (big_lm.auto_swap = false disables).
+        # tier as down (big_lm.auto_swap = false disables).  Remote tier only —
+        # the local library has no serving box to ask.
         big_swap = (self._request_swap
-                    if (self._kh and big.get("remote") and big.get("url")
-                        and big.get("auto_swap", True)
+                    if (self._kh and kc.get("enabled") and big.get("remote")
+                        and big.get("url") and big.get("auto_swap", True)
                         and _same_host(kc.get("url", ""), big.get("url", "")))
                     else None)
         bridge = self.s._bridge_mod.LLMBridge(
@@ -636,8 +640,8 @@ class _Session:
             big_model=big.get("model", "qwen2.5:32b"),
             lease_big=self.s._lease_on,
             lease_ttl=self.s._lease_ttl,
-            live_guidance=bool(self._kh and kc.get("live", False)),
-            live_guidance_timeout=float(kc.get("live_timeout_s", 0.25)),
+            live_guidance=bool(self._kh and k_live.get("live", False)),
+            live_guidance_timeout=float(k_live.get("live_timeout_s", 0.25)),
             working_memory=bool(self.cfg.get("working_memory", {}).get("enabled", True)),
             working_memory_max=int(self.cfg.get("working_memory", {}).get("max_items", 12)),
             calculator=bool(self.cfg.get("tools", {}).get("calculator", True)),

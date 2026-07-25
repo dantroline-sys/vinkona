@@ -113,7 +113,9 @@ def main():
     # the flip side: a soft import of something never declared is a landmine
     # that only detonates on the machine where it happens to be installed —
     # EXCEPT the deliberately-external engines that carry their own venvs.
-    own_venv = {"torch", "chatterbox", "neutts"}     # deps/neutts project
+    own_venv = {"torch", "chatterbox", "neutts",     # deps/neutts project
+                "knowledgehost"}    # vinur PAIRED CHECKOUT (local_kb's in-process
+                                    # tier) — found via sibling/vinur_path, never pip
     dec = {IMPORT_NAME.get(d, d.replace("-", "_")) for d in declared()}
     undeclared = {m for m in (set(soft) | set(hard)) - dec - own_venv
                   if not all(f.startswith("test_") for f in (soft.get(m, set()) | hard.get(m, set())))}

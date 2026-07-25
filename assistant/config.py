@@ -1098,6 +1098,22 @@ DEFAULTS: dict = {
         "live": False,
         "live_timeout_s": 0.25,              # critical-path budget — keep it tight (voice TTFT)
     },
+    # The IN-PROCESS knowledge tier (VINUR-PACK-01 consumer profile): vinur's read
+    # path imported as a library over locally imported knowledge packs (.kdb) — no
+    # knowledge-host process, no distill/ingest machinery.  Used only when
+    # knowledge_host.enabled is false; same ask/search surface, so everything
+    # downstream (briefing, live guidance) works identically.  Import packs with:
+    #   python3 assistant/local_kb.py import <pack.kdb>
+    "local_kb": {
+        "enabled": False,
+        "vinur_path": "",           # vinur checkout; empty = installed package, then ../vinur sibling
+        "kb_path": "var/kb/kb.db",  # her own master kb (first pack import bootstraps it)
+        "index_path": "var/kb/index.db",   # chunk-store index (packs ship none; stays small)
+        "embed_url": "",            # optional embed endpoint; empty = lexical-only retrieval
+        "embed_model": "",          # embed model name (must match embed_url's server)
+        "live": False,              # QUESTION-turn fast path (in-process, so cheap) — see knowledge_host.live
+        "live_timeout_s": 0.5,      # local calls skip HTTP; still bounded for the voice path
+    },
     # Per-LM busy leases (logs/control/lm_fast.busy / lm_big.busy) — Vinkona broadcasts which
     # GPU/model she's using so the lower-priority knowledge-host yields the contended one and
     # works on whatever's free.  fast = held while a live chat session is open; big = held
