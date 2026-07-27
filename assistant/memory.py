@@ -28,6 +28,7 @@ numpy and CPU-cheap.
 """
 
 import json
+import math
 import re
 import sqlite3
 import time
@@ -700,6 +701,63 @@ def _norm(s: str) -> str:
     return " " + " ".join(s.lower().split()) + " "    # pad so word-ish boundaries match
 
 
+class WorkingActivation:
+    """Volatile, per-conversation activation over memory ids — VIN-WM-01 phase 0.
+
+    A decaying scalar per memory that carries the conversation's thread across turns,
+    so recall() ranks an on-topic memory up without it having to be re-mentioned every
+    turn ("presence of mind").  Owned by the per-conversation session and DISCARDED
+    with it (WM-2) — nothing here is persisted.  recall() reads it (one score term) and
+    updates it (decay + boost); called with wm=None, recall() is bit-identical to
+    before (WM-1), which is what keeps the accelerator off the critical path.
+
+    Deterministic: wall-clock exp decay, id-sorted eviction, no randomness.
+    """
+
+    __slots__ = ("act", "last_ts", "tau", "b_surface", "b_mention", "floor", "cap")
+
+    def __init__(self, cfg: dict | None = None):
+        c = cfg or {}
+        self.act: dict[str, float] = {}
+        self.last_ts: float | None = None
+        self.tau = float(c.get("tau_s", 900.0) or 0.0)       # decay constant (s); ~tau to 1/e
+        self.b_surface = float(c.get("boost_surface", 0.5))  # recall SURFACED this memory
+        self.b_mention = float(c.get("boost_mention", 0.35)) # its entities were MENTIONED
+        self.floor = float(c.get("floor", 0.02))             # prune below this (dead weight)
+        self.cap = int(c.get("cap", 1024))                   # hard node cap (bounded — WM-4)
+
+    def decay(self, now: float) -> None:
+        """Exponential wall-clock decay of every node, then prune the dead.  The first
+        call only sets the clock (no elapsed interval yet)."""
+        if self.last_ts is None:
+            self.last_ts = now
+            return
+        dt = now - self.last_ts
+        self.last_ts = now
+        if dt <= 0 or not self.act:
+            return
+        f = math.exp(-dt / self.tau) if self.tau > 0 else 0.0
+        for mid in list(self.act):               # list(): deleting while iterating
+            v = self.act[mid] * f
+            if v < self.floor:
+                del self.act[mid]
+            else:
+                self.act[mid] = v
+
+    def boost(self, ids, amount: float) -> None:
+        """Add `amount` to each id's activation (clamped to 1.0), then hold the cap."""
+        if amount <= 0:
+            return
+        for mid in ids:
+            self.act[mid] = min(1.0, self.act.get(mid, 0.0) + amount)
+        if len(self.act) > self.cap:             # keep the hottest; deterministic tie-break by id
+            keep = sorted(self.act, key=lambda m: (-self.act[m], m))[: self.cap]
+            self.act = {m: self.act[m] for m in keep}
+
+    def get(self, mid: str) -> float:
+        return self.act.get(mid, 0.0)
+
+
 class MemoryStore:
     def __init__(self, cfg: dict):
         self.db_path = cfg["memory"]["db_path"]
@@ -805,6 +863,7 @@ class MemoryStore:
         self.neighbours = m.get("neighbours", 0)             # two-hop associative recall
         self.neighbour_min_sim = m.get("neighbour_min_sim", 0.65)
         self.garden_cfg = m.get("garden", {})
+        self.wm_cfg = m.get("working_memory", {}) or {}      # VIN-WM-01 phase 0 (see new_working_set)
         # Embed-model task prefixes (asymmetric retrieval models — e.g. nomic-embed wants
         # "search_query:" on the query side, "search_document:" on the stored side).  Off by
         # default; flipping it on needs a one-off re-embed of the store (worker handles it).
@@ -910,9 +969,18 @@ class MemoryStore:
             return 0
         return await self.reembed_all()
 
+    def new_working_set(self):
+        """A fresh volatile activation set for ONE conversation (VIN-WM-01 phase 0),
+        or None when working memory is disabled in config.  The caller (the session)
+        owns it and discards it at conversation end — a new conversation gets a new
+        one, so nothing bleeds across conversations (WM-6)."""
+        if not self.wm_cfg.get("enabled", True):
+            return None
+        return WorkingActivation(self.wm_cfg)
+
     # ── recall (hot path) ────────────────────────────────────────────────────
     async def recall(self, text: str, active_tags: tp.Iterable[str] = (),
-                     context: str = "") -> list[dict]:
+                     context: str = "", wm: "WorkingActivation | None" = None) -> list[dict]:
         # Diagnostics so the UI can show why a recall matched (or didn't).
         self.last_diag = {"entries": len(self.entries), "trigger_hits": 0,
                           "n_embeddable": len(self._emb_ids),
@@ -921,6 +989,10 @@ class MemoryStore:
             return []
         now = time.time()
         active = set(active_tags)
+
+        if wm is not None:
+            wm.decay(now)                       # carry the thread across turns; fade the cold
+            self.last_diag["wm_nodes"] = len(wm.act)
 
         trig_ids = self._ac.search(_norm(text)) if self._ac else set()
         self.last_diag["trigger_hits"] = len(trig_ids)
@@ -960,7 +1032,11 @@ class MemoryStore:
                      + self.w["trigger"] * (1.0 if mid in trig_ids else 0.0)
                      + self.w["semantic"] * sv
                      + self.w["recency"] * (e["recency"] or 0.0) * decay
-                     + self.w["tag"] * tag_overlap)
+                     + self.w["tag"] * tag_overlap
+                     # phase 0: re-ranks CANDIDATES only — a hot memory still needs a
+                     # trigger/semantic hit this turn to be here (promoting hot-but-unhit
+                     # nodes is the runaway risk, deferred to the phase-1 fast lane).
+                     + self.w.get("activation", 0.0) * (wm.get(mid) if wm is not None else 0.0))
             if score >= self.min_score:
                 scored.append((score, e))
 
@@ -969,6 +1045,14 @@ class MemoryStore:
         chosen = [e for _, e in scored[: self.top_k]]
         if chosen:
             self._mark_used([e["id"] for e in chosen], now)
+        # Leave a trace for the NEXT turn: surfaced memories go hot, mentioned ones warm.
+        # AFTER scoring, so a mention never boosts itself into this turn's ranking — the
+        # carry is forward-only.  Cooldown still gates re-surfacing; activation only
+        # re-ranks among what's eligible, so the two don't fight.
+        if wm is not None:
+            wm.boost([e["id"] for e in chosen], wm.b_surface)
+            if trig_ids:
+                wm.boost(trig_ids, wm.b_mention)
         # Two-hop: also surface memories semantically near the ones we recalled, so
         # asking about "mum" can pull in her birthday even if it has no "mum" trigger.
         # These are associative context only — not marked used (no cooldown bump).

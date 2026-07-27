@@ -191,9 +191,9 @@ async def test_recall_context_turns():
     m.log_turn("sess1", "user", "what about her?")          # current turn (logged before recall)
     captured = {}
     orig = m.recall
-    async def cap(text, active_tags=(), context=""):
+    async def cap(text, active_tags=(), context="", wm=None):
         captured["text"], captured["context"] = text, context
-        return await orig(text, active_tags, context)
+        return await orig(text, active_tags, context, wm=wm)
     m.recall = cap
     await shim._recall("what about her?")
     check("trigger query stays the bare turn", captured["text"] == "what about her?")
@@ -204,7 +204,7 @@ async def test_recall_context_turns():
     # Default (0) keeps the bare turn — no context, no session_log read.
     shim2 = _Shim(m)
     cap2 = {}
-    async def cap_b(text, active_tags=(), context=""):
+    async def cap_b(text, active_tags=(), context="", wm=None):
         cap2["context"] = context
         return ""
     m.recall = cap_b

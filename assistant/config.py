@@ -505,6 +505,10 @@ DEFAULTS: dict = {
         "weights": {
             "priority": 0.5, "trigger": 2.0, "semantic": 1.5, "recency": 0.3, "tag": 0.5,
             "cooldown_override_priority": 8,     # priority that fires even during cooldown
+            "activation": 0.6,                   # VIN-WM-01 phase 0: pull of the per-conversation
+                                                 # working-memory activation (see working_memory).
+                                                 # Sub-dominant to trigger/semantic on purpose; tune
+                                                 # AGAINST the cooldown, not in isolation.
         },
         "neighbours": 2,                         # two-hop: also surface N related memories per hit
         "neighbour_min_sim": 0.65,               # min cosine for a memory to count as "related"
@@ -518,6 +522,21 @@ DEFAULTS: dict = {
         "semantic_min_sim": 0.0,                 # drop cosine matches below this before scoring (0 = off)
         "semantic_calibrate": False,             # rescale surviving sims [floor,1]→[0,1] so the weight tunes linearly
         "recall_context_turns": 0,               # enrich the query embedding with the last N turns (0 = bare turn)
+        # VIN-WM-01 phase 0: a volatile per-conversation activation that carries the
+        # conversation's thread across turns (presence of mind).  A memory gains
+        # activation when recall surfaces it (boost_surface) or its entities are
+        # mentioned (boost_mention), decays with tau_s between turns, and adds
+        # weights.activation * activation to a candidate's score.  Discarded with the
+        # conversation — never persisted.  enabled=False → recall behaves exactly as
+        # before (the activation term is zero).
+        "working_memory": {
+            "enabled": True,
+            "tau_s": 900,            # decay constant (s) — ~15 min to 1/e; slow within a chat
+            "boost_surface": 0.5,    # a memory recall surfaced this turn
+            "boost_mention": 0.35,   # a memory whose entities were mentioned this turn
+            "floor": 0.02,           # prune activation below this
+            "cap": 1024,             # hard node cap (bounded working set)
+        },
         # Grounding-confidence + abstention: nudge the model to say "I don't have that" rather
         # than confabulate when nothing relevant was recalled for a question. Scoped so it never
         # suppresses general-knowledge answers — only guards user-specific / researched facts.

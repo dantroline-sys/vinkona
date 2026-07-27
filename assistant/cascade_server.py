@@ -511,6 +511,10 @@ class _Session:
         self.session_id = uuid.uuid4().hex
         self._swap_asked: dict = {}                           # model → last swap-in request ts
         self.active_tags: set = set()                         # rolling conversation tags
+        # VIN-WM-01 phase 0: a volatile working-memory activation for THIS conversation
+        # (or None if disabled in config).  Fresh per session → no bleed across
+        # conversations (WM-6); discarded when the session object is (WM-2).
+        self.wm = server.memory.new_working_set() if getattr(server, "memory", None) else None
         self._rhythm = ""                                     # usage-rhythm line (set at session open)
         self._user_profile_cache = None                       # learned user model (per session)
         self._persona_name = default_persona
@@ -792,7 +796,8 @@ class _Session:
             # drop it and take the prior turns from this session.
             prior = self.s.memory.session_log(self.session_id)[:-1][-n:]
             context = "\n".join(f"{r['role']}: {r['text']}" for r in prior)
-        entries = await self.s.memory.recall(user_text, self.active_tags, context=context)
+        entries = await self.s.memory.recall(user_text, self.active_tags, context=context,
+                                             wm=getattr(self, "wm", None))
         chosen = [e for e in entries if not e.get("related")]
         related = [e for e in entries if e.get("related")]
         for e in chosen:                          # only direct hits steer the rolling tags
