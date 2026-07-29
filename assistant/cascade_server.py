@@ -676,6 +676,8 @@ class _Session:
             offer_judge_hook=(self._offer_judge if self.s.memory else None),
             log_hook=self._log_turn if self.s.memory else None,
             trace_hook=self._trace if self.s.trace else None,
+            asides_enabled=(bool(self.s.memory)
+                            and self.cfg.get("asides", {}).get("enabled", True)),
             inject_time=self.cfg["awareness"]["inject_time"],
             location=self.cfg["awareness"]["location"],
             time_meaning=self.cfg["awareness"].get("time_meaning", True),
@@ -793,8 +795,11 @@ class _Session:
         n = self.cfg.get("memory", {}).get("recall_context_turns", 0)
         if n > 0:
             # The current user turn is already logged (log_hook runs before recall_hook), so
-            # drop it and take the prior turns from this session.
-            prior = self.s.memory.session_log(self.session_id)[:-1][-n:]
+            # drop it and take the prior turns from this session.  Private asides live in the
+            # same log for the dreaming phase, but must NOT flavour the live recall query —
+            # keep only actual dialogue.
+            prior = [r for r in self.s.memory.session_log(self.session_id)
+                     if r["role"] in ("user", "assistant")][:-1][-n:]
             context = "\n".join(f"{r['role']}: {r['text']}" for r in prior)
         entries = await self.s.memory.recall(user_text, self.active_tags, context=context,
                                              wm=getattr(self, "wm", None))

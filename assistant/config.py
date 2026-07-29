@@ -1044,6 +1044,13 @@ DEFAULTS: dict = {
     # what she actually works into a reply is recorded — so a candidate she passes
     # over stays available.  Whether the user takes it up becomes evidence in the
     # user model, so how she offers is shaped by how it lands (see spontaneity.py).
+    # VIN-WM-01 phase 2: private first-person asides.  When on, the reply prompt lets her
+    # wrap up to two short notes-to-self in <aside>…</aside> per turn; the bridge strips them
+    # from speech and logs them to chat_logs (role='aside') for the dreaming phase to read.
+    # Off = no prompt instruction (and any stray <aside> is still stripped, never spoken).
+    "asides": {
+        "enabled": True,
+    },
     "spontaneity": {
         "enabled": True,
         "kinds": ["news", "finding", "question", "weather"],

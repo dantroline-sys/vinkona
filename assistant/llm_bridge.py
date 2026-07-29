@@ -94,6 +94,7 @@ _FACT_RE = re.compile(r"(?im)^\s*FACT:\s*(?P<label>[^:\n]{1,60}?)\s*:\s*(?P<valu
 _SENTENCE_RE = re.compile(r'[.!?…]+["\')\]]*\s')
 
 _THINK_OPEN, _THINK_CLOSE = "<think>", "</think>"
+_ASIDE_OPEN, _ASIDE_CLOSE = "<aside>", "</aside>"
 
 
 def _partial_tail(s: str, tag: str) -> int:
@@ -104,46 +105,67 @@ def _partial_tail(s: str, tag: str) -> int:
     return 0
 
 
-class _ThinkStripper:
-    """Drop <think>…</think> spans from a streamed token sequence, safe across the
-    chunk boundaries SSE delivers (a tag may arrive split over two chunks).
+class _TagStripper:
+    """Pull <OPEN>…</CLOSE> spans out of a streamed token sequence, safe across the
+    chunk boundaries SSE delivers (a tag may arrive split over two chunks).  feed()
+    returns everything OUTSIDE the span (the spoken stream).
 
-    Reasoning models normally route their thinking to a separate `reasoning_content`
-    field (so `content` is just empty), but with --reasoning-format none it lands in
-    `content` as raw tags — this makes sure we never speak it either way.
+    capture=None  → the span is dropped (used for <think>: reasoning models normally
+      route thinking to a separate `reasoning_content` field, but with
+      --reasoning-format none it lands in `content` as raw tags; either way it is
+      never spoken).
+    capture=fn    → each completed span's inner text is handed to fn (used for
+      <aside>: Vinkona's private note, stripped from speech and routed to the log).
     """
 
-    def __init__(self):
+    def __init__(self, open_tag: str = _THINK_OPEN, close_tag: str = _THINK_CLOSE,
+                 capture=None):
+        self.open, self.close = open_tag, close_tag
+        self.capture = capture
         self.buf = ""
-        self.in_think = False
+        self.inside = False
+        self._span = ""              # inner text of the current span (capture mode only)
 
     def feed(self, chunk: str) -> str:
         self.buf += chunk
         out = []
         while self.buf:
-            if self.in_think:
-                i = self.buf.find(_THINK_CLOSE)
+            if self.inside:
+                i = self.buf.find(self.close)
                 if i == -1:
-                    keep = _partial_tail(self.buf, _THINK_CLOSE)
-                    self.buf = self.buf[len(self.buf) - keep:] if keep else ""
+                    keep = _partial_tail(self.buf, self.close)
+                    cut = len(self.buf) - keep
+                    if self.capture and cut > 0:
+                        self._span += self.buf[:cut]        # hold span text; the maybe-tag tail waits
+                    self.buf = self.buf[cut:] if keep else ""
                     break
-                self.buf = self.buf[i + len(_THINK_CLOSE):]
-                self.in_think = False
+                if self.capture:
+                    self._span += self.buf[:i]
+                    self.capture(self._span)
+                    self._span = ""
+                self.buf = self.buf[i + len(self.close):]
+                self.inside = False
             else:
-                i = self.buf.find(_THINK_OPEN)
+                i = self.buf.find(self.open)
                 if i == -1:
-                    keep = _partial_tail(self.buf, _THINK_OPEN)
+                    keep = _partial_tail(self.buf, self.open)
                     out.append(self.buf[:len(self.buf) - keep] if keep else self.buf)
                     self.buf = self.buf[len(self.buf) - keep:] if keep else ""
                     break
                 out.append(self.buf[:i])
-                self.buf = self.buf[i + len(_THINK_OPEN):]
-                self.in_think = True
+                self.buf = self.buf[i + len(self.open):]
+                self.inside = True
         return "".join(out)
 
     def flush(self) -> str:
-        """End of stream: emit any held non-think remainder."""
-        out = "" if self.in_think else self.buf
+        """End of stream: emit any held non-span remainder.  A still-open span is
+        captured (if capturing) or dropped — never spoken."""
+        if self.inside:
+            if self.capture and (self._span or self.buf):
+                self.capture(self._span + self.buf)
+            self._span = self.buf = ""
+            return ""
+        out = self.buf
         self.buf = ""
         return out
 
@@ -165,6 +187,20 @@ Never use markdown, bullet points, or formatting; speak in plain conversational 
 Be direct, friendly, and occasionally playful.  You have access to a deeper reasoning
 system for complex questions — trust it when the fast answer feels uncertain.\
 """
+
+# VIN-WM-01 phase 2: appended to the STABLE band of the system prompt (cached), so it
+# costs nothing per turn.  Lets her keep a private inner voice: notes she records for
+# herself, stripped from speech by the bridge and logged for the dreaming phase.  The
+# rate is her own judgement each turn — most turns warrant none.
+_ASIDE_INSTRUCTION = (
+    "\n\nPrivate asides: as well as your spoken reply you may record up to two brief "
+    "first-person notes to yourself, each wrapped exactly in <aside>…</aside>. These are "
+    "NEVER shown or spoken to the user — they are your own private observations, kept for "
+    "your later reflection: your confidence or uncertainty, a moment you found hard, or how "
+    "you read the user's mood or stance right now. Write one ONLY when something is genuinely "
+    "worth noting to yourself; most turns need none. Keep them short and honest. Everything "
+    "OUTSIDE the <aside> tags is what you actually say aloud."
+)
 
 # Spoken once on connect to assert identity before the user talks.
 DEFAULT_GREETING = "Hey, I'm Vinkona. What's on your mind?"
@@ -619,6 +655,7 @@ class LLMBridge:
         offer_judge_hook: tp.Optional[tp.Callable[[str], None]] = None,
         log_hook: tp.Optional[tp.Callable[[str, str], None]] = None,
         trace_hook: tp.Optional[tp.Callable[[dict], None]] = None,
+        asides_enabled: bool = True,
         inject_time: bool = True,
         location: tp.Optional[str] = None,
         time_meaning: bool = False,
@@ -789,6 +826,10 @@ class LLMBridge:
         # _turn_tool_calls accumulates the tool calls the 9B made this turn, for the record.
         self.capture = capture
         self._turn_tool_calls: list = []
+        # VIN-WM-01 phase 2: private first-person asides she may emit per turn, captured
+        # from <aside>…</aside> and logged (never spoken, never in self.history).
+        self._turn_asides: list = []
+        self.asides_enabled = bool(asides_enabled)
         self.system_prompt = system_prompt or DEFAULT_SYSTEM_PROMPT
         # Instruction the big LM follows to produce its background briefing.
         self.briefing_prompt = briefing_prompt or DEFAULT_BRIEFING_PROMPT
@@ -1195,6 +1236,7 @@ class LLMBridge:
         """Query the fast LM and speak its response."""
         self.history.append({"role": "user", "content": user_text})
         self._turn_tool_calls = []                  # reset per turn, for trace capture
+        self._turn_asides = []                      # reset per turn; captured from <aside> spans
         if self.log_hook:
             self.log_hook("user", user_text)
         if self.offer_judge_hook:
@@ -1262,6 +1304,8 @@ class LLMBridge:
         # invalidates the cached prefix above it — leaving headroom to carry a richer
         # static anchor for ~free.  (Order within a band is for reading, not caching.)
         system = self.system_prompt
+        if self.asides_enabled:
+            system += _ASIDE_INSTRUCTION            # stable → part of the cached prefix
         # — stable band —
         # Privileged identity, declared (not recalled): who Vinkona is and who she's talking
         # with.  The authoritative anchor that keeps her in character where recall drifts.
@@ -1413,6 +1457,14 @@ class LLMBridge:
         self.history.append({"role": "assistant", "content": response_text})
         if self.log_hook:
             self.log_hook("assistant", response_text)
+            # Private asides go to the log RIGHT AFTER the reply they annotate — never
+            # spoken, never in self.history (so they can't re-enter the reply prompt).
+            # Cleared as we consume them so a second _finish_turn can't double-log.
+            for note in self._turn_asides:
+                note = (note or "").strip()
+                if note:
+                    self.log_hook("aside", note)
+            self._turn_asides = []
         if self.offer_spoken_hook:
             try:
                 self.offer_spoken_hook(response_text)
@@ -1443,7 +1495,7 @@ class LLMBridge:
         first = True
         async for chunk in self._stream_chat(
             self.fast_url, self.fast_model, messages, self.FAST_MAX_TOKENS,
-            tools=tools, tool_calls_out=tool_calls,
+            tools=tools, tool_calls_out=tool_calls, asides_out=self._turn_asides,
         ):
             if first:
                 self._first_token_ms = (time.monotonic() - t0) * 1000
@@ -2448,6 +2500,7 @@ class LLMBridge:
         max_tokens: int = 200,
         tools: tp.Optional[list] = None,
         tool_calls_out: tp.Optional[list] = None,
+        asides_out: tp.Optional[list] = None,
         think: bool = False,
     ) -> tp.AsyncGenerator[str, None]:
         """
@@ -2478,7 +2531,11 @@ class LLMBridge:
         payload["reasoning_budget"] = -1 if think else 0
         if tools:
             payload["tools"] = tools
-        stripper = _ThinkStripper()
+        stripper = _TagStripper(_THINK_OPEN, _THINK_CLOSE)          # <think> → dropped, never spoken
+        # <aside>…</aside> → Vinkona's private note: stripped from speech and captured for
+        # the log (the dreaming phase reads it later).  No sink → dropped, still never spoken.
+        aside_cap = _TagStripper(_ASIDE_OPEN, _ASIDE_CLOSE,
+                                 capture=(asides_out.append if asides_out is not None else None))
         saw_reasoning = False
         yielded = False
         tc_acc: dict = {}                     # index -> {id, name, arguments}
@@ -2530,13 +2587,13 @@ class LLMBridge:
                             slot["arguments"] += fn["arguments"]
                     content = delta.get("content")
                     if content:
-                        piece = stripper.feed(content)  # strip any <think>…</think> that leaks in
+                        piece = aside_cap.feed(stripper.feed(content))  # drop <think>, capture <aside>
                         if piece:
                             yielded = True
                             yield piece
                     if choices[0].get("finish_reason"):
                         break
-                tail = stripper.flush()
+                tail = aside_cap.feed(stripper.flush()) + aside_cap.flush()
                 if tail:
                     yielded = True
                     yield tail
