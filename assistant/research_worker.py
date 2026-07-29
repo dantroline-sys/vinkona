@@ -1202,6 +1202,22 @@ async def main():
                     _log(f"rhythms: {n} recurrence pattern(s) detected/refreshed")
         except Exception as e:
             _log(f"rhythm detection failed (continuing): {e}")
+        # Orientation: catch up on the world (weather / news / calendar) as part of dreaming,
+        # so she wakes with the basics ready and the affect reflection below sees a fresh
+        # snapshot.  Daily-floor gated and stamp-shared with the cascade scheduler (whichever
+        # gets there first orients; the other sees it fresh), no big LM.
+        _acfg_amb = cfg.get("ambient", {})
+        _ocfg = _acfg_amb.get("orient", {})
+        if (_acfg_amb.get("enabled") and _ocfg.get("enabled", True)
+                and _ocfg.get("on_dream", True) and _ambient.orient_due(memory, cfg)):
+            try:
+                n = await _ambient.refresh(memory, tools, cfg, cal_sync=_cal_sync, force=True)
+                _ambient.mark_oriented(memory)
+                if n:
+                    _log(f"oriented (dream): refreshed {n} ambient source(s)")
+                    trace.write(kind="orient", sources=n, store_size=len(memory.entries))
+            except Exception as e:
+                _log(f"orientation failed (continuing): {e}")
         # Calendar consolidation: mirror every appointment into Vinkona's own calendar + refresh
         # the durable local copy.  Min-interval gated (persisted, so it survives restarts) so
         # it doesn't write to the calendar every idle tick.  Under the big-LM lease already.
@@ -1414,6 +1430,12 @@ async def main():
                                      "timeout_s": _kcfg.get("timeout_s", 20),
                                      "auth_token": _kcfg.get("auth_token")}))
     tools = _tc.MultiHost(_rhosts) if len(_rhosts) > 1 else _rhosts[0]
+
+    _ambient = _load("ambient")            # shared orientation refresh (weather/news/calendar)
+    try:
+        _cal_sync = _load("calendar_sync")  # mirror-folding for the ambient calendar pull
+    except Exception:
+        _cal_sync = None
 
     async def ingest_all(session):
         """Pull each configured tool snapshot and memorise it (wholesale refresh)."""

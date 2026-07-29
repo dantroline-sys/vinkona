@@ -1009,6 +1009,17 @@ DEFAULTS: dict = {
         "max_chars": 600,                # hard cap on the injected block
         "max_items_per_source": 4,
         "persist": True,                 # keep the cache across restarts (first session instant)
+        # Orientation cadence.  Instead of polling every source every few minutes, do a
+        # deliberate whole-world pull (weather / news / calendar) only when it matters: at
+        # startup so she begins a session already knowing the basics, once as part of the
+        # dreaming/idle pass, and — for an always-on box — no more than once a day.  A human
+        # would just know these things; this is how she does.  Turn orient off to fall back
+        # to continuous per-source ttl_s polling.
+        "orient": {
+            "enabled": True,
+            "on_dream": True,            # also refresh during the idle/dreaming cycle
+            "min_interval_s": 79200,     # ~22h daily floor — the most often orientation re-pulls
+        },
         "sources": [
             {"type": "calendar", "tool": "calendar_range_json", "arguments": {"days": 2},
              "ttl_s": 900, "max_items": 4, "priority": 7},   # parsed (format_calendar), needs JSON

@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 """Tests for ambient.py — the disposable no-LM ambient-context cache + mechanical
 formatters.  Runs on a bare interpreter against a real temp sqlite."""
+import asyncio
 import importlib.util
 import json
 import sqlite3
@@ -104,11 +105,100 @@ def test_block_grouping_and_fencing():
     check("block is length-capped", len(a.block(max_chars=120)) <= 120)
 
 
+class _FakeTools:
+    """Minimal ToolHost stand-in: active, records calls, returns canned tool output."""
+    active = True
+
+    def __init__(self, responses):
+        self.responses = responses
+        self.calls = []
+
+    async def call(self, name, arguments):
+        self.calls.append((name, dict(arguments or {})))
+        return self.responses.get(name, "")
+
+
+class _FakeMem:
+    """memory-like: an AmbientStore + a dict-backed state table (get_state/set_state)."""
+    def __init__(self, store):
+        self.ambient = store
+        self._state = {}
+
+    def get_state(self, key, default=None):
+        return self._state.get(key, default)
+
+    def set_state(self, key, value):
+        self._state[key] = value
+
+
+def _cfg(**orient):
+    return {"ambient": {"max_items_per_source": 4, "orient": orient, "sources": [
+        {"type": "weather", "tool": "weather_now", "arguments": {}, "ttl_s": 1800, "max_items": 1},
+        {"type": "news", "tool": "rss_latest", "arguments": {}, "trust": "untrusted",
+         "ttl_s": 1800, "max_items": 4},
+    ]}}
+
+
+def test_refresh_and_orient():
+    mem = _FakeMem(_store())
+    tools = _FakeTools({"weather_now": json.dumps({"temp": 14, "summary": "cloudy"}),
+                        "rss_latest": json.dumps({"items": [{"title": "Budget passes"}]})})
+    cfg = _cfg(enabled=True, min_interval_s=79200)
+
+    n = asyncio.run(ambient.refresh(mem, tools, cfg, force=True))
+    check("refresh pulls every configured source", n == 2 and len(tools.calls) == 2)
+    payloads = " ".join(r["payload"] for r in mem.ambient.active())
+    check("refresh stores the formatted snapshot", "cloudy" in payloads and "Budget passes" in payloads)
+    check("untrusted news source is stored as untrusted",
+          any(r["trust"] == "untrusted" and "Budget" in r["payload"] for r in mem.ambient.active()))
+
+    # A second, non-forced refresh right away is a no-op — every source is still within ttl.
+    tools.calls.clear()
+    n2 = asyncio.run(ambient.refresh(mem, tools, cfg, force=False))
+    check("non-forced refresh respects ttl_s (fresh → skip)", n2 == 0 and tools.calls == [])
+    # …but force re-reads regardless of ttl (an orientation pull).
+    n3 = asyncio.run(ambient.refresh(mem, tools, cfg, force=True))
+    check("force re-reads even when fresh", n3 == 2)
+
+    # An inactive tool host refreshes nothing.
+    class _Off(_FakeTools):
+        active = False
+    check("inactive tool host is a no-op",
+          asyncio.run(ambient.refresh(mem, _Off({}), cfg, force=True)) == 0)
+
+
+def test_orient_due_cadence():
+    mem = _FakeMem(_store())
+    cfg = _cfg(enabled=True, min_interval_s=79200)
+    now = 1_000_000.0
+
+    check("orient is due on first load (no stamp)", ambient.orient_due(mem, cfg, now) is True)
+    ambient.mark_oriented(mem, now)
+    check("not due again within the daily floor", ambient.orient_due(mem, cfg, now + 3600) is False)
+    check("due once the daily floor has elapsed",
+          ambient.orient_due(mem, cfg, now + 79200 + 1) is True)
+
+    # reset_orient forgets the stamp → due again immediately (the non-persistent-boot path).
+    ambient.reset_orient(mem)
+    check("reset_orient makes orientation due again", ambient.orient_due(mem, cfg, now + 10) is True)
+
+    # A quiet world (all sources empty) still stamps + holds the floor — no busy-refresh.
+    mem2 = _FakeMem(_store())
+    tools = _FakeTools({})           # every tool returns "" → nothing stored
+    cfg2 = _cfg(enabled=True, min_interval_s=79200)
+    asyncio.run(ambient.refresh(mem2, tools, cfg2, force=True))
+    ambient.mark_oriented(mem2, now)
+    check("empty world does not force a re-orient (stamp, not item-count, governs)",
+          mem2.ambient.active() == [] and ambient.orient_due(mem2, cfg2, now + 3600) is False)
+
+
 def main():
     test_formatters()
     test_news_sanitised()
     test_replace_active_expiry()
     test_block_grouping_and_fencing()
+    test_refresh_and_orient()
+    test_orient_due_cadence()
     print(f"\n{PASS} passed, {FAIL} failed")
     raise SystemExit(1 if FAIL else 0)
 

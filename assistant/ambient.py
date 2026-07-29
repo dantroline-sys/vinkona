@@ -202,3 +202,90 @@ class AmbientStore:
                 lines.append(f"- {it['payload']}")
         out = "\n".join(lines)
         return out[:max_chars]
+
+
+# ── Refresh + orientation cadence ──────────────────────────────────────────────────────
+# One shared refresh, driven at a few *meaningful* moments rather than by continuous
+# polling: a whole-world pull at startup (so a session begins already oriented), once as
+# part of the dreaming/idle pass, and no more than once a day for an always-on box.  Both
+# the cascade scheduler and the idle worker call these against the same memory.ambient
+# cache; a single stamp in memory state keeps them from stepping on each other.
+_ORIENT_STATE_KEY = "ambient.orient.last"
+
+
+async def refresh(memory, tools, cfg, *, cal_sync=None, force=False,
+                  trace=None, log=None) -> int:
+    """Pull each ambient source and store its mechanically-formatted snapshot.  No LM.
+    Best-effort per source — one bad tool doesn't stall the rest.  Each source honours its
+    own ttl_s unless *force* (an orientation pull deliberately re-reads everything).
+    Returns the number of sources actually refreshed."""
+    acfg = cfg.get("ambient", {})
+    if not getattr(tools, "active", True):
+        return 0
+    amb = memory.ambient
+    default_max = acfg.get("max_items_per_source", 4)
+    now = time.time()
+    done = 0
+    for src in acfg.get("sources", []):
+        stype = (src.get("type") or src.get("tool") or "ambient")
+        source = src.get("source") or stype
+        ttl = float(src.get("ttl_s", 1800))
+        if not force and now - amb.last_fetch(source) < ttl:
+            continue                                 # still fresh — skip
+        tool = src.get("tool")
+        if not tool:
+            continue
+        try:
+            raw = await tools.call(tool, src.get("arguments", {}))
+        except Exception as e:
+            if log:
+                log(f"ambient '{source}': tool call failed ({e})")
+            continue
+        if not raw or str(raw).startswith("("):       # tool error strings start with "("
+            continue
+        if stype == "calendar" and cal_sync is not None:
+            # same folding the reminder lane does: Vinkona's own mirror copies collapse
+            # onto their originals, or every entry shows twice on a consolidated calendar.
+            try:
+                data = json.loads(raw)
+                events = data.get("events", data) if isinstance(data, dict) else data
+                if isinstance(events, list):
+                    vc = cfg.get("calendar_sync", {}).get("vinkona_calendar", "Vinkona")
+                    raw = json.dumps(cal_sync.fold_mirrors(events, vc))
+            except Exception:
+                pass                                  # unfoldable: format as-is
+        trust = src.get("trust") or default_trust(stype)
+        items = format_source(stype, raw, src.get("max_items", default_max))
+        amb.replace_source(source, items, ttl, trust=trust, priority=src.get("priority", 5))
+        done += 1
+        if trace is not None:
+            trace.write({"ts": now, "session": "ambient", "kind": "ambient_refresh",
+                         "source": source, "items": len(items), "trust": trust})
+    return done
+
+
+def orient_due(memory, cfg, now: float | None = None) -> bool:
+    """Should Vinkona re-orient (a full world pull) now?  True on first load (no stamp)
+    or once the daily-floor interval has elapsed.  Deliberately keyed on the stamp, not on
+    whether the cache has visible items — a legitimately-quiet world (no events, no
+    headlines) must not busy-refresh."""
+    ocfg = cfg.get("ambient", {}).get("orient", {})
+    now = now or time.time()
+    try:
+        last = float(memory.get_state(_ORIENT_STATE_KEY) or 0)
+    except (TypeError, ValueError):
+        last = 0.0
+    if last <= 0:
+        return True                                  # first load — orient promptly
+    return (now - last) >= float(ocfg.get("min_interval_s", 79200))
+
+
+def mark_oriented(memory, now: float | None = None) -> None:
+    """Stamp 'oriented at now' so the daily floor holds across both callers and restarts."""
+    memory.set_state(_ORIENT_STATE_KEY, now or time.time())
+
+
+def reset_orient(memory) -> None:
+    """Forget the last-orient stamp — used when the non-persistent cache is wiped at boot,
+    so the next pass re-pulls the basics rather than starting a session blank."""
+    memory.set_state(_ORIENT_STATE_KEY, 0)

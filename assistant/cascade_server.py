@@ -229,6 +229,7 @@ class CascadeServer:
             acfg0 = self._cfgmod.load_config(config_path).get("ambient", {})
             if self.memory and acfg0.get("enabled") and not acfg0.get("persist", True):
                 self.memory.ambient.clear()
+                self._ambient_mod.reset_orient(self.memory)   # empty cache → re-orient at boot
         except Exception:
             pass
 
@@ -325,50 +326,27 @@ class CascadeServer:
             await asyncio.sleep(max(15, poll))
 
     async def _refresh_ambient(self, cfg):
-        """Pull each ambient source whose snapshot is older than its TTL and store the
-        mechanically-formatted result.  No LM.  Best-effort per source — one bad tool
-        doesn't stall the rest."""
+        """Keep the ambient snapshot current.  In orientation mode (the default) this is a
+        deliberate whole-world pull at boot and then no more than once a day — she catches
+        up on the world at meaningful moments instead of polling every few minutes.  With
+        orientation off it falls back to per-source ttl_s polling.  No LM either way."""
         acfg = cfg.get("ambient", {})
+        ocfg = acfg.get("orient", {})
         tools = self._tools_mod.ToolHost(cfg["tools"])
         if not tools.active:
             return
-        amb = self.memory.ambient
-        default_max = acfg.get("max_items_per_source", 4)
-        now = time.time()
-        for src in acfg.get("sources", []):
-            stype = (src.get("type") or src.get("tool") or "ambient")
-            source = src.get("source") or stype
-            ttl = float(src.get("ttl_s", 1800))
-            if now - amb.last_fetch(source) < ttl:
-                continue                                 # still fresh — skip
-            tool = src.get("tool")
-            if not tool:
-                continue
-            try:
-                raw = await tools.call(tool, src.get("arguments", {}))
-            except Exception as e:
-                _log(f"ambient '{source}': tool call failed ({e})")
-                continue
-            if not raw or str(raw).startswith("("):       # tool error strings start with "("
-                continue
-            if stype == "calendar" and self._cal_sync_mod:
-                # same folding the reminder lane does: Vinkona's own mirror
-                # copies collapse onto their originals, or every entry shows
-                # twice on a consolidated calendar
-                try:
-                    data = json.loads(raw)
-                    events = data.get("events", data) if isinstance(data, dict) else data
-                    if isinstance(events, list):
-                        vc = cfg.get("calendar_sync", {}).get("vinkona_calendar", "Vinkona")
-                        raw = json.dumps(self._cal_sync_mod.fold_mirrors(events, vc))
-                except Exception:
-                    pass                                  # unfoldable: format as-is
-            trust = src.get("trust") or self._ambient_mod.default_trust(stype)
-            items = self._ambient_mod.format_source(stype, raw, src.get("max_items", default_max))
-            amb.replace_source(source, items, ttl, trust=trust, priority=src.get("priority", 5))
-            if self.trace:
-                self.trace.write({"ts": now, "session": "scheduler", "kind": "ambient_refresh",
-                                  "source": source, "items": len(items), "trust": trust})
+        if ocfg.get("enabled", True):
+            if self._ambient_mod.orient_due(self.memory, cfg):
+                n = await self._ambient_mod.refresh(
+                    self.memory, tools, cfg, cal_sync=self._cal_sync_mod,
+                    force=True, trace=self.trace, log=_log)
+                self._ambient_mod.mark_oriented(self.memory)
+                _log(f"oriented: refreshed {n} ambient source(s)")
+            return
+        # Legacy: continuous per-source ttl_s polling.
+        await self._ambient_mod.refresh(
+            self.memory, tools, cfg, cal_sync=self._cal_sync_mod,
+            force=False, trace=self.trace, log=_log)
 
     async def _scan_calendar(self, cfg, ncfg, pcfg):
         tools = self._tools_mod.ToolHost(cfg["tools"])
