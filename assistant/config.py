@@ -537,6 +537,32 @@ DEFAULTS: dict = {
             "floor": 0.02,           # prune activation below this
             "cap": 1024,             # hard node cap (bounded working set)
         },
+        # VIN-WM-02 phase 1a: a throw-away, per-conversation phrase graph that keeps the
+        # BROAD THREAD of a long chat alive without a long context window.  Each turn is
+        # folded in deterministically (RAKE-style key-phrase extraction — no model, works in
+        # minimal mode): phrases become nodes, co-mentions become edges, everything decays on
+        # tau_s so a one-off fades and a recurring thread stays hot.  A compact, fenced
+        # "working notes" briefing is handed to the reply prompt.  Distinct from
+        # working_memory (which activates DURABLE memories); this is the here-and-now only,
+        # discarded at conversation end.  Off by default until the held-out eval shows it
+        # keeps an early thread retrievable at turn N without raising repetition.  See
+        # working_memory_graph_spec.md.  (Typed relations + LM extraction are phase 1b.)
+        "working_graph": {
+            "enabled": False,
+            "tau_s": 900,            # activation decay constant (s)
+            "b_direct": 0.4,         # boost for a phrase mentioned this turn
+            "floor": 0.02,           # evict a node below this
+            "cap": 256,              # hard node cap
+            "edge_cap": 512,         # hard edge cap
+            "k_frame": 12,           # nodes shown in the briefing
+            "min_word_len": 3,       # ignore words shorter than this
+            "max_phrase_words": 4,   # cap candidate-phrase length
+            "top_k": 12,             # phrases kept per turn
+            "link_top": 6,           # …and edges laid among the best this many
+            "brief_max_chars": 700,  # hard cap on the briefing block
+            "brief_threads": 5,      # hottest edges shown as "threads"
+            "keep_turns": 8,         # bound per-node / per-edge supporting-turn lists
+        },
         # Grounding-confidence + abstention: nudge the model to say "I don't have that" rather
         # than confabulate when nothing relevant was recalled for a question. Scoped so it never
         # suppresses general-knowledge answers — only guards user-specific / researched facts.

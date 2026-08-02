@@ -684,6 +684,7 @@ class LLMBridge:
         user_profile_hook: tp.Optional[tp.Callable[[], str]] = None,
         situation_hook: tp.Optional[tp.Callable[[], str]] = None,
         ambient_hook: tp.Optional[tp.Callable[[], str]] = None,
+        working_notes_hook: tp.Optional[tp.Callable[[str], str]] = None,
         rhythm_hook: tp.Optional[tp.Callable[[], str]] = None,
         affect_hook: tp.Optional[tp.Callable[[], str]] = None,
         affect_update: tp.Optional[tp.Callable[[str], tp.Any]] = None,
@@ -862,6 +863,11 @@ class LLMBridge:
         # fresh out-of-band; injected verbatim into the FAST prompt as ambient awareness
         # (volatile band), so Vinkona knows the user's day without a tool call.
         self.ambient_hook = ambient_hook
+        # working_notes_hook(user_text) -> folds the just-arrived user turn into the volatile
+        # phrase graph (VIN-WM-02 1a) and returns a compact fenced "working notes" briefing of
+        # the conversation's running thread.  Deterministic, no LM; keeps the broad thread alive
+        # over a long session without a long context.  '' when disabled/cold.
+        self.working_notes_hook = working_notes_hook
         # rhythm_hook() -> a learned usage-rhythm line for this session ("you tend to be
         # around in the evenings — it's later than you usually talk to me"), injected next to
         # the time context so the clock is relational, not just absolute (time-sense Phase 2).
@@ -1342,6 +1348,13 @@ class LLMBridge:
             amb = self.ambient_hook()
             if amb:
                 system += "\n\n" + amb
+        if self.working_notes_hook:
+            try:
+                wn = self.working_notes_hook(user_text)
+                if wn:
+                    system += "\n\n" + wn
+            except Exception:
+                pass                                           # an accelerator never costs a turn
         if self.reminder_hook:
             rem = self.reminder_hook()
             if rem:

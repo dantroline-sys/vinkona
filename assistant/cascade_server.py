@@ -173,6 +173,7 @@ class CascadeServer:
         self._tools_mod = _load("tools_client")
         self._asr_mod = _load("asr")            # for should_clarify (pure helper)
         self._ambient_mod = _load("ambient")    # ambient-snapshot formatters
+        self._wg_mod = _load("working_graph")   # VIN-WM-02 1a conversational phrase graph
         self._kh_mod = _load("knowledge_host")  # client for the standalone knowledge-host
         self._localkb_mod = _load("local_kb")   # in-process tier over imported packs
         self._lease_mod = _load("lm_lease")     # per-LM busy leases (yield to the live path)
@@ -493,6 +494,11 @@ class _Session:
         # (or None if disabled in config).  Fresh per session → no bleed across
         # conversations (WM-6); discarded when the session object is (WM-2).
         self.wm = server.memory.new_working_set() if getattr(server, "memory", None) else None
+        # VIN-WM-02 phase 1a: a volatile per-conversation phrase graph (deterministic, no LM)
+        # that keeps the broad thread alive across turns.  Fresh per session (WM-6), discarded
+        # with it (WM-2).  None when disabled → the reply prompt is unchanged (G-ACCEL).
+        _wgc = (self.cfg.get("memory", {}) or {}).get("working_graph", {})
+        self.wg = self.s._wg_mod.WorkingGraph(_wgc) if _wgc.get("enabled") else None
         self._rhythm = ""                                     # usage-rhythm line (set at session open)
         self._user_profile_cache = None                       # learned user model (per session)
         self._persona_name = default_persona
@@ -698,6 +704,7 @@ class _Session:
                             if self.cfg.get("proactive", {}).get("enabled", True) else None),
             ambient_hook=(self._ambient_block
                           if (self.s.memory and self.cfg.get("ambient", {}).get("enabled")) else None),
+            working_notes_hook=(self._working_notes if self.wg is not None else None),
             rhythm_hook=(self._rhythm_block
                          if (self.s.memory and self.cfg.get("awareness", {}).get("time_meaning", True))
                          else None),
@@ -1273,6 +1280,19 @@ class _Session:
         nowstr = datetime.datetime.now().strftime("%A %H:%M")
         return f"It's {nowstr}.\n" + "\n".join(lines)
 
+    def _working_notes(self, user_text: str) -> str:
+        """VIN-WM-02 1a: fold the user's turn into the volatile phrase graph and return the
+        compact fenced 'working notes' briefing for the reply prompt.  Deterministic, no LM,
+        no I/O — cheap enough to run inline on the reply path.  '' when cold/disabled so the
+        prompt is unchanged (G-ACCEL)."""
+        if self.wg is None:
+            return ""
+        try:
+            self.wg.ingest(user_text or "", now=time.time())
+            return self.wg.briefing()
+        except Exception:
+            return ""
+
     def _ambient_block(self) -> str:
         """The disposable 'right now' snapshot (calendar/weather/news) for the fast prompt,
         served straight from the cache the scheduler keeps fresh — no LM, no tool call."""
@@ -1347,6 +1367,13 @@ class _Session:
 
     def _log_turn(self, role: str, text: str):
         self.s.memory.log_turn(self.session_id, role, text)
+        # Fold her own reply into the phrase graph too (the user turn is folded by
+        # _working_notes when the prompt is built).  Asides/other roles stay out of it.
+        if self.wg is not None and role == "assistant":
+            try:
+                self.wg.ingest(text or "", now=time.time())
+            except Exception:
+                pass
 
     def _queue_research(self, topic: str, query: str, reason: str) -> str:
         """Built-in queue_research tool: the assistant drops a topic into the Tier-3
