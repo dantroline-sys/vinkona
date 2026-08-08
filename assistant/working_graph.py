@@ -78,6 +78,13 @@ DEFAULTS: dict = {
     # never mutates activation — and only once the frame is full (≥ k_frame nodes).
     "e_lock": 1.0,              # activation-entropy floor (nats)
     "k_lock": 4,                # consecutive low-signal events before flagging a stall
+    # Cross-session persistence (VIN-WM-02 open-Q1, opted in via memory.working_graph.persist).
+    # Carried-over nodes are DORMANT (primed): kept + decaying + shown, but held out of the
+    # frame until re-mentioned, so an old conversation can't bleed into a new one.  They decay
+    # on the SLOW clock (persist_tau_s — days) instead of the fast attention clock, so unused
+    # associations wane gradually; a re-mention lifts dormancy and they rejoin attention.
+    "persist_tau_s": 604800.0,  # ~7 days: association half-life for dormant carried nodes
+    "carry_factor": 0.6,        # scale carried activation on load (starts primed-low, never hot)
 }
 
 _HEADER = ("Working notes — my running read of this conversation so far; may be wrong, "
@@ -168,7 +175,7 @@ class WorkingGraph:
             nid = "p:" + ph
             self._boost(nid, ph, turn, now)
             mentioned.append(nid)
-        self._link(mentioned[: self.c["link_top"]], turn)
+        self._link(mentioned[: self.c["link_top"]], turn, now)
         self._prev_frame = set(self.frame)                # frame before this event's reframe
         self._evict()
         self._reframe()
@@ -179,12 +186,15 @@ class WorkingGraph:
         return turn
 
     def _decay(self, now: float) -> None:
-        tau = float(self.c["tau_s"])
+        # Dual clock: active nodes decay on the fast attention tau; DORMANT (primed) carried
+        # nodes decay on the slow association tau, so they wane over days, not minutes.
+        short = float(self.c["tau_s"])
+        slow = float(self.c.get("persist_tau_s", short))
         for nid in sorted(self.nodes):                    # fixed order (determinism)
             nd = self.nodes[nid]
             dt = now - nd["last_decay_ts"]
             if dt > 0:
-                nd["activation"] *= math.exp(-dt / tau)
+                nd["activation"] *= math.exp(-dt / (slow if nd.get("primed") else short))
                 nd["last_decay_ts"] = now
 
     def _boost(self, nid: str, label: str, turn: int, now: float) -> None:
@@ -192,23 +202,27 @@ class WorkingGraph:
         if nd is None:
             nd = self.nodes[nid] = {"label": label, "activation": 0.0,
                                     "first_seen_turn": turn, "last_boost_turn": turn,
-                                    "last_decay_ts": now, "turns": []}
+                                    "last_decay_ts": now, "turns": [], "primed": False}
+        elif nd.get("primed"):
+            nd["primed"] = False                          # re-mention lifts a carried node out of dormancy
         nd["activation"] = min(1.0, nd["activation"] + float(self.c["b_direct"]))
         nd["last_boost_turn"] = turn
         if not nd["turns"] or nd["turns"][-1] != turn:
             nd["turns"].append(turn)
             nd["turns"] = nd["turns"][-int(self.c["keep_turns"]):]
 
-    def _link(self, ids: list[str], turn: int) -> None:
+    def _link(self, ids: list[str], turn: int, now: float) -> None:
         uniq = sorted(set(ids))
         for i in range(len(uniq)):
             for j in range(i + 1, len(uniq)):
                 key = (uniq[i], uniq[j])
                 ed = self.edges.get(key)
                 if ed is None:
-                    ed = self.edges[key] = {"weight": 0.0, "turns": [], "last_seen_turn": turn}
+                    ed = self.edges[key] = {"weight": 0.0, "turns": [], "last_seen_turn": turn,
+                                            "last_ts": now}
                 ed["weight"] += 1.0
                 ed["last_seen_turn"] = turn
+                ed["last_ts"] = now                        # wall-clock, for cross-session edge decay
                 if not ed["turns"] or ed["turns"][-1] != turn:
                     ed["turns"].append(turn)
                     ed["turns"] = ed["turns"][-int(self.c["keep_turns"]):]
@@ -233,8 +247,11 @@ class WorkingGraph:
                 del self.edges[key]
 
     def _reframe(self) -> None:
+        # Dormant (primed) carried nodes are held OUT of the frame — an old conversation
+        # can't surface in a new one until something re-mentions it (lifts dormancy).
         self.frame = [nid for nid, _ in sorted(
-            self.nodes.items(), key=lambda kv: (-kv[1]["activation"], kv[0]))][: int(self.c["k_frame"])]
+            ((n, d) for n, d in self.nodes.items() if not d.get("primed")),
+            key=lambda kv: (-kv[1]["activation"], kv[0]))][: int(self.c["k_frame"])]
 
     # -- output -------------------------------------------------------------------------
     def briefing(self) -> str:
@@ -263,13 +280,18 @@ class WorkingGraph:
         """Deterministic per-event metrics for observability + drift detection.  Pure — a
         function of the current graph and the frame captured before this event's reframe.
         `frame` lists the phrase labels currently in front of her (the inspection window)."""
-        acts = [self.nodes[n]["activation"] for n in self.nodes]
+        # Entropy + the stall signal are over the ACTIVE working set (attention), not the
+        # dormant carried nodes — otherwise a big dim LTM would always read as high-entropy.
+        acts = [d["activation"] for d in self.nodes.values() if not d.get("primed")]
+        primed = len(self.nodes) - len(acts)
         total = sum(acts)
         entropy = -sum((a / total) * math.log(a / total) for a in acts if a > 0) if total > 0 else 0.0
         fnow = set(self.frame)
         return {
             "turns": self._turn,
             "nodes": len(self.nodes),
+            "active": len(acts),                                 # non-dormant (attention) nodes
+            "primed": primed,                                    # dormant carried associations
             "edges": len(self.edges),
             "entropy": round(entropy, 4),                        # primary lock signal (nats)
             "frame_churn": round(1.0 - _jaccard(fnow, self._prev_frame), 4),
@@ -282,7 +304,7 @@ class WorkingGraph:
         """Flag (never mutate) when the graph has ossified: entropy collapsed or the frame
         stopped moving for k_lock consecutive events.  Only judged once the frame is full,
         so a warming-up conversation with few nodes never trips it."""
-        if m["nodes"] < int(self.c["k_frame"]):
+        if m.get("active", m["nodes"]) < int(self.c["k_frame"]):
             self._stall_run = 0
             self.stalled = None
             return
@@ -302,13 +324,62 @@ class WorkingGraph:
         ids = {nid for nid, _ in top}
         fr = set(self.frame)
         nodes = [{"id": nid, "label": nd["label"], "activation": round(nd["activation"], 4),
-                  "frame": nid in fr} for nid, nd in top]
+                  "frame": nid in fr, "primed": bool(nd.get("primed"))} for nid, nd in top]
         edges = [{"a": a, "b": b, "weight": ed["weight"]}
                  for (a, b), ed in sorted(self.edges.items(),
                                           key=lambda kv: (-kv[1]["weight"], _neg_key(kv[0])))
                  if a in ids and b in ids][:max_edges]
         return {"turns": self._turn, "stalled": self.stalled,
                 "metrics": self.last_metrics, "nodes": nodes, "edges": edges}
+
+    # -- cross-session persistence (VIN-WM-02 open-Q1) ----------------------------------
+    def to_dict(self) -> dict:
+        """Full serialisable state for the persistent associative layer.  Each node/edge
+        carries its wall-clock last-touch so a later load can decay it for the real elapsed
+        time.  Bounded (the graph is already capped)."""
+        return {
+            "nodes": {nid: {"label": nd["label"], "activation": round(nd["activation"], 6),
+                            "last_ts": nd["last_decay_ts"], "turns": list(nd["turns"])}
+                      for nid, nd in self.nodes.items()},
+            "edges": [{"a": a, "b": b, "weight": round(ed["weight"], 4),
+                       "last_ts": ed.get("last_ts", 0.0),   # 0 ⇒ ancient ⇒ decays out on load
+                       "turns": list(ed["turns"])} for (a, b), ed in self.edges.items()],
+        }
+
+    def load_persisted(self, data: dict, now: float) -> int:
+        """Seed this (fresh) graph from a persisted snapshot as DORMANT associations: decay
+        every node/edge for the real time elapsed since it was last touched (slow tau — days),
+        scale by carry_factor so nothing starts front-of-mind, and mark carried nodes primed
+        (held out of the frame until re-mentioned — the anti-bleed gate).  Drops anything that
+        has waned below floor.  Returns the number of nodes carried."""
+        slow = float(self.c.get("persist_tau_s", self.c["tau_s"]))
+        carry = float(self.c.get("carry_factor", 0.6))
+        floor = float(self.c["floor"])
+        cap = int(self.c["cap"])
+        keep = int(self.c["keep_turns"])
+        for nid, nd in sorted((data.get("nodes") or {}).items()):    # fixed order (determinism)
+            last = float(nd.get("last_ts", now))
+            act = float(nd.get("activation", 0.0)) * math.exp(-max(0.0, now - last) / slow) * carry
+            if act < floor:
+                continue
+            turns = [int(t) for t in (nd.get("turns") or [])][-keep:] or [0]   # keep grounding non-empty
+            self.nodes[nid] = {"label": nd.get("label", nid), "activation": act,
+                               "first_seen_turn": 0, "last_boost_turn": 0, "last_decay_ts": now,
+                               "turns": turns, "primed": True}
+        for e in (data.get("edges") or []):
+            a, b = e.get("a"), e.get("b")
+            if a not in self.nodes or b not in self.nodes:
+                continue
+            last = float(e.get("last_ts", now))
+            w = float(e.get("weight", 0.0)) * math.exp(-max(0.0, now - last) / slow)
+            if w < 0.1:
+                continue
+            key = (a, b) if a < b else (b, a)
+            self.edges[key] = {"weight": w, "turns": [int(t) for t in (e.get("turns") or [0])][-keep:] or [0],
+                               "last_seen_turn": 0, "last_ts": now}
+        self._evict()                                    # honour the cap on load
+        self._reframe()
+        return len(self.nodes)
 
 
 def _jaccard(a: set, b: set) -> float:

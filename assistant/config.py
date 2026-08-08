@@ -577,6 +577,21 @@ DEFAULTS: dict = {
             # ossifies — entropy below e_lock or a frozen frame for k_lock events.
             "e_lock": 1.0,           # activation-entropy floor (nats)
             "k_lock": 4,             # consecutive low-signal events before a stall warning
+            # Cross-session persistence: the graph becomes a long-term ASSOCIATIVE layer that
+            # survives between conversations, with associations waning over days if not reused.
+            # Carried-over nodes come back DORMANT (present + decaying + shown faded, but held
+            # out of the front-of-mind briefing until re-mentioned), so an old conversation
+            # can't bleed into a new one. Off by default; this changes it from throw-away to
+            # long-lived, and overlaps the planned personal graph.
+            "persist": {
+                "enabled": False,
+                "path": "",              # empty → beside the trace (config/working_graph_ltm.json)
+                "tau_s": 604800,         # ~7 days: how fast unused associations wane across sessions
+                "carry_factor": 0.6,     # scale carried activation on load (starts primed-low, never hot)
+                "cap": 1500,             # max persisted associations
+                "floor": 0.02,           # drop carried associations that have waned below this
+                "save_interval_s": 45,   # checkpoint the associative layer this often during a chat
+            },
         },
         # Grounding-confidence + abstention: nudge the model to say "I don't have that" rather
         # than confabulate when nothing relevant was recalled for a question. Scoped so it never

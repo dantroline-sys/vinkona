@@ -498,8 +498,30 @@ class _Session:
         # that keeps the broad thread alive across turns.  Fresh per session (WM-6), discarded
         # with it (WM-2).  None when disabled → the reply prompt is unchanged (G-ACCEL).
         _wgc = (self.cfg.get("memory", {}) or {}).get("working_graph", {})
-        self.wg = self.s._wg_mod.WorkingGraph(_wgc) if _wgc.get("enabled") else None
+        _pc = (_wgc.get("persist", {}) or {}) if _wgc.get("enabled") else {}
+        _persist_on = bool(_pc.get("enabled"))
+        _gcfg = dict(_wgc)
+        if _persist_on:                                       # LTM knobs: slow decay, carry, bigger cap
+            _gcfg.update({"persist_tau_s": _pc.get("tau_s", 604800),
+                          "carry_factor": _pc.get("carry_factor", 0.6),
+                          "cap": _pc.get("cap", _wgc.get("cap", 256)),
+                          "floor": _pc.get("floor", _wgc.get("floor", 0.02))})
+        self.wg = self.s._wg_mod.WorkingGraph(_gcfg) if _wgc.get("enabled") else None
         self._wg_stall_warned = False                         # one-shot stall log (VIN-WM-02 1c)
+        # Cross-session persistence: carry the long-term associative layer forward (dormant).
+        self._wg_persist_path = None
+        self._wg_save_interval = float(_pc.get("save_interval_s", 45)) if _persist_on else 0.0
+        self._wg_last_save = 0.0
+        if self.wg is not None and _persist_on:
+            try:
+                base = Path(self.cfg["config_server"].get("trace_path", "config/trace.jsonl")).parent
+                self._wg_persist_path = Path(_pc.get("path") or (base / "working_graph_ltm.json"))
+                if self._wg_persist_path.exists():
+                    n = self.wg.load_persisted(json.loads(self._wg_persist_path.read_text()), time.time())
+                    _log(f"working graph: carried {n} dormant associations from earlier sessions")
+            except Exception as e:
+                _log(f"working graph persist load failed: {e}")
+                self._wg_persist_path = None
         self._rhythm = ""                                     # usage-rhythm line (set at session open)
         self._user_profile_cache = None                       # learned user model (per session)
         self._persona_name = default_persona
@@ -1318,6 +1340,19 @@ class _Session:
                 tmp.replace(p)                            # atomic: reader never sees a partial file
             except Exception:
                 pass
+            # Checkpoint the persistent associative layer (throttled) so it survives to the
+            # next conversation.  Observability + persistence are separate files by design.
+            if self._wg_persist_path is not None:
+                nowt = time.time()
+                if nowt - self._wg_last_save >= self._wg_save_interval:
+                    try:
+                        lp = self._wg_persist_path
+                        ltmp = lp.with_suffix(".json.tmp")
+                        ltmp.write_text(json.dumps(self.wg.to_dict()))
+                        ltmp.replace(lp)
+                        self._wg_last_save = nowt
+                    except Exception:
+                        pass
             if self.wg.stalled:
                 if not self._wg_stall_warned:
                     _log(f"working graph: {self.wg.stalled}")

@@ -842,6 +842,7 @@ function renderWGraph(d) {
     `<span class="wg-chip">churn <b>${(m.frame_churn ?? 0).toFixed(2)}</b></span>`,
     `<span class="wg-chip">drift <b>${(m.frame_drift ?? 0).toFixed(2)}</b></span>`,
     `<span class="wg-chip ${m.ungrounded_edges ? 'warn' : 'ok'}">grounded <b>${m.ungrounded_edges ? (m.ungrounded_edges + ' ungrounded!') : '✓'}</b></span>`];
+  if (m.primed) chips.push(`<span class="wg-chip" title="Carried from earlier conversations — dormant until re-mentioned (shown faded)">dormant <b>${m.primed}</b></span>`);
   if (d.stalled) chips.push(`<span class="wg-chip warn" title="${escAttr(d.stalled)}">⚠ may be ossified</span>`);
   met.innerHTML = chips.join('');
   let fm = nodes.filter(n => n.frame); if (!fm.length) fm = nodes.slice(0, 12);
@@ -891,10 +892,13 @@ function wgSvg(nodes, edges) {
     s += `<line x1="${a.x.toFixed(1)}" y1="${a.y.toFixed(1)}" x2="${b.x.toFixed(1)}" y2="${b.y.toFixed(1)}"`
       + ` stroke="#3a4150" stroke-width="${(0.6 + 2.2 * e.weight / maxW).toFixed(2)}" stroke-opacity="0.7"/>`; });
   nodes.forEach(n => { const q = pos[n.id], r = 4 + 12 * n.activation / maxA;
-    s += `<circle cx="${q.x.toFixed(1)}" cy="${q.y.toFixed(1)}" r="${r.toFixed(1)}" fill="${wgColor(n.activation / maxA)}"`
-      + (n.frame ? ' stroke="#e6e8ec" stroke-width="1.5"' : '') + '/>';
+    const op = n.primed ? 0.38 : 1;                       // dormant carried associations render faded
+    const ring = n.frame ? ' stroke="#e6e8ec" stroke-width="1.5"'
+      : (n.primed ? ' stroke="#4a5160" stroke-width="1" stroke-dasharray="2 2"' : '');
+    s += `<circle cx="${q.x.toFixed(1)}" cy="${q.y.toFixed(1)}" r="${r.toFixed(1)}" fill="${wgColor(n.activation / maxA)}" opacity="${op}"`
+      + ring + '/>';
     const lab = n.label.length > 22 ? n.label.slice(0, 21) + '…' : n.label;
-    s += `<text x="${(q.x + r + 3).toFixed(1)}" y="${(q.y + 3).toFixed(1)}">${escHtml(lab)}</text>`; });
+    s += `<text x="${(q.x + r + 3).toFixed(1)}" y="${(q.y + 3).toFixed(1)}" opacity="${op}">${escHtml(lab)}</text>`; });
   return s + '</svg>';
 }
 async function loadTrace() {

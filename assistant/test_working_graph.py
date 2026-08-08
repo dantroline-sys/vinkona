@@ -198,6 +198,64 @@ def test_snapshot():
     check("snapshot is JSON-serialisable", isinstance(json.dumps(snap), str))
 
 
+def test_persistence():
+    g = wg.WorkingGraph()
+    g.ingest("we spent ages on the server migration and the database index", now=0.0)
+    g.ingest("the server migration is the big risk this week", now=30.0)
+    blob = g.to_dict()
+    check("to_dict is JSON-serialisable", isinstance(json.dumps(blob), str))
+    saved = blob["nodes"]["p:server migration"]["activation"]
+    check("to_dict carries nodes with last_ts + edges with last_ts",
+          "last_ts" in blob["nodes"]["p:server migration"] and blob["edges"]
+          and "last_ts" in blob["edges"][0])
+
+    # Reload a day later into a fresh graph as dormant associations.
+    g2 = wg.WorkingGraph({"persist_tau_s": 604800.0, "carry_factor": 0.6})
+    carried = g2.load_persisted(blob, now=86400.0)                 # +1 day
+    check("nodes are carried over", carried > 0 and "p:server migration" in g2.nodes)
+    check("carried nodes are dormant (primed)", g2.nodes["p:server migration"]["primed"] is True)
+    check("dormant carried nodes are held OUT of the frame (no bleed)", g2.frame == [])
+    check("carried briefing is empty until re-mentioned", g2.briefing() == "")
+    check("carried activation is demoted below its saved value",
+          g2.nodes["p:server migration"]["activation"] < saved * 0.8)
+
+    # Re-mention lifts dormancy → it wakes into the frame.  (Sentence ends on the phrase so
+    # the extractor yields exactly "server migration", not a merged longer phrase.)
+    g2.ingest("what about the server migration", now=86400.0 + 10)
+    check("re-mention lifts dormancy", g2.nodes["p:server migration"]["primed"] is False)
+    check("re-mentioned carried node enters the frame", "p:server migration" in g2.frame)
+    check("its briefing now surfaces it", "server migration" in g2.briefing())
+
+    # Load is deterministic (same blob + now → identical graph state).
+    a = wg.WorkingGraph({"persist_tau_s": 604800.0}); a.load_persisted(blob, now=86400.0)
+    b = wg.WorkingGraph({"persist_tau_s": 604800.0}); b.load_persisted(blob, now=86400.0)
+    check("load is deterministic",
+          {k: round(v["activation"], 12) for k, v in a.nodes.items()}
+          == {k: round(v["activation"], 12) for k, v in b.nodes.items()})
+
+
+def test_cross_session_decay_and_dual_clock():
+    g = wg.WorkingGraph(); g.ingest("quarterly budget", now=0.0)
+    blob = g.to_dict()
+
+    near = wg.WorkingGraph({"persist_tau_s": 604800.0, "carry_factor": 0.6})
+    near.load_persisted(blob, now=3600.0)                          # +1h
+    far = wg.WorkingGraph({"persist_tau_s": 604800.0, "carry_factor": 0.6})
+    far.load_persisted(blob, now=3600.0 + 60 * 604800)            # +60 weeks
+    check("a recently-touched association survives the gap", "p:quarterly budget" in near.nodes)
+    check("a long-unused association wanes away entirely", "p:quarterly budget" not in far.nodes)
+
+    # Dual clock: a dormant carried node decays on the SLOW tau within a session (it lingers),
+    # not on the fast attention tau it would if it were active.
+    g3 = wg.WorkingGraph({"persist_tau_s": 604800.0, "carry_factor": 0.6, "tau_s": 900})
+    g3.load_persisted(blob, now=0.0)
+    a0 = g3.nodes["p:quarterly budget"]["activation"]
+    g3.ingest("something completely unrelated here", now=900.0)   # one fast-tau elapsed
+    a1 = g3.nodes["p:quarterly budget"]["activation"]
+    check("a dormant node barely fades over one fast-tau (slow clock, not attention clock)",
+          a1 > a0 * 0.98)
+
+
 def main():
     test_keyphrases()
     test_ingest_and_frame()
@@ -210,6 +268,8 @@ def main():
     test_metrics()
     test_stall_guard()
     test_snapshot()
+    test_persistence()
+    test_cross_session_decay_and_dual_clock()
     print(f"\n{PASS} passed, {FAIL} failed")
     raise SystemExit(1 if FAIL else 0)
 
