@@ -6,6 +6,7 @@ decay, boundedness, grounding, the fenced briefing, and exact replay determinism
     python assistant/test_working_graph.py
 """
 import importlib.util
+import json
 from pathlib import Path
 
 HERE = Path(__file__).parent
@@ -179,6 +180,24 @@ def test_stall_guard():
     check("metrics are deterministic on replay", run() == run())
 
 
+def test_snapshot():
+    g = wg.WorkingGraph()
+    g.ingest("the database index rebuild is slow and risky", now=0.0)
+    g.ingest("the database index rebuild keeps failing", now=20.0)
+    snap = g.snapshot(max_nodes=5, max_edges=5)
+    check("snapshot carries nodes/edges/metrics/turns/stalled",
+          {"nodes", "edges", "metrics", "turns", "stalled"} <= set(snap))
+    check("snapshot nodes are capped + carry id/label/activation/frame",
+          len(snap["nodes"]) <= 5 and all({"id", "label", "activation", "frame"} <= set(n) for n in snap["nodes"]))
+    ids = {n["id"] for n in snap["nodes"]}
+    check("snapshot edges are capped and only connect shown nodes",
+          len(snap["edges"]) <= 5 and all(e["a"] in ids and e["b"] in ids for e in snap["edges"]))
+    check("snapshot nodes are hottest-first",
+          all(snap["nodes"][i]["activation"] >= snap["nodes"][i + 1]["activation"]
+              for i in range(len(snap["nodes"]) - 1)))
+    check("snapshot is JSON-serialisable", isinstance(json.dumps(snap), str))
+
+
 def main():
     test_keyphrases()
     test_ingest_and_frame()
@@ -190,6 +209,7 @@ def main():
     test_replay_determinism()
     test_metrics()
     test_stall_guard()
+    test_snapshot()
     print(f"\n{PASS} passed, {FAIL} failed")
     raise SystemExit(1 if FAIL else 0)
 

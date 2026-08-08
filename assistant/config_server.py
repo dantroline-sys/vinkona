@@ -653,6 +653,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._get_models()
         if path == "/api/trace":
             return self._get_trace()
+        if path == "/api/working_graph":
+            return self._get_working_graph()
         if path == "/api/services":
             logs = sorted(LOGS_DIR.glob("*.log")) if LOGS_DIR.is_dir() else []
             return self._json(200, {"services": [
@@ -771,6 +773,24 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception:
                     continue
         self._json(200, {"events": events})
+
+    def _get_working_graph(self):
+        """The volatile conversational working-memory graph (VIN-WM-02).  The cascade
+        (a separate process) mirrors a compact snapshot beside the trace; we just read it.
+        `age_s` lets the UI say whether it's live or the last conversation's final state."""
+        cfg = self._cfg()
+        cs = cfg["config_server"]
+        p = Path(cs.get("trace_path", "config/trace.jsonl")).parent / "working_graph.json"
+        enabled = bool(((cfg.get("memory", {}) or {}).get("working_graph", {}) or {}).get("enabled"))
+        if not p.exists():
+            return self._json(200, {"empty": True, "enabled": enabled})
+        try:
+            data = json.loads(p.read_text())
+        except Exception:
+            return self._json(200, {"empty": True, "enabled": enabled})
+        data["enabled"] = enabled
+        data["age_s"] = max(0.0, time.time() - float(data.get("ts", 0)))
+        return self._json(200, data)
 
     # ── POST ─────────────────────────────────────────────────────────────────
     def do_POST(self):

@@ -137,6 +137,24 @@
                    padding:8px 12px; margin-top:6px; border-radius:0 6px 6px 0; max-width:820px; }
   .cfg-field input[type=checkbox] { width:auto; }
   .cfg-field .ctl { min-width:0; }
+  /* Working-memory inspector */
+  .wg-metrics { display:flex; flex-wrap:wrap; gap:8px; margin:6px 0 12px; }
+  .wg-chip { background:#161920; border:1px solid #2c303a; border-radius:6px; padding:6px 10px; font-size:12px; color:#9aa3b2; }
+  .wg-chip b { color:#e6e8ec; font-weight:600; font-variant-numeric:tabular-nums; }
+  .wg-chip.warn { border-color:#8a5a2c; background:#241a10; color:#f0b078; }
+  .wg-chip.ok { border-color:#2c5a3a; }
+  .wg-wrap { display:flex; gap:14px; align-items:flex-start; flex-wrap:wrap; }
+  .wg-frame { flex:0 0 300px; max-width:340px; }
+  .wg-frame h3, .wg-graph h3 { font-size:12px; color:#8b93a1; text-transform:uppercase; letter-spacing:.04em; margin:0 0 8px; font-weight:600; }
+  .wg-row { margin-bottom:6px; }
+  .wg-row .lbl { font-size:12.5px; color:#e6e8ec; display:flex; justify-content:space-between; gap:8px; }
+  .wg-row .lbl .val { color:#6b7280; font-variant-numeric:tabular-nums; }
+  .wg-bar { height:5px; border-radius:3px; margin-top:2px; background:#2c303a; overflow:hidden; }
+  .wg-bar > i { display:block; height:100%; border-radius:3px; background:#3b82f6; }
+  .wg-graph { flex:1 1 420px; min-width:360px; }
+  .wg-graph svg { width:100%; height:440px; background:#14171d; border:1px solid #2c303a; border-radius:8px; }
+  .wg-graph text { fill:#c7cdd8; font-size:10px; font-family:ui-monospace,monospace; pointer-events:none; }
+  .wg-empty { color:#8b93a1; background:#161920; border:1px dashed #3d4350; border-radius:8px; padding:22px; text-align:center; }
   .cfg-path { font-size:10.5px; color:#6b7280; font-family:ui-monospace,monospace; margin-top:2px; font-weight:400; }
   textarea.cfg-json { font-family:ui-monospace,monospace; font-size:12px; min-height:88px; }
   textarea.cfg-json.err { border-color:#f08a8a; }
@@ -168,6 +186,7 @@
   <button data-tab="tuning">Tuning</button>
   <button data-tab="services">Services</button>
   <button data-tab="live">Live</button>
+  <button data-tab="wgraph">Working memory</button>
   <button data-tab="memory">Memory</button>
   <button data-tab="self">Self</button>
   <button data-tab="research">Research</button>
@@ -290,6 +309,28 @@
       <span id="lstatus" class="muted"></span>
     </div>
     <div id="trace"></div>
+  </section>
+
+  <!-- ── Working memory (VIN-WM-02 conversational graph) ───────────────────── -->
+  <section id="tab-wgraph" class="tab">
+    <h2>Working memory <span class="muted">— what's front-of-mind in the live conversation (volatile; discarded at the end)</span></h2>
+    <details class="tabhelp"><summary>ⓘ what am I looking at?</summary><div>
+      A throw-away graph of the current conversation's key phrases. A phrase gets hotter
+      when it's mentioned and fades when it isn't, so what's left is the running thread.
+      The <b>frame</b> is what's most active right now; the <b>graph</b> shows how phrases
+      connect (thicker line = mentioned together more). This is a live picture — enable
+      <code>memory.working_graph</code> and talk to her to see it move.
+    </div></details>
+    <div class="bar">
+      <label style="margin:0"><input type="checkbox" id="autoWG" checked style="width:auto"> auto-refresh (2s)</label>
+      <button class="btn secondary" onclick="loadWGraph()">Refresh now</button>
+      <span id="wgStatus" class="muted"></span>
+    </div>
+    <div id="wgMetrics" class="wg-metrics"></div>
+    <div class="wg-wrap">
+      <div id="wgFrame" class="wg-frame"></div>
+      <div id="wgGraph" class="wg-graph"></div>
+    </div>
   </section>
 
   <!-- ── Memory ───────────────────────────────────────────────────────────── -->
@@ -497,7 +538,7 @@
 
 <script>
 // ── Tabs ────────────────────────────────────────────────────────────────────
-const loaders = { profiles: loadProfiles, models: loadModels, tuning: loadTuning, services: startServices, live: startLive, memory: loadMemory, self: loadSelf, research: loadResearch, plans: loadPlans, network: loadNetwork, settings: loadConfig };
+const loaders = { profiles: loadProfiles, models: loadModels, tuning: loadTuning, services: startServices, live: startLive, wgraph: startWGraph, memory: loadMemory, self: loadSelf, research: loadResearch, plans: loadPlans, network: loadNetwork, settings: loadConfig };
 
 let planFilter = 'open';
 function setPlanFilter(f) { planFilter = f; loadPlans(); }
@@ -569,6 +610,7 @@ document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => {
   document.getElementById('tab-' + b.dataset.tab).classList.add('active');
   liveTimer && clearInterval(liveTimer); liveTimer = null;
   svcTimer && clearInterval(svcTimer); svcTimer = null;
+  wgTimer && clearInterval(wgTimer); wgTimer = null;
   (loaders[b.dataset.tab] || (()=>{}))();
 });
 
@@ -767,6 +809,94 @@ let liveTimer = null;
 function startLive() { loadTrace(); liveTimer = setInterval(() => {
   if (document.getElementById('autoLive').checked) loadTrace(); }, 2000); }
 function ts(t) { return new Date(t * 1000).toLocaleTimeString(); }
+
+// ── Working memory (VIN-WM-02 conversational graph) ─────────────────────────
+let wgTimer = null, wgPos = {};
+function startWGraph() { loadWGraph(); wgTimer = setInterval(() => {
+  if (document.getElementById('autoWG').checked) loadWGraph(); }, 2000); }
+function wgAge(s) { if (s == null) return ''; if (s < 8) return 'live';
+  if (s < 90) return Math.round(s) + 's ago'; if (s < 5400) return Math.round(s/60) + 'm ago'; return 'idle'; }
+function wgLerp(a, b, t) { return Math.round(a + (b - a) * t); }
+function wgColor(a) { a = Math.max(0, Math.min(1, a));
+  return `rgb(${wgLerp(58,77,a)},${wgLerp(67,159,a)},${wgLerp(86,255,a)})`; }   // cold grey → warm blue
+
+async function loadWGraph() {
+  let d; try { d = await (await fetch('/api/working_graph')).json(); } catch (e) { return; }
+  renderWGraph(d);
+}
+function renderWGraph(d) {
+  const st = document.getElementById('wgStatus'), met = document.getElementById('wgMetrics');
+  const frameEl = document.getElementById('wgFrame'), graphEl = document.getElementById('wgGraph');
+  if (!d || d.empty) {
+    met.innerHTML = ''; frameEl.innerHTML = ''; st.textContent = '';
+    graphEl.innerHTML = `<div class="wg-empty">${d && d.enabled === false
+      ? 'Working memory is off. Set <code>memory.working_graph.enabled = true</code> (Settings), restart the cascade, then talk to her.'
+      : 'No working graph yet — start a conversation and it fills in here.'}</div>`;
+    return;
+  }
+  const nodes = d.nodes || [], edges = d.edges || [], m = d.metrics || {};
+  st.textContent = `${nodes.length} nodes · ${edges.length} links · turn ${d.turns || 0} · ${wgAge(d.age_s)}`
+    + (d.session ? ` · sess ${d.session}` : '');
+  const chips = [
+    `<span class="wg-chip">entropy <b>${(m.entropy ?? 0).toFixed(2)}</b></span>`,
+    `<span class="wg-chip">churn <b>${(m.frame_churn ?? 0).toFixed(2)}</b></span>`,
+    `<span class="wg-chip">drift <b>${(m.frame_drift ?? 0).toFixed(2)}</b></span>`,
+    `<span class="wg-chip ${m.ungrounded_edges ? 'warn' : 'ok'}">grounded <b>${m.ungrounded_edges ? (m.ungrounded_edges + ' ungrounded!') : '✓'}</b></span>`];
+  if (d.stalled) chips.push(`<span class="wg-chip warn" title="${escAttr(d.stalled)}">⚠ may be ossified</span>`);
+  met.innerHTML = chips.join('');
+  let fm = nodes.filter(n => n.frame); if (!fm.length) fm = nodes.slice(0, 12);
+  const maxA = Math.max(...nodes.map(n => n.activation), 0.01);
+  frameEl.innerHTML = '<h3>Front of mind</h3>' + (fm.map(n => {
+    const w = Math.round(100 * n.activation / maxA);
+    return `<div class="wg-row"><div class="lbl"><span>${escHtml(n.label)}</span>`
+      + `<span class="val">${n.activation.toFixed(2)}</span></div>`
+      + `<div class="wg-bar"><i style="width:${w}%;background:${wgColor(n.activation / maxA)}"></i></div></div>`;
+  }).join('') || '<div class="muted">warming up…</div>');
+  graphEl.innerHTML = '<h3>Graph</h3>' + wgSvg(nodes, edges);
+}
+function wgLayout(nodes, edges, W, H) {                 // deterministic force sim; positions persist for stability
+  const ids = new Set(nodes.map(n => n.id));
+  Object.keys(wgPos).forEach(id => { if (!ids.has(id)) delete wgPos[id]; });
+  nodes.forEach((n, i) => { if (!wgPos[n.id]) { const a = 2 * Math.PI * i / nodes.length;
+    wgPos[n.id] = { x: W/2 + Math.cos(a) * W * 0.28, y: H/2 + Math.sin(a) * H * 0.28 }; } });
+  const p = {}; nodes.forEach(n => { p[n.id] = { x: wgPos[n.id].x, y: wgPos[n.id].y, vx: 0, vy: 0 }; });
+  const N = nodes.length;
+  for (let it = 0; it < 90; it++) {
+    for (let i = 0; i < N; i++) for (let j = i + 1; j < N; j++) {
+      const a = p[nodes[i].id], b = p[nodes[j].id];
+      let dx = a.x - b.x, dy = a.y - b.y, d2 = dx*dx + dy*dy || 0.01, d = Math.sqrt(d2);
+      const f = 1600 / d2, fx = dx/d*f, fy = dy/d*f; a.vx += fx; a.vy += fy; b.vx -= fx; b.vy -= fy;
+    }
+    edges.forEach(e => { const a = p[e.a], b = p[e.b]; if (!a || !b) return;
+      let dx = b.x - a.x, dy = b.y - a.y, d = Math.sqrt(dx*dx + dy*dy) || 0.01;
+      const f = (d - 70) * 0.02, fx = dx/d*f, fy = dy/d*f; a.vx += fx; a.vy += fy; b.vx -= fx; b.vy -= fy;
+    });
+    nodes.forEach(n => { const q = p[n.id];
+      q.vx += (W/2 - q.x) * 0.003; q.vy += (H/2 - q.y) * 0.003;
+      q.x += Math.max(-6, Math.min(6, q.vx)); q.y += Math.max(-6, Math.min(6, q.vy));
+      q.vx *= 0.82; q.vy *= 0.82;
+      q.x = Math.max(26, Math.min(W - 96, q.x)); q.y = Math.max(20, Math.min(H - 20, q.y)); });
+  }
+  nodes.forEach(n => { wgPos[n.id] = { x: p[n.id].x, y: p[n.id].y }; });
+  return p;
+}
+function wgSvg(nodes, edges) {
+  const W = 640, H = 440;
+  if (!nodes.length) return '<div class="wg-empty">graph empty</div>';
+  const pos = wgLayout(nodes, edges, W, H);
+  const maxA = Math.max(...nodes.map(n => n.activation), 0.01);
+  const maxW = Math.max(...edges.map(e => e.weight), 1);
+  let s = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">`;
+  edges.forEach(e => { const a = pos[e.a], b = pos[e.b]; if (!a || !b) return;
+    s += `<line x1="${a.x.toFixed(1)}" y1="${a.y.toFixed(1)}" x2="${b.x.toFixed(1)}" y2="${b.y.toFixed(1)}"`
+      + ` stroke="#3a4150" stroke-width="${(0.6 + 2.2 * e.weight / maxW).toFixed(2)}" stroke-opacity="0.7"/>`; });
+  nodes.forEach(n => { const q = pos[n.id], r = 4 + 12 * n.activation / maxA;
+    s += `<circle cx="${q.x.toFixed(1)}" cy="${q.y.toFixed(1)}" r="${r.toFixed(1)}" fill="${wgColor(n.activation / maxA)}"`
+      + (n.frame ? ' stroke="#e6e8ec" stroke-width="1.5"' : '') + '/>';
+    const lab = n.label.length > 22 ? n.label.slice(0, 21) + '…' : n.label;
+    s += `<text x="${(q.x + r + 3).toFixed(1)}" y="${(q.y + 3).toFixed(1)}">${escHtml(lab)}</text>`; });
+  return s + '</svg>';
+}
 async function loadTrace() {
   let d;
   try { d = await (await fetch('/api/trace?n=200')).json(); }

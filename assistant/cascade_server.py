@@ -1305,6 +1305,19 @@ class _Session:
             m = self.wg.last_metrics
             if m and self.s.trace:
                 self._trace({"ts": time.time(), "kind": "working_graph", **m})
+            # Mirror a compact snapshot for the config-screen inspector (a separate
+            # process — it reads this file; the graph itself stays in-memory + volatile).
+            try:
+                snap = {"session": self.session_id[:8], "persona": self._persona_name,
+                        "ts": time.time(), **self.wg.snapshot()}
+                p = (Path(self.cfg["config_server"].get("trace_path", "config/trace.jsonl"))
+                     .parent / "working_graph.json")
+                p.parent.mkdir(parents=True, exist_ok=True)
+                tmp = p.with_suffix(".json.tmp")
+                tmp.write_text(json.dumps(snap))
+                tmp.replace(p)                            # atomic: reader never sees a partial file
+            except Exception:
+                pass
             if self.wg.stalled:
                 if not self._wg_stall_warned:
                     _log(f"working graph: {self.wg.stalled}")

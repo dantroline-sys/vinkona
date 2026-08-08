@@ -292,6 +292,24 @@ class WorkingGraph:
                         f"frame_churn {m['frame_churn']} for {self._stall_run} events"
                         if self._stall_run >= int(self.c["k_lock"]) else None)
 
+    def snapshot(self, max_nodes: int = 40, max_edges: int = 60) -> dict:
+        """A compact, JSON-able view for the config-screen inspector: the hottest nodes
+        and the edges among them, plus the latest metrics.  Bounded so the payload and the
+        drawing both stay legible.  Read-only observability — never fed back into the graph
+        (WM-2 stays: the graph is not rebuilt from this)."""
+        top = sorted(self.nodes.items(),
+                     key=lambda kv: (-kv[1]["activation"], kv[0]))[:max_nodes]
+        ids = {nid for nid, _ in top}
+        fr = set(self.frame)
+        nodes = [{"id": nid, "label": nd["label"], "activation": round(nd["activation"], 4),
+                  "frame": nid in fr} for nid, nd in top]
+        edges = [{"a": a, "b": b, "weight": ed["weight"]}
+                 for (a, b), ed in sorted(self.edges.items(),
+                                          key=lambda kv: (-kv[1]["weight"], _neg_key(kv[0])))
+                 if a in ids and b in ids][:max_edges]
+        return {"turns": self._turn, "stalled": self.stalled,
+                "metrics": self.last_metrics, "nodes": nodes, "edges": edges}
+
 
 def _jaccard(a: set, b: set) -> float:
     """|a∩b| / |a∪b|; two empty sets count as identical (no change)."""
