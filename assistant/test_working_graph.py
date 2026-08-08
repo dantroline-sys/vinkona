@@ -126,6 +126,59 @@ def test_replay_determinism():
     check("replay is bit-identical (stats + briefing + activations)", run() == run())
 
 
+def test_metrics():
+    g = wg.WorkingGraph()
+    g.ingest("the database index is corrupt", now=0.0)
+    m = g.last_metrics
+    check("metrics carry the expected fields",
+          {"turns", "nodes", "edges", "entropy", "frame_churn", "frame_drift",
+           "ungrounded_edges", "frame"} <= set(m))
+    check("ungrounded_edges is zero (grounding invariant, live)", m["ungrounded_edges"] == 0)
+    check("frame lists the phrase labels (inspection window)", "database index" in m["frame"])
+
+    # Re-ingesting the same turn leaves the frame unchanged → zero churn.
+    g.ingest("the database index is corrupt", now=5.0)
+    check("identical frame → frame_churn 0", g.last_metrics["frame_churn"] == 0.0)
+    # A topic shift moves the frame → drift climbs from the seed.
+    for i, t in enumerate(["switch to the billing subsystem entirely",
+                           "billing subsystem invoices and refunds", "billing retries and dunning"]):
+        g.ingest(t, now=20.0 + i * 10)
+    check("a topic shift raises frame_drift above zero", g.last_metrics["frame_drift"] > 0.0)
+
+    # Entropy: one dominant node ≈ 0; several balanced nodes > 0.
+    g1 = wg.WorkingGraph(); g1.ingest("solo", now=0.0)
+    check("a single node has ~zero activation entropy", g1.last_metrics["entropy"] < 1e-9)
+    g2 = wg.WorkingGraph(); g2.ingest("apple, banana, cherry, date", now=0.0)
+    check("several balanced nodes have positive entropy", g2.last_metrics["entropy"] > 1.0)
+
+
+def test_stall_guard():
+    # Repetitive frame with a full-enough frame trips the guard; it only flags, never mutates.
+    g = wg.WorkingGraph({"k_frame": 2, "k_lock": 2, "e_lock": 0.1})
+    before = None
+    for i in range(5):
+        g.ingest("alpha, beta", now=float(i * 10))
+        if i == 0:
+            before = dict(g.nodes["p:alpha"])
+    check("a frozen frame trips the stall guard", g.stalled is not None)
+    check("the stall guard only flags — activations still just decayed, not reset",
+          g.nodes["p:alpha"]["activation"] > 0 and before is not None)
+
+    # A varied conversation keeps the frame moving → no stall.
+    g2 = wg.WorkingGraph({"k_frame": 2, "k_lock": 2, "e_lock": 0.1})
+    for i, t in enumerate(["alpha bravo", "charlie delta", "echo foxtrot", "golf hotel", "india juliet"]):
+        g2.ingest(t, now=float(i * 10))
+    check("a varied conversation does not trip the stall guard", g2.stalled is None)
+
+    # Determinism extends to the instrument: same turns → identical metrics.
+    def run():
+        gg = wg.WorkingGraph()
+        for i, t in enumerate(["release plan slipped", "release plan again", "coffee break", "release plan risks"]):
+            gg.ingest(t, now=float(i * 30))
+        return gg.last_metrics
+    check("metrics are deterministic on replay", run() == run())
+
+
 def main():
     test_keyphrases()
     test_ingest_and_frame()
@@ -135,6 +188,8 @@ def main():
     test_grounded()
     test_briefing()
     test_replay_determinism()
+    test_metrics()
+    test_stall_guard()
     print(f"\n{PASS} passed, {FAIL} failed")
     raise SystemExit(1 if FAIL else 0)
 

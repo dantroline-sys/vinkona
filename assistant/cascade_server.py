@@ -499,6 +499,7 @@ class _Session:
         # with it (WM-2).  None when disabled → the reply prompt is unchanged (G-ACCEL).
         _wgc = (self.cfg.get("memory", {}) or {}).get("working_graph", {})
         self.wg = self.s._wg_mod.WorkingGraph(_wgc) if _wgc.get("enabled") else None
+        self._wg_stall_warned = False                         # one-shot stall log (VIN-WM-02 1c)
         self._rhythm = ""                                     # usage-rhythm line (set at session open)
         self._user_profile_cache = None                       # learned user model (per session)
         self._persona_name = default_persona
@@ -1289,9 +1290,29 @@ class _Session:
             return ""
         try:
             self.wg.ingest(user_text or "", now=time.time())
+            self._wg_observe()
             return self.wg.briefing()
         except Exception:
             return ""
+
+    def _wg_observe(self) -> None:
+        """VIN-WM-02 1c: after an ingest, emit the working-graph metrics to the trace
+        (kind=working_graph — the inspection window) and warn once if it looks ossified
+        (the drift smoke-detector).  Never mutates the graph; best-effort."""
+        if self.wg is None:
+            return
+        try:
+            m = self.wg.last_metrics
+            if m and self.s.trace:
+                self._trace({"ts": time.time(), "kind": "working_graph", **m})
+            if self.wg.stalled:
+                if not self._wg_stall_warned:
+                    _log(f"working graph: {self.wg.stalled}")
+                    self._wg_stall_warned = True
+            else:
+                self._wg_stall_warned = False
+        except Exception:
+            pass
 
     def _ambient_block(self) -> str:
         """The disposable 'right now' snapshot (calendar/weather/news) for the fast prompt,
@@ -1372,6 +1393,7 @@ class _Session:
         if self.wg is not None and role == "assistant":
             try:
                 self.wg.ingest(text or "", now=time.time())
+                self._wg_observe()
             except Exception:
                 pass
 

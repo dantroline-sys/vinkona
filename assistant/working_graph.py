@@ -72,6 +72,12 @@ DEFAULTS: dict = {
     "brief_max_chars": 700,     # hard cap on the rendered briefing
     "brief_threads": 5,         # hottest edges shown as "threads"
     "keep_turns": 8,            # bound the per-node / per-edge supporting-turn lists
+    # Instrument / drift guard (VIN-WM-02 1c).  Deterministic metrics per event + a
+    # stall detector: if the frame stops moving or activation entropy collapses, the LM
+    # graph has ossified (the "memory trap" this is meant to prevent).  It only FLAGS —
+    # never mutates activation — and only once the frame is full (≥ k_frame nodes).
+    "e_lock": 1.0,              # activation-entropy floor (nats)
+    "k_lock": 4,                # consecutive low-signal events before flagging a stall
 }
 
 _HEADER = ("Working notes — my running read of this conversation so far; may be wrong, "
@@ -141,6 +147,12 @@ class WorkingGraph:
         self.edges: dict[tuple, dict] = {}     # (a,b) sorted -> {weight, turns:[..], last_seen_turn}
         self._turn = 0
         self.frame: list[str] = []
+        # instrument state (VIN-WM-02 1c)
+        self._prev_frame: set = set()          # frame before the current event (for churn)
+        self._seed_frame: tp.Optional[set] = None   # first full frame (for drift)
+        self._stall_run = 0                    # consecutive low-signal events
+        self.stalled: tp.Optional[str] = None  # non-None when the graph looks ossified
+        self.last_metrics: dict = {}           # metrics from the most recent ingest
 
     # -- lifecycle ----------------------------------------------------------------------
     def ingest(self, text: str, *, now: float) -> int:
@@ -157,8 +169,13 @@ class WorkingGraph:
             self._boost(nid, ph, turn, now)
             mentioned.append(nid)
         self._link(mentioned[: self.c["link_top"]], turn)
+        self._prev_frame = set(self.frame)                # frame before this event's reframe
         self._evict()
         self._reframe()
+        if self._seed_frame is None and self.frame:
+            self._seed_frame = set(self.frame)            # first full frame = drift reference
+        self.last_metrics = self.metrics()
+        self._update_stall(self.last_metrics)
         return turn
 
     def _decay(self, now: float) -> None:
@@ -237,9 +254,50 @@ class WorkingGraph:
         return "\n".join(lines)[: int(self.c["brief_max_chars"])]
 
     def stats(self) -> dict:
-        """A few cheap counters (the full instrument is phase 1c)."""
+        """A few cheap counters."""
         return {"nodes": len(self.nodes), "edges": len(self.edges),
                 "frame": list(self.frame), "turns": self._turn}
+
+    # -- instrument (VIN-WM-02 1c) ------------------------------------------------------
+    def metrics(self) -> dict:
+        """Deterministic per-event metrics for observability + drift detection.  Pure — a
+        function of the current graph and the frame captured before this event's reframe.
+        `frame` lists the phrase labels currently in front of her (the inspection window)."""
+        acts = [self.nodes[n]["activation"] for n in self.nodes]
+        total = sum(acts)
+        entropy = -sum((a / total) * math.log(a / total) for a in acts if a > 0) if total > 0 else 0.0
+        fnow = set(self.frame)
+        return {
+            "turns": self._turn,
+            "nodes": len(self.nodes),
+            "edges": len(self.edges),
+            "entropy": round(entropy, 4),                        # primary lock signal (nats)
+            "frame_churn": round(1.0 - _jaccard(fnow, self._prev_frame), 4),
+            "frame_drift": round(1.0 - _jaccard(fnow, self._seed_frame or set()), 4),
+            "ungrounded_edges": sum(1 for e in self.edges.values() if not e["turns"]),  # must stay 0
+            "frame": [self.nodes[n]["label"] for n in self.frame],
+        }
+
+    def _update_stall(self, m: dict) -> None:
+        """Flag (never mutate) when the graph has ossified: entropy collapsed or the frame
+        stopped moving for k_lock consecutive events.  Only judged once the frame is full,
+        so a warming-up conversation with few nodes never trips it."""
+        if m["nodes"] < int(self.c["k_frame"]):
+            self._stall_run = 0
+            self.stalled = None
+            return
+        low = m["entropy"] < float(self.c["e_lock"]) or m["frame_churn"] == 0.0
+        self._stall_run = self._stall_run + 1 if low else 0
+        self.stalled = (f"working graph may be ossified — entropy {m['entropy']} nats, "
+                        f"frame_churn {m['frame_churn']} for {self._stall_run} events"
+                        if self._stall_run >= int(self.c["k_lock"]) else None)
+
+
+def _jaccard(a: set, b: set) -> float:
+    """|a∩b| / |a∪b|; two empty sets count as identical (no change)."""
+    if not a and not b:
+        return 1.0
+    return len(a & b) / len(a | b)
 
 
 def _neg_id(s: str) -> tuple:

@@ -562,6 +562,11 @@ DEFAULTS: dict = {
             "brief_max_chars": 700,  # hard cap on the briefing block
             "brief_threads": 5,      # hottest edges shown as "threads"
             "keep_turns": 8,         # bound per-node / per-edge supporting-turn lists
+            # Instrument (1c): per-event metrics go to the trace (kind=working_graph) for
+            # inspection + tuning, and a stall guard flags (never mutates) when the frame
+            # ossifies — entropy below e_lock or a frozen frame for k_lock events.
+            "e_lock": 1.0,           # activation-entropy floor (nats)
+            "k_lock": 4,             # consecutive low-signal events before a stall warning
         },
         # Grounding-confidence + abstention: nudge the model to say "I don't have that" rather
         # than confabulate when nothing relevant was recalled for a question. Scoped so it never
