@@ -604,6 +604,16 @@ _DELIBERATE_DEFAULTS = {
     "progress": ["Still with you — thinking…", "Almost there…"],
     "timed_out": "Sorry, that took too long. Want to try again?",
     "deliver_via_fast": True,  # rephrase the big LM's answer in the fast LM's own voice
+    "history_turns": 12,       # recent turns of raw context handed to the big LM
+    # Cold-start: on an exclusive-swap box the big LM may not be resident, so the first
+    # deliberation after a quiet stretch would otherwise get an empty answer while the
+    # weights load.  Instead, wait for the swap-in within this budget (with progress lines)
+    # and answer in-turn.  cold_timeout_s = 0 restores the old give-up-immediately behaviour.
+    "cold_timeout_s": 75.0,    # how long to wait for a not-yet-resident big LM to load
+    "cold_poll_s": 6.0,        # re-check readiness this often while it loads
+    "warming": "Give me a moment — bringing my full reasoning online for this one.",
+    "cold_failed": "I couldn't get my deeper reasoning loaded in time — give me a few "
+                   "seconds and ask again.",
 }
 
 
@@ -902,6 +912,12 @@ class LLMBridge:
         # The recalled-memory block the fast LM saw this turn, stashed so the background
         # briefing can be grounded in the same knowledge the voice model is working from.
         self._last_recall = ""
+        # The working-notes briefing (VIN-WM-02) the fast LM saw this turn, stashed so a
+        # deliberation is handed the same held conversation thread (see _deliberate).
+        self._last_working_notes = ""
+        # Set by _stream_chat when the big LM refused the connection (not resident on an
+        # exclusive-swap box): deliberation uses it to wait for the swap-in instead of bailing.
+        self._big_cold = False
         # Short briefing produced by the big LM after each turn.
         self._big_lm_briefing: str = ""
         # Background task handle so we can await/cancel it cleanly.
@@ -1351,6 +1367,7 @@ class LLMBridge:
         if self.working_notes_hook:
             try:
                 wn = self.working_notes_hook(user_text)
+                self._last_working_notes = wn or ""            # stash for deliberation (same thread)
                 if wn:
                     system += "\n\n" + wn
             except Exception:
@@ -2148,8 +2165,14 @@ class LLMBridge:
         t0 = time.monotonic()
         try:
             await self.speak_sink(cfg.get("stall") or _DELIBERATE_DEFAULTS["stall"])
-            recent = [m for m in self.history[-8:] if m["role"] in ("user", "assistant")]
+            n = int(cfg.get("history_turns", 12))
+            recent = [m for m in self.history[-(n * 2):] if m["role"] in ("user", "assistant")]
             convo = "\n".join(f"{m['role'].upper()}: {m['content']}" for m in recent)
+            # Hand the escalated reasoner the same held thread the fast LM had: the working
+            # notes (VIN-WM-02) carry what dropped out of the raw window (e.g. a room
+            # described 20 turns ago), and the recalled memories carry durable facts.
+            notes = (self._last_working_notes or "").strip()
+            recall = (self._last_recall or "").strip()
             prompt = (
                 "You are the deliberate, knowledgeable reasoning core behind a voice "
                 "assistant. The user asked something where getting the facts and reasoning "
@@ -2157,15 +2180,21 @@ class LLMBridge:
                 "substantive but concise — it will be spoken aloud, so at most a few "
                 "sentences: no preamble, no lists, no markdown.\n\n"
                 f"{self._identity_detail()}{self._user_profile()}"
-                f"Conversation so far:\n{convo}\n\nAnswer this well: {question}\n\nAnswer:")
+                + (f"{notes}\n\n" if notes else "")
+                + (f"What you've recalled that may bear on this:\n{recall}\n\n" if recall else "")
+                + f"Conversation so far:\n{convo}\n\nAnswer this well: {question}\n\nAnswer:")
             task = asyncio.create_task(self._big_lm_consider(prompt))
             answer = await self._await_with_progress(task)
+            if not answer and self._big_cold:      # big LM wasn't resident — wait for the swap-in
+                answer = await self._await_cold(prompt)
         finally:
             self._set_deliberating(False)
         elapsed = round(time.monotonic() - t0, 2)
         if not answer:
-            line = cfg.get("timed_out") or _DELIBERATE_DEFAULTS["timed_out"]
-            self._trace("deliberate_done", ok=False, elapsed_s=elapsed)
+            cold = self._big_cold                 # never loaded vs. genuinely slow — say the honest thing
+            line = (cfg.get("cold_failed") if cold else cfg.get("timed_out")) \
+                or _DELIBERATE_DEFAULTS["timed_out"]
+            self._trace("deliberate_done", ok=False, elapsed_s=elapsed, cold=cold)
             await self.speak_sink(line)
             return line
         self._trace("deliberate_done", ok=True, elapsed_s=elapsed, bytes=len(answer))
@@ -2197,6 +2226,7 @@ class LLMBridge:
 
     async def _big_lm_consider(self, prompt: str) -> str:
         """One synchronous big-LM call with thinking ON — the actual 'deeper thought'."""
+        self._big_cold = False                     # _stream_chat sets it if the tier isn't resident
         messages = [
             {"role": "system",
              "content": "You are a careful, knowledgeable reasoning assistant."},
@@ -2239,6 +2269,36 @@ class LLMBridge:
             if i < len(lines):
                 await self.speak_sink(lines[i])
                 i += 1
+
+    async def _await_cold(self, prompt: str) -> tp.Optional[str]:
+        """The big LM wasn't resident when deliberation started (a swap-in was requested).
+        Wait for it within `cold_timeout_s`, retrying the considered answer and speaking
+        progress lines, so a hard question after a quiet stretch is answered IN this turn
+        rather than apologised for and lost.  Returns the answer, or None if it never comes
+        up.  `cold_timeout_s = 0` keeps the old give-up-immediately behaviour."""
+        cfg = self.deliberate_cfg
+        budget = float(cfg.get("cold_timeout_s", 75.0))
+        if budget <= 0 or self.speak_sink is None:
+            return None
+        poll = max(1.0, float(cfg.get("cold_poll_s", 6.0)))
+        await self.speak_sink(cfg.get("warming") or _DELIBERATE_DEFAULTS["warming"])
+        lines = list(cfg.get("progress") or [])
+        t0, i = time.monotonic(), 0
+        while time.monotonic() - t0 < budget:
+            await asyncio.sleep(poll)
+            try:
+                answer = await self._big_lm_consider(prompt)   # resets _big_cold; re-sets it if still cold
+            except Exception as exc:
+                _log("warning", f"cold deliberation retry failed: {exc}")
+                answer = ""
+            if answer:
+                self._trace("deliberate_warm", waited_s=round(time.monotonic() - t0, 1))
+                return answer
+            if not self._big_cold:
+                return None                       # reachable now but produced nothing — don't spin
+            if i < len(lines):
+                await self.speak_sink(lines[i]); i += 1
+        return None
 
     async def _deliver_consideration(self, answer: str) -> str:
         """Speak the big LM's conclusion.  By default the fast LM rephrases it in its own
@@ -2615,6 +2675,8 @@ class LLMBridge:
                         if tc_acc[i]["name"]:
                             tool_calls_out.append(tc_acc[i])
         except aiohttp.ClientConnectorError as exc:
+            if base_url == self.big_url:
+                self._big_cold = True                  # deliberation waits for the swap-in instead of bailing
             if self.swap_hook:
                 # not an outage on an exclusive-swap box — the model just isn't
                 # resident.  Ask for it; weights load in minutes, so THIS turn

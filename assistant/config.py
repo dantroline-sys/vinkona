@@ -374,6 +374,16 @@ DEFAULTS: dict = {
             "progress": ["Still with you — thinking…", "Almost there…"],
             "timed_out": "Sorry, that took too long. Want to try again?",
             "deliver_via_fast": True,   # rephrase the answer in the fast LM's voice (vs verbatim)
+            "history_turns": 12,        # how many recent turns of context the big LM gets
+            # Cold-start: on an exclusive-swap box the big LM may not be resident, so the
+            # first hard question after a quiet stretch would get an empty answer while the
+            # weights load. Instead wait for the swap-in in-turn (with progress lines) and
+            # answer. cold_timeout_s = 0 restores give-up-immediately.
+            "cold_timeout_s": 75.0,     # wait this long for a not-yet-resident big LM to load
+            "cold_poll_s": 6.0,         # re-check readiness this often while it loads
+            "warming": "Give me a moment — bringing my full reasoning online for this one.",
+            "cold_failed": "I couldn't get my deeper reasoning loaded in time — give me a "
+                           "few seconds and ask again.",
         },
     },
     # Second big-LM instance for "knowledge acquisition mode" (./vinkona.sh start knowledge):
