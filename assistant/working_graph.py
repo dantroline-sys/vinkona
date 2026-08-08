@@ -28,7 +28,9 @@ Invariants honoured here:
     The same turns replay to a bit-identical graph.
   * Volatile (G-2): held in memory, discarded with the conversation.  No persistence.
   * Bounded (G-7): node and edge counts are hard-capped.
-  * Grounded (G-6): every node and edge records the turn indices that support it.
+  * Grounded (G-6): every node and edge records the turn indices that support it, and every
+    node keeps a few short verbatim snippets of where its phrase actually occurred — so a
+    carried (dormant) node hands back tangible content on wake, not just a bare label.
   * Fenced (G-5): the briefing is "working notes, may be wrong", never spoken, never canon.
 """
 
@@ -56,6 +58,8 @@ one two three thing things stuff way ways kind sort lot bit
 """.split())
 
 _TOK = re.compile(r"[A-Za-z0-9][A-Za-z0-9'\-]*|[^\sA-Za-z0-9]")   # a word OR a single punctuation mark
+_SENT = re.compile(r"[^.!?\n]+[.!?]*")                            # a rough clause/sentence run
+_WS = re.compile(r"\s+")
 
 DEFAULTS: dict = {
     "enabled": False,           # phase 1a is opt-in until the held-out eval says it helps
@@ -72,6 +76,13 @@ DEFAULTS: dict = {
     "brief_max_chars": 700,     # hard cap on the rendered briefing
     "brief_threads": 5,         # hottest edges shown as "threads"
     "keep_turns": 8,            # bound the per-node / per-edge supporting-turn lists
+    # Grounding snippets: with each phrase we keep the clause it came from, so a node is a
+    # recall *handle* (content behind it), not just a label.  Surfaced in the briefing ONLY
+    # for a carried node that just woke from dormancy — where the LM has no rolling context
+    # for it — so within a session the briefing stays lean (the content is still in context).
+    "keep_grounds": 3,          # max verbatim snippets kept per node (bounded)
+    "ground_max_chars": 160,    # cap each snippet
+    "brief_recall": 3,          # max "Earlier (may be stale)" recall lines in a briefing
     # Instrument / drift guard (VIN-WM-02 1c).  Deterministic metrics per event + a
     # stall detector: if the frame stops moving or activation entropy collapses, the LM
     # graph has ossified (the "memory trap" this is meant to prevent).  It only FLAGS —
@@ -143,6 +154,21 @@ def keyphrases(text: str, *, min_word_len: int = 3, max_phrase_words: int = 4,
     return ranked[:top_k]
 
 
+def _sentences(text: str) -> list[str]:
+    """Split into rough clause/sentence runs (broken on . ! ? and newlines).  Deterministic,
+    whitespace-normalised — used only to attach a phrase back to the clause it appeared in."""
+    return [_WS.sub(" ", s).strip() for s in _SENT.findall(text or "") if s.strip()]
+
+
+def _ground_for(phrase: str, sents_low: list[str], sents: list[str], max_chars: int) -> str:
+    """The first clause containing this (normalised) phrase, verbatim and length-capped.
+    Empty when no clause matches (e.g. odd whitespace) — grounding is best-effort, never fatal."""
+    for i, sl in enumerate(sents_low):
+        if phrase in sl:
+            return sents[i][:max_chars]
+    return ""
+
+
 # ── The graph ────────────────────────────────────────────────────────────────────────
 class WorkingGraph:
     """One conversation's volatile phrase graph.  Owned by a session, discarded with it."""
@@ -150,10 +176,16 @@ class WorkingGraph:
     def __init__(self, cfg: tp.Optional[dict] = None):
         self.c = {**DEFAULTS, **(cfg or {})}
         self.nodes: dict[str, dict] = {}       # id -> {label, activation, first_seen_turn,
-                                               #        last_boost_turn, last_decay_ts, turns:[..]}
+                                               #        last_boost_turn, last_decay_ts, turns:[..],
+                                               #        grounds:[verbatim clause,..], primed}
         self.edges: dict[tuple, dict] = {}     # (a,b) sorted -> {weight, turns:[..], last_seen_turn}
         self._turn = 0
         self.frame: list[str] = []
+        # dormancy-wake bookkeeping (per event): which carried nodes woke this turn, and the
+        # content they carried BEFORE this turn re-boosted them (that older snippet is what the
+        # LM has no context for, so that is what the briefing recalls).
+        self._woke: list[str] = []
+        self._woke_grounds: dict[str, list] = {}
         # instrument state (VIN-WM-02 1c)
         self._prev_frame: set = set()          # frame before the current event (for churn)
         self._seed_frame: tp.Optional[set] = None   # first full frame (for drift)
@@ -167,13 +199,18 @@ class WorkingGraph:
         float supplied by the caller so replay is exact.  Returns the turn index."""
         self._turn += 1
         turn = self._turn
+        self._woke = []
+        self._woke_grounds = {}
         self._decay(now)
         phrases = keyphrases(text, min_word_len=self.c["min_word_len"],
                              max_phrase_words=self.c["max_phrase_words"], top_k=self.c["top_k"])
+        sents = _sentences(text)
+        sents_low = [s.lower() for s in sents]
+        gmax = int(self.c["ground_max_chars"])
         mentioned: list[str] = []
         for ph, _score in phrases:
             nid = "p:" + ph
-            self._boost(nid, ph, turn, now)
+            self._boost(nid, ph, turn, now, _ground_for(ph, sents_low, sents, gmax))
             mentioned.append(nid)
         self._link(mentioned[: self.c["link_top"]], turn, now)
         self._prev_frame = set(self.frame)                # frame before this event's reframe
@@ -197,19 +234,27 @@ class WorkingGraph:
                 nd["activation"] *= math.exp(-dt / (slow if nd.get("primed") else short))
                 nd["last_decay_ts"] = now
 
-    def _boost(self, nid: str, label: str, turn: int, now: float) -> None:
+    def _boost(self, nid: str, label: str, turn: int, now: float, ground: str = "") -> None:
         nd = self.nodes.get(nid)
         if nd is None:
             nd = self.nodes[nid] = {"label": label, "activation": 0.0,
                                     "first_seen_turn": turn, "last_boost_turn": turn,
-                                    "last_decay_ts": now, "turns": [], "primed": False}
+                                    "last_decay_ts": now, "turns": [], "grounds": [],
+                                    "primed": False}
         elif nd.get("primed"):
             nd["primed"] = False                          # re-mention lifts a carried node out of dormancy
+            self._woke.append(nid)
+            self._woke_grounds[nid] = list(nd.get("grounds") or [])   # content carried in from before
         nd["activation"] = min(1.0, nd["activation"] + float(self.c["b_direct"]))
         nd["last_boost_turn"] = turn
         if not nd["turns"] or nd["turns"][-1] != turn:
             nd["turns"].append(turn)
             nd["turns"] = nd["turns"][-int(self.c["keep_turns"]):]
+        if ground:                                        # keep the last N distinct clauses, bounded
+            gs = nd.setdefault("grounds", [])
+            if ground not in gs:
+                gs.append(ground)
+                del gs[: -int(self.c["keep_grounds"])]
 
     def _link(self, ids: list[str], turn: int, now: float) -> None:
         uniq = sorted(set(ids))
@@ -268,6 +313,18 @@ class WorkingGraph:
                for (a, b), _ in threads if a in self.nodes and b in self.nodes]
         if thr:
             lines.append("Threads: " + "; ".join(thr))
+        # A carried association that just woke: hand back the clause it carried in from an
+        # earlier session — the LM has no rolling context for it, so this is the tangible
+        # recall.  Marked stale (it may be out of date); bounded, and only for woken nodes.
+        recalled = []
+        for nid in self.frame:
+            carried = self._woke_grounds.get(nid)
+            if carried:
+                recalled.append(f'{self.nodes[nid]["label"]} — "{carried[-1]}"')
+            if len(recalled) >= int(self.c["brief_recall"]):
+                break
+        if recalled:
+            lines.append("Earlier (may be stale): " + "; ".join(recalled))
         return "\n".join(lines)[: int(self.c["brief_max_chars"])]
 
     def stats(self) -> dict:
@@ -292,6 +349,7 @@ class WorkingGraph:
             "nodes": len(self.nodes),
             "active": len(acts),                                 # non-dormant (attention) nodes
             "primed": primed,                                    # dormant carried associations
+            "woke": len(self._woke),                             # carried associations reactivated this event
             "edges": len(self.edges),
             "entropy": round(entropy, 4),                        # primary lock signal (nats)
             "frame_churn": round(1.0 - _jaccard(fnow, self._prev_frame), 4),
@@ -327,7 +385,8 @@ class WorkingGraph:
         ids = {nid for nid, _ in top}
         fr = set(self.frame)
         nodes = [{"id": nid, "label": nd["label"], "activation": round(nd["activation"], 4),
-                  "frame": nid in fr, "primed": bool(nd.get("primed"))} for nid, nd in top]
+                  "frame": nid in fr, "primed": bool(nd.get("primed")),
+                  "grounds": list(nd.get("grounds") or [])} for nid, nd in top]
         edges = [{"a": a, "b": b, "weight": ed["weight"]}
                  for (a, b), ed in sorted(self.edges.items(),
                                           key=lambda kv: (-kv[1]["weight"], _neg_key(kv[0])))
@@ -342,7 +401,8 @@ class WorkingGraph:
         time.  Bounded (the graph is already capped)."""
         return {
             "nodes": {nid: {"label": nd["label"], "activation": round(nd["activation"], 6),
-                            "last_ts": nd["last_decay_ts"], "turns": list(nd["turns"])}
+                            "last_ts": nd["last_decay_ts"], "turns": list(nd["turns"]),
+                            "grounds": list(nd.get("grounds") or [])}
                       for nid, nd in self.nodes.items()},
             "edges": [{"a": a, "b": b, "weight": round(ed["weight"], 4),
                        "last_ts": ed.get("last_ts", 0.0),   # 0 ⇒ ancient ⇒ decays out on load
@@ -360,15 +420,18 @@ class WorkingGraph:
         floor = float(self.c["floor"])
         cap = int(self.c["cap"])
         keep = int(self.c["keep_turns"])
+        gmax = int(self.c["ground_max_chars"])
+        gkeep = int(self.c["keep_grounds"])
         for nid, nd in sorted((data.get("nodes") or {}).items()):    # fixed order (determinism)
             last = float(nd.get("last_ts", now))
             act = float(nd.get("activation", 0.0)) * math.exp(-max(0.0, now - last) / slow) * carry
             if act < floor:
                 continue
             turns = [int(t) for t in (nd.get("turns") or [])][-keep:] or [0]   # keep grounding non-empty
+            grounds = [str(g)[:gmax] for g in (nd.get("grounds") or [])][-gkeep:]  # carried content
             self.nodes[nid] = {"label": nd.get("label", nid), "activation": act,
                                "first_seen_turn": 0, "last_boost_turn": 0, "last_decay_ts": now,
-                               "turns": turns, "primed": True}
+                               "turns": turns, "grounds": grounds, "primed": True}
         for e in (data.get("edges") or []):
             a, b = e.get("a"), e.get("b")
             if a not in self.nodes or b not in self.nodes:

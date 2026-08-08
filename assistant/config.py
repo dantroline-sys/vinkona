@@ -572,6 +572,11 @@ DEFAULTS: dict = {
             "brief_max_chars": 700,  # hard cap on the briefing block
             "brief_threads": 5,      # hottest edges shown as "threads"
             "keep_turns": 8,         # bound per-node / per-edge supporting-turn lists
+            # Grounding: keep the clause each phrase came from, so a node is a recall handle,
+            # not just a label. Surfaced in the briefing only when a carried node wakes.
+            "keep_grounds": 3,       # verbatim snippets kept per node (bounded)
+            "ground_max_chars": 160, # cap each snippet
+            "brief_recall": 3,       # max "Earlier (may be stale)" recall lines in a briefing
             # Instrument (1c): per-event metrics go to the trace (kind=working_graph) for
             # inspection + tuning, and a stall guard flags (never mutates) when the frame
             # ossifies — entropy below e_lock or a frozen frame for k_lock events.

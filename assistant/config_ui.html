@@ -151,6 +151,9 @@
   .wg-row .lbl .val { color:#6b7280; font-variant-numeric:tabular-nums; }
   .wg-bar { height:5px; border-radius:3px; margin-top:2px; background:#2c303a; overflow:hidden; }
   .wg-bar > i { display:block; height:100%; border-radius:3px; background:#3b82f6; }
+  .wg-ground { font-size:11px; color:#7f8794; margin-top:3px; font-style:italic; line-height:1.35;
+               overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .wg-ground.stale { color:#8a7f5c; }
   .wg-graph { flex:1 1 420px; min-width:360px; }
   .wg-graph svg { width:100%; height:440px; background:#14171d; border:1px solid #2c303a; border-radius:8px; }
   .wg-graph text { fill:#c7cdd8; font-size:10px; font-family:ui-monospace,monospace; pointer-events:none; }
@@ -847,14 +850,22 @@ function renderWGraph(d) {
   else chips.push(`<span class="wg-chip" title="memory.working_graph.persist.enabled">persist <b>${d.persist_enabled ? 'on (awaiting save)' : 'off'}</b></span>`);
   if (d.stalled) chips.push(`<span class="wg-chip warn" title="${escAttr(d.stalled)}">⚠ may be ossified</span>`);
   met.innerHTML = chips.join('');
-  let fm = nodes.filter(n => n.frame); if (!fm.length) fm = nodes.slice(0, 12);
+  let fm = nodes.filter(n => n.frame); if (!fm.length) fm = nodes.filter(n => !n.primed).slice(0, 12);
+  const dormant = nodes.filter(n => n.primed);
   const maxA = Math.max(...nodes.map(n => n.activation), 0.01);
-  frameEl.innerHTML = '<h3>Front of mind</h3>' + (fm.map(n => {
+  const row = (n, stale) => {
     const w = Math.round(100 * n.activation / maxA);
+    const g = (n.grounds && n.grounds.length) ? n.grounds[n.grounds.length - 1] : '';
+    const gline = g ? `<div class="wg-ground${stale ? ' stale' : ''}" title="${escAttr(n.grounds.join('  ·  '))}">`
+      + `${stale ? '↩ ' : ''}${escHtml(g)}</div>` : '';
     return `<div class="wg-row"><div class="lbl"><span>${escHtml(n.label)}</span>`
       + `<span class="val">${n.activation.toFixed(2)}</span></div>`
-      + `<div class="wg-bar"><i style="width:${w}%;background:${wgColor(n.activation / maxA)}"></i></div></div>`;
-  }).join('') || '<div class="muted">warming up…</div>');
+      + `<div class="wg-bar"><i style="width:${w}%;background:${wgColor(n.activation / maxA)}"></i></div>`
+      + gline + `</div>`;
+  };
+  frameEl.innerHTML = '<h3>Front of mind</h3>' + (fm.map(n => row(n, false)).join('') || '<div class="muted">warming up…</div>')
+    + (dormant.length ? '<h3 title="Carried from earlier conversations — dormant until re-mentioned. The italic line is the clause each one carried in.">Carried associations</h3>'
+        + dormant.map(n => row(n, true)).join('') : '');
   graphEl.innerHTML = '<h3>Graph</h3>' + wgSvg(nodes, edges);
 }
 function wgLayout(nodes, edges, W, H) {                 // deterministic force sim; positions persist for stability
@@ -897,8 +908,10 @@ function wgSvg(nodes, edges) {
     const op = n.primed ? 0.38 : 1;                       // dormant carried associations render faded
     const ring = n.frame ? ' stroke="#e6e8ec" stroke-width="1.5"'
       : (n.primed ? ' stroke="#4a5160" stroke-width="1" stroke-dasharray="2 2"' : '');
+    const tip = `${n.label} · ${n.activation.toFixed(2)}${n.primed ? ' · dormant (carried)' : ''}`
+      + ((n.grounds && n.grounds.length) ? '\n' + n.grounds.map(g => '— ' + g).join('\n') : '');
     s += `<circle cx="${q.x.toFixed(1)}" cy="${q.y.toFixed(1)}" r="${r.toFixed(1)}" fill="${wgColor(n.activation / maxA)}" opacity="${op}"`
-      + ring + '/>';
+      + ring + `><title>${escHtml(tip)}</title></circle>`;
     const lab = n.label.length > 22 ? n.label.slice(0, 21) + '…' : n.label;
     s += `<text x="${(q.x + r + 3).toFixed(1)}" y="${(q.y + 3).toFixed(1)}" opacity="${op}">${escHtml(lab)}</text>`; });
   return s + '</svg>';

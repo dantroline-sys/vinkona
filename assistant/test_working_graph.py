@@ -100,6 +100,67 @@ def test_grounded():
           all(a in g.nodes and b in g.nodes for (a, b) in g.edges))
 
 
+def test_grounding():
+    # A node keeps the verbatim clause its phrase came from (a recall handle, not just a label),
+    # and only ITS own sentence — not the rest of a multi-sentence turn.
+    g = wg.WorkingGraph()
+    g.ingest("The desk sits against the north wall. A lamp stands by the door.", now=0.0)
+    gr = g.nodes["p:north wall"]["grounds"]
+    check("node keeps the clause its phrase came from", any("north wall" in s.lower() for s in gr))
+    check("grounding is just the phrase's own sentence, not the whole turn",
+          bool(gr) and "lamp" not in gr[0] and "door" not in gr[0])
+
+    # Bounded + distinct: many distinct clauses collapse to keep_grounds; a repeat isn't re-added.
+    g2 = wg.WorkingGraph({"keep_grounds": 2})
+    for i, s in enumerate(["alpha token here", "alpha token again", "alpha token more", "alpha token more"]):
+        g2.ingest(s, now=float(i))
+    check("grounds are bounded to keep_grounds", len(g2.nodes["p:alpha token"]["grounds"]) == 2)
+    check("a repeated clause isn't duplicated in grounds",
+          g2.nodes["p:alpha token"]["grounds"].count("alpha token more") == 1)
+
+    # Within a session (no dormancy) the briefing carries NO recall line — the LM has context.
+    g3 = wg.WorkingGraph()
+    g3.ingest("the database index is corrupt", now=0.0)
+    g3.ingest("the database index rebuild is slow", now=30.0)
+    check("within-session briefing has no 'Earlier' recall line", "Earlier" not in g3.briefing())
+    check("woke count is zero with no carried nodes", g3.last_metrics["woke"] == 0)
+
+    # Grounding survives the persistence round-trip.  Use a rich single-sentence source.
+    src = wg.WorkingGraph()
+    src.ingest("The desk sits against the north wall with a window on the east side.", now=0.0)
+    rich = src.nodes["p:north wall"]["grounds"]
+    blob = src.to_dict()
+    check("to_dict carries grounds", blob["nodes"]["p:north wall"]["grounds"] == rich)
+    g4 = wg.WorkingGraph({"persist_tau_s": 604800.0})
+    g4.load_persisted(blob, now=3600.0)
+    check("carried node keeps its grounds (content behind the label)",
+          g4.nodes["p:north wall"]["grounds"] == rich)
+    check("a carried node is dormant and its content is not yet surfaced", "Earlier" not in g4.briefing())
+
+    # Re-mention wakes it → the briefing hands back the CARRIED (older) clause, marked stale.
+    # (End the sentence ON the phrase so the extractor re-fires the same node, not a merged one.)
+    g4.ingest("tell me about the north wall", now=7200.0)
+    b = g4.briefing()
+    check("waking a carried node surfaces its earlier content in the briefing",
+          "Earlier (may be stale):" in b and "north wall" in b and "window on the east" in b)
+    check("metrics report the reactivation (woke ≥ 1)", g4.last_metrics["woke"] >= 1)
+    check("recall shows the carried clause, not the bare re-mention",
+          "against the north wall" in b)
+
+    # snapshot exposes grounds for the inspector.
+    snap = g4.snapshot()
+    nw = next((n for n in snap["nodes"] if n["id"] == "p:north wall"), None)
+    check("snapshot exposes a node's grounds for the inspector", bool(nw) and bool(nw["grounds"]))
+
+    # Determinism holds with grounding in the mix.
+    def run():
+        gg = wg.WorkingGraph({"persist_tau_s": 604800.0})
+        gg.load_persisted(blob, now=3600.0)
+        gg.ingest("back to the north wall", now=7200.0)
+        return gg.briefing(), {k: v["grounds"] for k, v in gg.nodes.items()}
+    check("grounding is deterministic on replay", run() == run())
+
+
 def test_briefing():
     check("cold graph yields an empty briefing (prompt unchanged when off)", wg.WorkingGraph().briefing() == "")
     g = wg.WorkingGraph()
@@ -266,6 +327,7 @@ def main():
     test_decay_math()
     test_bounded()
     test_grounded()
+    test_grounding()
     test_briefing()
     test_replay_determinism()
     test_metrics()
