@@ -781,14 +781,17 @@ class Handler(BaseHTTPRequestHandler):
         cfg = self._cfg()
         cs = cfg["config_server"]
         p = Path(cs.get("trace_path", "config/trace.jsonl")).parent / "working_graph.json"
-        enabled = bool(((cfg.get("memory", {}) or {}).get("working_graph", {}) or {}).get("enabled"))
+        wgc = (cfg.get("memory", {}) or {}).get("working_graph", {}) or {}
+        enabled = bool(wgc.get("enabled"))
+        persist_enabled = bool((wgc.get("persist", {}) or {}).get("enabled"))
         if not p.exists():
-            return self._json(200, {"empty": True, "enabled": enabled})
+            return self._json(200, {"empty": True, "enabled": enabled, "persist_enabled": persist_enabled})
         try:
             data = json.loads(p.read_text())
         except Exception:
-            return self._json(200, {"empty": True, "enabled": enabled})
+            return self._json(200, {"empty": True, "enabled": enabled, "persist_enabled": persist_enabled})
         data["enabled"] = enabled
+        data["persist_enabled"] = persist_enabled
         data["age_s"] = max(0.0, time.time() - float(data.get("ts", 0)))
         return self._json(200, data)
 

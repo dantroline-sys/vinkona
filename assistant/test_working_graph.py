@@ -218,6 +218,9 @@ def test_persistence():
     check("carried briefing is empty until re-mentioned", g2.briefing() == "")
     check("carried activation is demoted below its saved value",
           g2.nodes["p:server migration"]["activation"] < saved * 0.8)
+    snap = g2.snapshot()
+    check("snapshot surfaces dormant carried nodes (visible in the inspector)",
+          any(n.get("primed") for n in snap["nodes"]))
 
     # Re-mention lifts dormancy → it wakes into the frame.  (Sentence ends on the phrase so
     # the extractor yields exactly "server migration", not a merged longer phrase.)

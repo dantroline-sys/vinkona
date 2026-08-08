@@ -314,13 +314,16 @@ class WorkingGraph:
                         f"frame_churn {m['frame_churn']} for {self._stall_run} events"
                         if self._stall_run >= int(self.c["k_lock"]) else None)
 
-    def snapshot(self, max_nodes: int = 40, max_edges: int = 60) -> dict:
-        """A compact, JSON-able view for the config-screen inspector: the hottest nodes
-        and the edges among them, plus the latest metrics.  Bounded so the payload and the
-        drawing both stay legible.  Read-only observability — never fed back into the graph
-        (WM-2 stays: the graph is not rebuilt from this)."""
-        top = sorted(self.nodes.items(),
-                     key=lambda kv: (-kv[1]["activation"], kv[0]))[:max_nodes]
+    def snapshot(self, max_nodes: int = 40, max_edges: int = 60, max_dormant: int = 18) -> dict:
+        """A compact, JSON-able view for the config-screen inspector: the hottest ACTIVE nodes
+        plus the hottest DORMANT (carried) ones — so the persistent layer is always visible,
+        not crowded out once a new conversation heats up — and the edges among them.  Bounded
+        for legibility.  Read-only observability (WM-2: the graph is never rebuilt from this)."""
+        active = sorted(((n, d) for n, d in self.nodes.items() if not d.get("primed")),
+                        key=lambda kv: (-kv[1]["activation"], kv[0]))[:max_nodes]
+        dormant = sorted(((n, d) for n, d in self.nodes.items() if d.get("primed")),
+                         key=lambda kv: (-kv[1]["activation"], kv[0]))[:max_dormant]
+        top = active + dormant
         ids = {nid for nid, _ in top}
         fr = set(self.frame)
         nodes = [{"id": nid, "label": nd["label"], "activation": round(nd["activation"], 4),

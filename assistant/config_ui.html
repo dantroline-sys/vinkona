@@ -843,6 +843,8 @@ function renderWGraph(d) {
     `<span class="wg-chip">drift <b>${(m.frame_drift ?? 0).toFixed(2)}</b></span>`,
     `<span class="wg-chip ${m.ungrounded_edges ? 'warn' : 'ok'}">grounded <b>${m.ungrounded_edges ? (m.ungrounded_edges + ' ungrounded!') : '✓'}</b></span>`];
   if (m.primed) chips.push(`<span class="wg-chip" title="Carried from earlier conversations — dormant until re-mentioned (shown faded)">dormant <b>${m.primed}</b></span>`);
+  if (d.persist && d.persist.on) chips.push(`<span class="wg-chip ok" title="Persisting to ${escAttr(d.persist.path)}">persisted${d.persist.saved_ago_s != null ? ' <b>' + Math.round(d.persist.saved_ago_s) + 's ago</b>' : ''}</span>`);
+  else chips.push(`<span class="wg-chip" title="memory.working_graph.persist.enabled">persist <b>${d.persist_enabled ? 'on (awaiting save)' : 'off'}</b></span>`);
   if (d.stalled) chips.push(`<span class="wg-chip warn" title="${escAttr(d.stalled)}">⚠ may be ossified</span>`);
   met.innerHTML = chips.join('');
   let fm = nodes.filter(n => n.frame); if (!fm.length) fm = nodes.slice(0, 12);

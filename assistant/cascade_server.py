@@ -514,13 +514,17 @@ class _Session:
         self._wg_last_save = 0.0
         if self.wg is not None and _persist_on:
             try:
-                base = Path(self.cfg["config_server"].get("trace_path", "config/trace.jsonl")).parent
-                self._wg_persist_path = Path(_pc.get("path") or (base / "working_graph_ltm.json"))
+                base = Path(self.cfg.get("config_server", {}).get("trace_path", "config/trace.jsonl")).parent
+                self._wg_persist_path = (Path(_pc["path"]) if _pc.get("path")
+                                         else base / "working_graph_ltm.json")
                 if self._wg_persist_path.exists():
                     n = self.wg.load_persisted(json.loads(self._wg_persist_path.read_text()), time.time())
-                    _log(f"working graph: carried {n} dormant associations from earlier sessions")
+                    _log(f"working graph: carried {n} dormant associations from {self._wg_persist_path.resolve()}")
+                else:
+                    _log(f"working graph persist ON — no file yet at {self._wg_persist_path.resolve()} "
+                         "(first run; it'll be written this session)")
             except Exception as e:
-                _log(f"working graph persist load failed: {e}")
+                _log(f"working graph persist load FAILED: {e} [path={self._wg_persist_path}]")
                 self._wg_persist_path = None
         self._rhythm = ""                                     # usage-rhythm line (set at session open)
         self._user_profile_cache = None                       # learned user model (per session)
@@ -786,6 +790,7 @@ class _Session:
                         # lease keepalive leaks, and the session is never reflected.
                         _log(f"session task ended with error (cleanup continues): {e}")
                 self.s.mark_activity(open=False)              # session closed; idle clock starts
+                self._save_working_graph(force=True, reason="session-close")   # persist the final graph
                 await self._reflect()
 
     # ── Introspection ─────────────────────────────────────────────────────────
@@ -1317,6 +1322,31 @@ class _Session:
         except Exception:
             return ""
 
+    def _save_working_graph(self, *, force: bool = False, reason: str = "") -> None:
+        """Checkpoint the persistent associative layer to disk.  Throttled by save_interval_s
+        unless *force* (session close saves the final state unconditionally).  Logs + traces
+        the outcome — persistence must be debuggable, never a silent swallow."""
+        if self.wg is None or self._wg_persist_path is None:
+            return
+        nowt = time.time()
+        if not force and nowt - self._wg_last_save < self._wg_save_interval:
+            return
+        try:
+            d = self.wg.to_dict()
+            lp = self._wg_persist_path
+            ltmp = lp.with_suffix(".json.tmp")
+            ltmp.write_text(json.dumps(d))
+            ltmp.replace(lp)                              # atomic
+            self._wg_last_save = nowt
+            if self.s.trace:
+                self._trace({"ts": nowt, "kind": "working_graph_persist", "op": "save",
+                             "nodes": len(d["nodes"]), "edges": len(d["edges"]),
+                             "reason": reason, "path": str(lp)})
+            if force:                                     # keep the per-turn line out of the log; note closes
+                _log(f"working graph saved: {len(d['nodes'])} nodes → {lp} ({reason})")
+        except Exception as e:
+            _log(f"working graph SAVE FAILED ({reason}): {e} [path={self._wg_persist_path}]")
+
     def _wg_observe(self) -> None:
         """VIN-WM-02 1c: after an ingest, emit the working-graph metrics to the trace
         (kind=working_graph — the inspection window) and warn once if it looks ossified
@@ -1332,7 +1362,11 @@ class _Session:
             try:
                 snap = {"session": self.session_id[:8], "persona": self._persona_name,
                         "ts": time.time(), **self.wg.snapshot()}
-                p = (Path(self.cfg["config_server"].get("trace_path", "config/trace.jsonl"))
+                if self._wg_persist_path is not None:     # persistence status for the inspector
+                    snap["persist"] = {"on": True, "path": str(self._wg_persist_path),
+                                       "saved_ago_s": (round(time.time() - self._wg_last_save, 1)
+                                                       if self._wg_last_save else None)}
+                p = (Path(self.cfg.get("config_server", {}).get("trace_path", "config/trace.jsonl"))
                      .parent / "working_graph.json")
                 p.parent.mkdir(parents=True, exist_ok=True)
                 tmp = p.with_suffix(".json.tmp")
@@ -1342,17 +1376,7 @@ class _Session:
                 pass
             # Checkpoint the persistent associative layer (throttled) so it survives to the
             # next conversation.  Observability + persistence are separate files by design.
-            if self._wg_persist_path is not None:
-                nowt = time.time()
-                if nowt - self._wg_last_save >= self._wg_save_interval:
-                    try:
-                        lp = self._wg_persist_path
-                        ltmp = lp.with_suffix(".json.tmp")
-                        ltmp.write_text(json.dumps(self.wg.to_dict()))
-                        ltmp.replace(lp)
-                        self._wg_last_save = nowt
-                    except Exception:
-                        pass
+            self._save_working_graph(reason="turn")
             if self.wg.stalled:
                 if not self._wg_stall_warned:
                     _log(f"working graph: {self.wg.stalled}")
