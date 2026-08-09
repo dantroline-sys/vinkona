@@ -606,6 +606,20 @@ DEFAULTS: dict = {
                 "save_interval_s": 45,   # checkpoint the associative layer this often during a chat
             },
         },
+        # Durable knowledge graph (mind_graph.py) — the long-term counterpart to working_graph.
+        # The big LM distils entities + typed relations about the USER's world FROM THE USER's OWN
+        # CHAT TURNS during dreaming (never from email/files/memories → no untrusted-source
+        # poisoning).  Every edge is grounded in a real quote, the user's identity is a locked
+        # anchor, cardinality-one relations supersede, and retraction is reversible.  Consulted at
+        # recall time.  Off by default; opt-in like working_graph.  See [[personal-graph]].
+        "mind_graph": {
+            "enabled": False,
+            "distill_batch_turns": 40,   # user turns folded per dreaming pass
+            "max_context_nodes": 6,      # entities surfaced into a recall context block
+            "max_context_edges": 12,     # …and relations among them
+            "min_quote_len": 6,          # a grounding quote must be at least this long
+            "context_max_chars": 700,    # hard cap on a rendered recall block
+        },
         # Grounding-confidence + abstention: nudge the model to say "I don't have that" rather
         # than confabulate when nothing relevant was recalled for a question. Scoped so it never
         # suppresses general-knowledge answers — only guards user-specific / researched facts.
