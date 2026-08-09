@@ -103,10 +103,11 @@ DEFAULTS: dict = {
     "drop_common_singletons": True,  # a bare high-frequency word (world/new/end) is filler, not a
                                 #   cue — drop it as a node; it survives inside a multi-word phrase
     "link_top": 6,              # …and lay co-occurrence edges among the best this many
-    "brief_max_chars": 900,     # hard cap on the rendered briefing
+    "brief_max_chars": 1200,    # hard cap on the rendered briefing
     "brief_threads": 5,         # hottest edges shown as "threads"
-    "ground_after_turns": 6,    # a frame node unmentioned this many turns → show its source clause
-    "brief_ground_max": 3,      # …at most this many grounded lines per briefing
+    "ground_after_turns": 0,    # 0 = always inject a frame node's source clause (the memory);
+                                #   >0 = only once its text has scrolled this many turns off-screen
+    "brief_ground_max": 6,      # …at most this many grounded (clause-bearing) lines per briefing
     "brief_ground_chars": 120,  # …each clause truncated to this many chars in the briefing
     "keep_turns": 8,            # bound the per-node / per-edge supporting-turn lists
     # Grounding snippets: with each phrase we keep the clause it came from, so a node is a
@@ -340,22 +341,30 @@ class WorkingGraph:
         graph is cold (so with the graph off/empty the prompt is unchanged — G-1/G-ACCEL)."""
         if not self.frame:
             return ""
-        # Grounded frame lines: a node still hot in the frame but last mentioned many turns
-        # ago has almost certainly scrolled out of the fast LM's rolling context — so hand
-        # back the clause it came from, turning "- graphene" into a memory cue the LM can't
-        # otherwise see.  Recent nodes stay bare (their text is still in context — keep it lean).
+        # Grounded frame lines: hand the fast LM the actual CLAUSE behind each held phrase, not
+        # just the label — that verbatim content IS the memory (without it the block is a word
+        # list).  ground_after_turns=0 (default) → always inject; >0 → only once a node's text
+        # has scrolled ground_after_turns off-screen.  Deduped: a clause shared by several phrases
+        # is shown once (the hottest node owns it, the rest stay bare).  Bounded by count + chars.
         lines = [_HEADER]
-        ground_after = int(self.c.get("ground_after_turns", 6))
-        gmax = int(self.c.get("brief_ground_max", 3))
+        ground_after = int(self.c.get("ground_after_turns", 0))
+        gmax = int(self.c.get("brief_ground_max", 6))
         gchars = int(self.c.get("brief_ground_chars", 120))
+        # Clauses already spoken by the cross-session "Earlier (may be stale)" block below own
+        # those nodes — don't also inject them inline (avoids a double, un-flagged copy).
+        seen_clauses = {" ".join(c[-1].lower().split()) for c in self._woke_grounds.values() if c}
         grounded = 0
         for nid in self.frame:
             nd = self.nodes[nid]
-            g = nd.get("grounds") or []
-            if (g and grounded < gmax
+            clause = None
+            if (grounded < gmax and nid not in self._woke_grounds
                     and (self._turn - int(nd.get("last_boost_turn", self._turn))) >= ground_after):
-                lines.append(f'- {nd["label"]} — "{g[-1][:gchars]}"')
-                grounded += 1
+                for g in reversed(nd.get("grounds") or []):        # most recent distinct clause
+                    key = " ".join(g.lower().split())
+                    if key and key not in seen_clauses:
+                        clause = g[:gchars]; seen_clauses.add(key); break
+            if clause:
+                lines.append(f'- {nd["label"]} — "{clause}"'); grounded += 1
             else:
                 lines.append(f"- {nd['label']}")
         threads = sorted(self.edges.items(),

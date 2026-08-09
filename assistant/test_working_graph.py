@@ -152,6 +152,30 @@ def test_load_drops_legacy_filler():
     check("an edge to a dropped node is not restored", not any("p:world" in k for k in g.edges))
 
 
+def test_briefing_injects_held_sentences():
+    # THE memory-aide behaviour: with default config the briefing injects the actual source
+    # clause behind each held phrase — not just the label — so the fast LM gets content.
+    g = wg.WorkingGraph()
+    g.ingest("Graphene coatings could make the whole device cost nothing to run.", now=0.0)
+    g.ingest("We also cared a lot about photo verification and software freedom.", now=20.0)
+    b = g.briefing().lower()
+    check("the briefing injects a held source sentence (memory, not a word list)",
+          "graphene coatings could make the whole device cost nothing" in b)
+    check("a second held sentence is injected too",
+          "photo verification and software freedom" in b)
+    check("injected clauses use the grounded-line form", ' — "' in g.briefing())
+
+    # Dedup: one sentence yields several key phrases, but its clause appears ONCE (hottest node
+    # owns it), the rest stay bare — no repetition bloating the block.
+    g2 = wg.WorkingGraph()
+    g2.ingest("The desk sits against the north wall by the red door.", now=0.0)
+    b2 = g2.briefing().lower()
+    check("a clause shared by several phrases is injected once, not per-phrase",
+          b2.count("the desk sits against the north wall") == 1)
+    check("the other phrases from that clause are still present as bare labels",
+          "red door" in b2 and "north wall" in b2)
+
+
 def test_grounded_frame_lines():
     # A frame node last mentioned long ago (its text has scrolled out of the LM's context)
     # gets its source clause inline; a just-mentioned node stays bare.
@@ -160,8 +184,8 @@ def test_grounded_frame_lines():
     for i, t in enumerate(["we chatted about lunch", "then the weather", "and a weekend trip"], start=1):
         g.ingest(t, now=float(i))                                               # turns 2-4
     b = g.briefing()
-    check("an old-but-hot frame node shows its source clause inline",
-          '- graphene core — "' in b and "helium" in b)
+    check("an old-but-hot frame node's source clause is injected inline",
+          ' — "' in b and "helium" in b)
     check("the clause is the actual content, not just the label",
           "reactor runs on a graphene core" in b)
 
@@ -413,6 +437,7 @@ def main():
     test_grounded()
     test_common_gate()
     test_load_drops_legacy_filler()
+    test_briefing_injects_held_sentences()
     test_grounded_frame_lines()
     test_grounding()
     test_briefing()
