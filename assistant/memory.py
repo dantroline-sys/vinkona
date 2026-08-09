@@ -50,6 +50,15 @@ except Exception:                       # importlib-loaded context without cwd o
     sanitize_external, wrap_untrusted = _safety.sanitize_external, _safety.wrap_untrusted
     query_privacy = _safety.query_privacy
 
+try:                                    # durable chat-derived knowledge graph (mind_graph)
+    from mind_graph import MindGraph
+except Exception:
+    import importlib.util as _ilm
+    from pathlib import Path as _Pathm
+    _specm = _ilm.spec_from_file_location("mind_graph", _Pathm(__file__).resolve().parent / "mind_graph.py")
+    _mgmod = _ilm.module_from_spec(_specm); _specm.loader.exec_module(_mgmod)
+    MindGraph = _mgmod.MindGraph
+
 try:                                    # privileged people/identity store
     from people import UNADAPTABLE_FACETS, PeopleStore
 except Exception:
@@ -767,6 +776,9 @@ class MemoryStore:
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA journal_mode=WAL")    # let the cascade + research worker share the file
         self._init_db()
+        # Durable knowledge graph (mind_graph) — lazily built when enabled; own kg_* tables.
+        self._mg_cfg = (cfg.get("memory") or {}).get("mind_graph") or {}
+        self._mind_graph = None
         # Privileged identity store (self/user/others) — shares this connection/WAL file.
         # Declared-and-always-on, distinct from the retrieved-and-scored `memories` table.
         self.people = PeopleStore(self.db)
@@ -1562,6 +1574,35 @@ class MemoryStore:
                   f"Conversation:\n{convo}")
         ops = await self._chat_json(big_url, big_model, prompt)
         return await self._apply_operations((ops or {}).get("operations", []))
+
+    # ── Durable knowledge graph (mind_graph) ──────────────────────────────────
+    def _ensure_mind_graph(self):
+        if self._mind_graph is None:
+            self._mind_graph = MindGraph(self.db, self._mg_cfg)
+        return self._mind_graph
+
+    async def distill_mind_graph(self, big_url: str, big_model: str) -> dict:
+        """Dreaming pass: fold new USER turns into the durable knowledge graph.  Off unless
+        memory.mind_graph.enabled.  The big LM extracts entities + grounded relations; the fold
+        is deterministic (grounding-required, identity-locked, supersession-aware)."""
+        if not self._mg_cfg.get("enabled") or not big_url:
+            return {}
+        mg = self._ensure_mind_graph()
+
+        async def _extract(prompt: str):
+            return await self._chat_json(big_url, big_model, prompt)
+
+        return await mg.distill(_extract)
+
+    def mind_context(self, text: str) -> str:
+        """A grounded 'what I already know about this' block from the durable graph, for the recall
+        path.  Empty unless enabled AND something matches, so it's inert when off/cold."""
+        if not self._mg_cfg.get("enabled"):
+            return ""
+        try:
+            return self._ensure_mind_graph().context_for(text)
+        except Exception:
+            return ""
 
     async def _apply_operations(self, ops: list, source: str = "reflection") -> int:
         """Apply add/update/delete memory ops (from reflection or idle reflection)."""

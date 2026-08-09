@@ -856,13 +856,18 @@ class _Session:
         if related:                               # associative context, clearly secondary
             parts.append("Possibly related:\n"
                          + "\n".join(f"- {_v(e['payload'])}" for e in related))
+        # Durable knowledge graph: grounded relations about entities mentioned this turn, distilled
+        # from earlier conversations.  Inert unless memory.mind_graph.enabled and something matches.
+        mind_ctx = self.s.memory.mind_context(user_text)
+        if mind_ctx:
+            parts.append(mind_ctx)
         # Grounding-confidence + abstention: rather than confabulate when she has nothing,
         # nudge her to admit it — but only for question-shaped turns, and scoped so general
         # knowledge still flows (the note tells her to abstain only on user-specific facts).
         gc = self.cfg.get("memory", {}).get("grounding", {})
         if gc.get("enabled", True):
             note = None
-            if not personal and self._looks_like_question(user_text):
+            if not personal and not mind_ctx and self._looks_like_question(user_text):
                 note = gc.get("abstain_note")
             elif personal and gc.get("weak_below", 0.0) and \
                     self.s.memory.last_diag.get("top_score", 0.0) < gc["weak_below"]:
@@ -1497,6 +1502,19 @@ class _Session:
                 _log(f"reflection: applied {n} memory ops")
         except Exception as e:
             _log(f"reflection failed: {e}")
+
+        # Durable knowledge graph: distil new user turns into the mind-graph (off unless
+        # memory.mind_graph.enabled).  Grounded + identity-locked; never touches the memories store.
+        try:
+            if self.cfg.get("memory", {}).get("mind_graph", {}).get("enabled"):
+                st = await self.s.memory.distill_mind_graph(big["url"], big["model"])
+                if st.get("nodes") or st.get("edges"):
+                    _log(f"mind-graph: +{st.get('nodes', 0)} node(s) / +{st.get('edges', 0)} "
+                         f"edge(s), {st.get('refused', 0)} refused")
+                if self.s.trace and st.get("turns"):
+                    self._trace({"ts": time.time(), "kind": "mind_graph", **st})
+        except Exception as e:
+            _log(f"mind-graph distill failed: {e}")
 
         # Tier-3: after basic memories are stashed, queue topics for the research
         # worker to deepen in the background (it runs as a separate process).
