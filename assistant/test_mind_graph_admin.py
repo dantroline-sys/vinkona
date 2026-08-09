@@ -86,6 +86,30 @@ def test_request_guarded_when_off():
           r.get("ok") is False and "off" in (r.get("error") or "").lower())
 
 
+def test_snapshot_renders_grounded_relations():
+    path = _build_db()
+    snap = _adm(path).mind_graph_snapshot()
+    labels = {n["label"] for n in snap["nodes"]}
+    check("snapshot lists the entities", "Mara" in labels and "Bristol" in labels)
+    check("snapshot excludes the user anchor from the entity list",
+          all(n.get("id") != "user:self" for n in snap["nodes"]))
+    check("every entity carries a type", all(n.get("type") for n in snap["nodes"]))
+    # the user→Mara edge resolves the anchor to 'you' and keeps its grounding quote
+    ue = [e for e in snap["edges"] if e["obj"] == "Mara" and e["subj"] == "you"]
+    check("an edge to the user resolves to 'you' with its relation",
+          len(ue) == 1 and ue[0]["rel"] == "sibling of")
+    check("relations keep the verbatim grounding quote (viewable as knowledge)",
+          ue and "My sister Mara" in ue[0]["quote"])
+
+
+def test_snapshot_empty_db_is_empty_not_error():
+    empty = tempfile.mktemp(suffix=".db")
+    sqlite3.connect(empty).close()
+    snap = _adm(empty).mind_graph_snapshot()
+    check("snapshot on a graph-less db is empty lists, not an error",
+          snap["nodes"] == [] and snap["edges"] == [])
+
+
 def test_stats_empty_db_is_zero_not_error():
     empty = tempfile.mktemp(suffix=".db")
     sqlite3.connect(empty).close()                         # exists but has no tables
@@ -98,6 +122,8 @@ def main():
     test_stats_reads_graph_and_backlog()
     test_request_sets_worker_flag()
     test_request_guarded_when_off()
+    test_snapshot_renders_grounded_relations()
+    test_snapshot_empty_db_is_empty_not_error()
     test_stats_empty_db_is_zero_not_error()
     print(f"\n{PASS} passed, {FAIL} failed")
     raise SystemExit(1 if FAIL else 0)

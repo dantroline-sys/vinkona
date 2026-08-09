@@ -183,7 +183,20 @@
                  overflow:hidden; margin:9px 0; }
   .mg-progress-bar { height:100%; width:0; background:#5a86c9; transition:width .4s ease; }
   .mg-progress-bar.done { background:#4a9e6a; }
-  .mg-card .mg-actions { display:flex; align-items:center; gap:10px; }
+  .mg-card .mg-actions { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  .mg-view { margin-top:12px; border-top:1px solid #2c303a; padding-top:10px;
+             max-height:52vh; overflow-y:auto; }
+  .mg-sec { font-size:13px; color:#e6e8ec; font-weight:600; margin:0 0 6px; }
+  .mg-grp { margin:0 0 6px; line-height:1.9; }
+  .mg-grp-h { font-size:11px; text-transform:uppercase; letter-spacing:.04em; color:#9aa3b2; margin-right:4px; }
+  .mg-node { display:inline-block; background:#1b1f27; border:1px solid #2c303a; border-radius:12px;
+             padding:2px 9px; font-size:12px; color:#dfe3ea; margin:2px 2px 0 0; }
+  .mg-rels { display:flex; flex-direction:column; gap:5px; }
+  .mg-rel { display:flex; flex-wrap:wrap; align-items:baseline; gap:8px; padding:4px 0;
+            border-bottom:1px solid #191c22; }
+  .mg-fact { font-size:13px; color:#dfe3ea; }
+  .mg-relw { color:#7fa8e6; }
+  .mg-quote { font-size:12px; color:#8b93a1; font-style:italic; }
   .recipe-preview { background:#12151b; border:1px solid #3d4350; border-left:3px solid #5a86c9;
                     border-radius:0 8px 8px 0; padding:11px 14px; margin:2px 0 12px; max-width:760px; }
   .recipe-preview .rp-head { font-size:14px; color:#e6e8ec; margin-bottom:4px; }
@@ -365,8 +378,10 @@
       <div class="mg-actions">
         <button class="btn secondary" id="mgBtn" onclick="distillMindGraph(this)"
                 title="Fold the new things you've said into her durable people/places/things graph now. This normally happens on its own while she's idle.">Distill chat history now</button>
+        <button class="btn secondary" id="mgViewBtn" onclick="toggleMindGraphView(this)">View what she's learned ▾</button>
         <span id="mgStatus" class="status"></span>
       </div>
+      <div id="mgView" class="mg-view" hidden></div>
     </div>
     <div class="bar">
       <label style="margin:0"><input type="checkbox" id="autoWG" checked style="width:auto"> auto-refresh (2s)</label>
@@ -1253,6 +1268,49 @@ async function distillMindGraph(btn){
   } catch(e){ flash(s, false, 'request failed'); }
   btn.textContent = old; btn.disabled = false;
   setTimeout(loadMindGraphStats, 800);
+}
+let mgViewOpen = false;
+async function toggleMindGraphView(btn){
+  mgViewOpen = !mgViewOpen;
+  const view = document.getElementById('mgView');
+  view.hidden = !mgViewOpen;
+  btn.textContent = "View what she's learned " + (mgViewOpen ? '▴' : '▾');
+  if (mgViewOpen) renderMindGraphView();
+}
+const MG_TYPE_LABEL = { person:'People', place:'Places', org:'Organisations', event:'Events', thing:'Things' };
+const MG_TYPE_ORDER = ['person','place','org','event','thing'];
+async function renderMindGraphView(){
+  const view = document.getElementById('mgView'); if (!view) return;
+  view.innerHTML = '<div class="muted" style="font-size:12px">loading…</div>';
+  let d; try { d = await (await fetch('/api/mind_graph/snapshot')).json(); }
+  catch(e){ view.innerHTML = '<div class="status err">could not load</div>'; return; }
+  const nodes = d.nodes || [], edges = d.edges || [];
+  if (!nodes.length && !edges.length){
+    view.innerHTML = '<div class="muted" style="font-size:13px">Nothing distilled yet — click “Distill chat history now”, or once she’s distilled some of your chats the people, places and things she picked up will show here.</div>';
+    return;
+  }
+  let html = '';
+  // Entities grouped by kind
+  const byType = {};
+  for (const n of nodes){ (byType[n.type] = byType[n.type] || []).push(n); }
+  html += '<div class="mg-sec">Things she knows about <span class="muted">('+nodes.length+')</span></div>';
+  for (const t of MG_TYPE_ORDER){
+    const list = byType[t]; if (!list || !list.length) continue;
+    html += '<div class="mg-grp"><span class="mg-grp-h">'+escHtml(MG_TYPE_LABEL[t]||t)+'</span>';
+    for (const n of list)
+      html += ' <span class="mg-node" title="mentioned '+n.mentions+'×">'+escHtml(n.label)+'</span>';
+    html += '</div>';
+  }
+  // Relations, each grounded in the verbatim quote it came from
+  if (edges.length){
+    html += '<div class="mg-sec" style="margin-top:12px">What she\'s learned <span class="muted">('+edges.length+')</span></div><div class="mg-rels">';
+    for (const e of edges){
+      html += '<div class="mg-rel"><span class="mg-fact">'+escHtml(e.subj)+' <span class="mg-relw">'+escHtml(e.rel)+'</span> '+escHtml(e.obj)+'</span>'
+            + (e.quote ? '<span class="mg-quote">“'+escHtml(e.quote)+'”</span>' : '') + '</div>';
+    }
+    html += '</div>';
+  }
+  view.innerHTML = html;
 }
 function updateMemCount() {
   const n = memEntries.length, emb = memEntries.filter(e => e.has_embedding).length;

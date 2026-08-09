@@ -439,6 +439,36 @@ class MemoryAdmin:
             pass
         return out
 
+    def mind_graph_snapshot(self, max_nodes: int = 400, max_edges: int = 600) -> dict:
+        """The durable graph's entities + grounded relations, for the Working-memory inspector.
+        Reads kg_nodes/kg_edges directly (the cascade owns the store); each relation carries the
+        verbatim quote it was grounded in — that's what makes it viewable as knowledge, not counts.
+        Empty (not an error) before the tables exist."""
+        out = {"nodes": [], "edges": []}
+        if not Path(self.path).exists():
+            return out
+        try:
+            with self._conn() as c:
+                def rows(sql, args=()):
+                    try:
+                        return c.execute(sql, args).fetchall()
+                    except sqlite3.OperationalError:
+                        return []
+                labels = {r[0]: r[1] for r in rows("SELECT id,label FROM kg_nodes WHERE status='active'")}
+                for r in rows("SELECT id,type,label,mentions FROM kg_nodes WHERE status='active' "
+                              "AND id != 'user:self' ORDER BY mentions DESC, id LIMIT ?", (max_nodes,)):
+                    out["nodes"].append({"id": r[0], "type": r[1] or "thing",
+                                         "label": r[2], "mentions": int(r[3] or 1)})
+                for r in rows("SELECT src,dst,rel,mentions,quote FROM kg_edges "
+                              "WHERE status='active' AND valid_to IS NULL "
+                              "ORDER BY mentions DESC, id LIMIT ?", (max_edges,)):
+                    out["edges"].append({"subj": labels.get(r[0], r[0]), "obj": labels.get(r[1], r[1]),
+                                         "rel": (r[2] or "").replace("_", " "),
+                                         "mentions": int(r[3] or 1), "quote": r[4] or ""})
+        except Exception:
+            pass
+        return out
+
     def idle_status(self, cfg: dict) -> dict:
         """Effective idle-work state: the manual override (worker_state) resolved against
         the scheduled quiet hours (config), for the header button + Settings."""
@@ -708,9 +738,15 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 return self._json(500, {"error": str(e)})
         if path == "/api/mind_graph":
-            # Current durable mind-graph size + undistilled backlog, for the Memory tab.
+            # Current durable mind-graph size + undistilled backlog, for the Working-memory tab.
             try:
                 return self._json(200, MemoryAdmin(self._cfg()).mind_graph_stats())
+            except Exception as e:
+                return self._json(500, {"error": str(e)})
+        if path == "/api/mind_graph/snapshot":
+            # The durable graph's entities + grounded relations, for the inspector view.
+            try:
+                return self._json(200, MemoryAdmin(self._cfg()).mind_graph_snapshot())
             except Exception as e:
                 return self._json(500, {"error": str(e)})
         if path == "/api/net":                        # the egress broker's window
