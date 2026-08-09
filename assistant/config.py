@@ -568,6 +568,8 @@ DEFAULTS: dict = {
             "min_word_len": 3,       # ignore words shorter than this
             "max_phrase_words": 4,   # cap candidate-phrase length
             "top_k": 12,             # phrases kept per turn
+            "drop_common_singletons": True,  # drop bare high-frequency words (world/new/end) as
+                                     #   nodes — they're filler; kept inside multi-word phrases
             "link_top": 6,           # …and edges laid among the best this many
             "brief_max_chars": 700,  # hard cap on the briefing block
             "brief_threads": 5,      # hottest edges shown as "threads"

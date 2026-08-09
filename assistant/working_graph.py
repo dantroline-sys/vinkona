@@ -55,6 +55,34 @@ i'm you're we're they're it's i've you've we've i'd i'll we'll don't doesn't did
 he's she's that's there's what's let's
 please thanks thank ok okay yeah yes no maybe well um uh like get got getting go going gone
 one two three thing things stuff way ways kind sort lot bit
+perhaps still actually basically simply really pretty probably truly literally honestly obviously
+certainly definitely essentially generally usually normally maybe sure okay gonna wanna gotta
+nothing something anything everything someone anyone everyone somebody anybody everybody nobody none
+""".split())
+
+# ── Common content words: high-frequency, domain-neutral nouns/verbs/adjectives that pass the
+# stopword filter but carry no memory value on their OWN (world/new/end/laugh).  A BARE such word
+# is dropped as a node (see drop_common_singletons); it may still appear INSIDE a multi-word phrase
+# ("new world", "mobile device"), where the phrase is the cue.  Tunable — extend for your domain. ──
+_COMMON: frozenset = frozenset("""
+world worlds people person man men woman women child children life lives home hour hours guy guys
+day days week weeks month months year years time times moment moments name names number numbers
+fact facts point points part parts place places side sides reason reasons idea ideas rest area
+question questions story stories end ends line lines others everybody
+make makes made making know knows knew known think thinks thought take takes took taken taking
+see sees saw seen seeing come comes came coming want wants wanted look looks looked looking
+use uses used using find finds found finding give gives gave given tell tells told call calls
+called try tries tried ask asks asked need needs needed feel feels felt become becomes became
+leave leaves left put puts mean means meant keep keeps kept begin begins seem seems seemed
+help helps helped talk talks talked turn turns turned start starts started show shows showed
+hear hears heard play plays played run runs move moves moved live lives lived believe believes
+bring brings brought happen happens happened lose loses lost pay meet meets continue learn learns
+lead leads follow follows stop stops speak speaks read reads spend grow open opens walk win wins
+remember consider appear appears die dies died dying send sends stay stays fall falls reach
+remain laugh laughs laughed survive survives survived cost costs chatter
+good new first last long great little own other others old right big small large next early
+young important public bad same best low late real full hard easy whole free strong true main
+simple clear recent likely nice better actual usual
 """.split())
 
 _TOK = re.compile(r"[A-Za-z0-9][A-Za-z0-9'\-]*|[^\sA-Za-z0-9]")   # a word OR a single punctuation mark
@@ -72,6 +100,8 @@ DEFAULTS: dict = {
     "min_word_len": 3,          # ignore words shorter than this
     "max_phrase_words": 4,      # cap candidate-phrase length
     "top_k": 12,                # keep at most this many phrases per turn
+    "drop_common_singletons": True,  # a bare high-frequency word (world/new/end) is filler, not a
+                                #   cue — drop it as a node; it survives inside a multi-word phrase
     "link_top": 6,              # …and lay co-occurrence edges among the best this many
     "brief_max_chars": 700,     # hard cap on the rendered briefing
     "brief_threads": 5,         # hottest edges shown as "threads"
@@ -207,8 +237,11 @@ class WorkingGraph:
         sents = _sentences(text)
         sents_low = [s.lower() for s in sents]
         gmax = int(self.c["ground_max_chars"])
+        drop_common = bool(self.c.get("drop_common_singletons", True))
         mentioned: list[str] = []
         for ph, _score in phrases:
+            if drop_common and " " not in ph and ph in _COMMON:
+                continue                              # a bare common word is filler, not a memory cue
             nid = "p:" + ph
             self._boost(nid, ph, turn, now, _ground_for(ph, sents_low, sents, gmax))
             mentioned.append(nid)

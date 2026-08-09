@@ -100,6 +100,36 @@ def test_grounded():
           all(a in g.nodes and b in g.nodes for (a, b) in g.edges))
 
 
+def test_common_gate():
+    # A bare high-frequency word is filler — it must not become a node (the "word cloud" failure).
+    g = wg.WorkingGraph()
+    for i, t in enumerate([
+        "It might be the end of the world, but I still laugh about it.",
+        "Graphene could make a new mobile device that costs nothing.",
+        "The usual chatter about the world versus new platforms, dying or not.",
+    ]):
+        g.ingest(t, now=i * 20.0)
+    labels = {g.nodes[n]["label"] for n in g.nodes}
+    for junk in ("world", "end", "laugh", "dying", "new", "still", "perhaps", "nothing"):
+        check(f"bare filler '{junk}' is not a node", junk not in labels)
+    check("a distinctive single word survives (graphene)", "graphene" in labels)
+    check("a multi-word phrase survives (…mobile device)",
+          any(" " in l and "device" in l for l in labels))
+
+    # A common word is still allowed INSIDE a multi-word phrase — the phrase is the cue.
+    g2 = wg.WorkingGraph()
+    g2.ingest("we live in a new world order now", now=0.0)
+    labels2 = {g2.nodes[n]["label"] for n in g2.nodes}
+    check("bare 'world' gated but 'new world order' phrase kept",
+          "world" not in labels2 and any("world" in l and " " in l for l in labels2))
+
+    # The gate is toggleable (so the behaviour is provably the cause, and tunable).
+    g3 = wg.WorkingGraph({"drop_common_singletons": False})
+    g3.ingest("the end of the world", now=0.0)
+    check("with the gate off, filler returns (proves the gate is the cause)",
+          "world" in {g3.nodes[n]["label"] for n in g3.nodes})
+
+
 def test_grounding():
     # A node keeps the verbatim clause its phrase came from (a recall handle, not just a label),
     # and only ITS own sentence — not the rest of a multi-sentence turn.
@@ -327,6 +357,7 @@ def main():
     test_decay_math()
     test_bounded()
     test_grounded()
+    test_common_gate()
     test_grounding()
     test_briefing()
     test_replay_determinism()
