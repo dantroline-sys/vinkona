@@ -153,15 +153,29 @@ class MindGraph:
         return int(r[0]) if r else 0
 
     # -- distillation (the LM slow lane) ------------------------------------------------
+    # A worked example, kept in the prompt so ANY instruction-following model (not just Qwen) sees
+    # the exact output shape it must produce.  Weaker / differently-tuned models (Gemma, Llama,
+    # Mistral) infer the schema poorly from a description but copy it reliably from an example —
+    # this is what makes the extractor model-agnostic.
+    _EXAMPLE_IN = "[41] My sister Mara just moved to Bristol and started at the museum there."
+    _EXAMPLE_OUT = (
+        '{"nodes":[{"type":"person","label":"Mara","aliases":[]},'
+        '{"type":"place","label":"Bristol","aliases":[]},'
+        '{"type":"org","label":"the museum","aliases":[]}],'
+        '"edges":[{"src":"user","dst":"Mara","rel":"sibling_of","quote":"My sister Mara"},'
+        '{"src":"Mara","dst":"Bristol","rel":"lives_in","quote":"moved to Bristol"},'
+        '{"src":"Mara","dst":"the museum","rel":"works_at","quote":"started at the museum"}]}')
+
     def build_prompt(self, turns: list[dict]) -> str:
         """The extraction prompt.  Numbered so the model can't drift on which turn a fact came
-        from; strict about modality so hypotheticals / questions never become asserted facts."""
+        from; strict about modality so hypotheticals / questions never become asserted facts; and
+        carries ONE worked example so the output shape is copied, not guessed — the difference
+        between Qwen (infers it) and most other models (need to see it)."""
         body = "\n".join(f"[{t['id']}] {t['text']}" for t in turns)
         return (
-            "You are maintaining a small knowledge graph of the USER's world from their own words.\n"
-            "Read the user's turns below and extract ONLY facts the user actually ASSERTS about "
-            "their world — people, places, organisations, things, events, and the relations between "
-            "them.\n"
+            "You extract a small knowledge graph of the USER's world from their own words.\n"
+            "Read the user's turns and extract ONLY facts the user actually ASSERTS about their "
+            "world — people, places, organisations, things, events, and the relations between them.\n"
             "STRICT RULES:\n"
             "- Only asserted statements. Skip questions, hypotheticals ('if I…', 'imagine…'), "
             "jokes, and anything speculative or negated.\n"
@@ -171,10 +185,16 @@ class MindGraph:
             "that states it (this is how the fact is grounded — no quote, no edge).\n"
             "- Use short snake_case relation names (lives_in, works_at, sibling_of, friend_of, "
             "owns, working_on, located_in, part_of, happened_on).\n"
-            'Return STRICT JSON: {"nodes":[{"type":"person|place|org|thing|event","label":"..",'
-            '"aliases":[".."]}],"edges":[{"src":"..","dst":"..","rel":"..","quote":".."}]}\n'
-            "Labels in edges must match node labels (or \"user\"). Output {} if nothing is asserted.\n\n"
-            f"User turns:\n{body}")
+            "- Labels in edges must match node labels (or \"user\").\n"
+            "- Output ONLY the JSON object — no prose, no markdown fences, no explanation. Output "
+            "exactly {} if nothing is asserted.\n"
+            'Schema: {"nodes":[{"type":"person|place|org|thing|event","label":"..","aliases":[".."]}],'
+            '"edges":[{"src":"..","dst":"..","rel":"..","quote":".."}]}\n\n'
+            "EXAMPLE\n"
+            f"User turns:\n{self._EXAMPLE_IN}\n"
+            f"Output:\n{self._EXAMPLE_OUT}\n\n"
+            "NOW YOUR TURN — same output shape, only for what is asserted below.\n"
+            f"User turns:\n{body}\nOutput:")
 
     async def distill(self, extract_fn: tp.Callable, *, now: tp.Optional[float] = None) -> dict:
         """Fold new user turns into the graph.  `extract_fn(prompt)` performs the LM call and

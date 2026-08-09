@@ -243,6 +243,24 @@ def test_catch_up_backfills_old_chats():
     check("a new turn is distilled without re-processing the old", st4["turns"] == 1)
 
 
+def test_prompt_carries_a_grounded_worked_example():
+    import json as _j
+    g = mg.MindGraph(fresh_db())
+    p = g.build_prompt([{"id": 7, "text": "hello"}])
+    check("prompt embeds a worked example output (shape shown, not just described)",
+          mg.MindGraph._EXAMPLE_OUT in p)
+    check("prompt forbids prose/markdown so weak models return only JSON", "ONLY the JSON" in p)
+    ex = _j.loads(mg.MindGraph._EXAMPLE_OUT)
+    check("the example is valid JSON in the required schema",
+          isinstance(ex.get("nodes"), list) and isinstance(ex.get("edges"), list)
+          and all(k in e for e in ex["edges"] for k in ("src", "dst", "rel", "quote")))
+    # the example must itself be GROUNDED (each quote occurs in the example input) — we teach
+    # exactly the behaviour _fold enforces, so a model copying it produces edges that survive.
+    low = mg.MindGraph._EXAMPLE_IN.lower()
+    check("every example edge quote actually occurs in the example input (grounded)",
+          all(e["quote"].lower() in low for e in ex["edges"]))
+
+
 def test_failed_extraction_does_not_advance():
     db = fresh_db()
     add_turn(db, "user", "My sister Mara lives in Bristol.")
@@ -278,6 +296,7 @@ def test_catch_up_stops_on_failure():
 
 def main():
     test_anchor_and_schema()
+    test_prompt_carries_a_grounded_worked_example()
     test_failed_extraction_does_not_advance()
     test_catch_up_stops_on_failure()
     test_grounded_fold()

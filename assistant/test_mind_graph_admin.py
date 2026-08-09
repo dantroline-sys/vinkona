@@ -60,7 +60,7 @@ def _adm(path, enabled=True):
 def test_stats_reads_graph_and_backlog():
     path = _build_db()
     st = _adm(path).mind_graph_stats()
-    check("stats reports the anchor + folded nodes", st["nodes"] == 3)
+    check("stats counts entities, excluding the 'you' anchor (Mara + Bristol = 2)", st["nodes"] == 2)
     check("stats reports the folded edges", st["edges"] == 2)
     check("backlog counts the undistilled user turn (kg_state k/v checkpoint read correctly)",
           st["backlog"] == 1)
@@ -79,19 +79,23 @@ def test_request_sets_worker_flag():
     check("the worker flag mind_graph_request lands in worker_state", row is not None and row[0])
 
 
-def test_reset_rewinds_checkpoint_and_requeues():
-    path = _build_db()                                   # 2 of 3 user turns distilled → backlog 1
+def test_rebuild_clears_and_requeues():
+    path = _build_db()                                   # 2 entities, 2 of 3 turns distilled
     before = _adm(path).mind_graph_stats()
-    check("precondition: some turns already processed", before["processed"] >= 1)
-    r = _adm(path).reset_mind_graph_checkpoint()
-    check("reset reports ok", r.get("ok") and r.get("reset"))
+    check("precondition: some entities + processed turns exist",
+          before["nodes"] >= 1 and before["processed"] >= 1)
+    r = _adm(path).rebuild_mind_graph()
+    check("rebuild reports ok", r.get("ok") and r.get("rebuilt"))
     after = _adm(path).mind_graph_stats()
-    check("after reset the whole transcript is backlog again (nothing processed)",
+    check("rebuild clears every entity and relation", after["nodes"] == 0 and after["edges"] == 0)
+    check("rebuild rewinds so the whole transcript is backlog again",
           after["processed"] == 0 and after["backlog"] == after["total"])
     c = sqlite3.connect(path)
-    row = c.execute("SELECT value FROM worker_state WHERE key='mind_graph_request'").fetchone()
+    anchor = c.execute("SELECT COUNT(*) FROM kg_nodes WHERE id='user:self'").fetchone()[0]
+    req = c.execute("SELECT value FROM worker_state WHERE key='mind_graph_request'").fetchone()
     c.close()
-    check("reset also queues a re-distill for the worker", row is not None and row[0])
+    check("rebuild keeps the locked user anchor (edge labels still resolve)", anchor == 1)
+    check("rebuild queues a re-distill for the worker", req is not None and req[0])
 
 
 def test_request_guarded_when_off():
@@ -136,7 +140,7 @@ def test_stats_empty_db_is_zero_not_error():
 def main():
     test_stats_reads_graph_and_backlog()
     test_request_sets_worker_flag()
-    test_reset_rewinds_checkpoint_and_requeues()
+    test_rebuild_clears_and_requeues()
     test_request_guarded_when_off()
     test_snapshot_renders_grounded_relations()
     test_snapshot_empty_db_is_empty_not_error()

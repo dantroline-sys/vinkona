@@ -379,8 +379,8 @@
         <button class="btn secondary" id="mgBtn" onclick="distillMindGraph(this)"
                 title="Fold the new things you've said into her durable people/places/things graph now. This normally happens on its own while she's idle.">Distill chat history now</button>
         <button class="btn secondary" id="mgViewBtn" onclick="toggleMindGraphView(this)">View what she's learned ▾</button>
-        <button class="btn secondary" id="mgResetBtn" onclick="resetMindGraph(this)" hidden
-                title="Rewind to the start and re-distil every message. Use this if she processed everything but learned nothing (the big model wasn't running).">↻ Re-distil from the start</button>
+        <button class="btn secondary" id="mgResetBtn" onclick="rebuildMindGraph(this)"
+                title="Remove the current long-term memory and re-distil every message from scratch. Make sure the big model is running first.">↻ Redistil everything</button>
         <span id="mgStatus" class="status"></span>
       </div>
       <div id="mgView" class="mg-view" hidden></div>
@@ -1252,14 +1252,14 @@ async function loadMindGraphStats(){
     }
     if (btn) btn.disabled = false;
     const total = s.total || 0, done = s.processed || 0, pct = total ? Math.round(done / total * 100) : 0;
-    // Stuck state: it "processed" everything but the graph is empty — the big LM was down during
-    // distillation, so the checkpoint ran ahead of nothing.  Diagnose it and offer the re-distil.
-    const stuck = total > 0 && s.backlog === 0 && (s.nodes || 0) === 0;
-    const resetBtn = document.getElementById('mgResetBtn');
-    if (resetBtn) resetBtn.hidden = !stuck;
-    if (stuck){
-      el.innerHTML = `processed all <b>${total}</b> of your messages but learned nothing — the big model `
-        + `probably wasn't running during distillation. Use <b>↻ Re-distil from the start</b> once it's up.`;
+    // "Read everything but found nothing": with the checkpoint-on-success fix in place, reaching
+    // 0-backlog with 0 entities means the extraction RAN but returned no people/places/things — a
+    // model/format problem, not the LM being down.  Diagnose that plainly.
+    const empty = total > 0 && s.backlog === 0 && (s.nodes || 0) === 0 && (s.edges || 0) === 0;
+    if (empty){
+      el.innerHTML = `read all <b>${total}</b> of your messages but pulled out no people, places or things `
+        + `— usually the big model isn't returning the expected format. Make sure it's running, then `
+        + `<b>↻ Redistil everything</b>; if it stays empty, check the worker log.`;
     } else {
       el.innerHTML = `<b>${s.nodes}</b> thing(s) known, <b>${s.edges}</b> relation(s) &nbsp;·&nbsp; `
         + (total ? `distilled <b>${done}</b> of <b>${total}</b> of your messages`
@@ -1267,18 +1267,18 @@ async function loadMindGraphStats(){
                  : 'no messages from you yet');
     }
     if (prog && bar){ prog.hidden = !total; bar.style.width = pct + '%';
-      bar.classList.toggle('done', total > 0 && s.backlog === 0 && !stuck); }
+      bar.classList.toggle('done', total > 0 && s.backlog === 0 && !empty); }
   } catch(e){ el.textContent = ''; if (prog) prog.hidden = true; }
 }
-async function resetMindGraph(btn){
-  if (!confirm('Re-process every message from the start to rebuild long-term memory?\n\nMake sure the big model is running first, or it will just come up empty again.')) return;
+async function rebuildMindGraph(btn){
+  if (!confirm('Remove the current long-term memory and re-distil every message from scratch?\n\nMake sure the big model is running first, or it will just come up empty again.')) return;
   const s = document.getElementById('mgStatus');
-  btn.disabled = true; const old = btn.textContent; btn.textContent = 'resetting…';
+  btn.disabled = true; const old = btn.textContent; btn.textContent = 'rebuilding…';
   try {
-    const d = await (await fetch('/api/mind_graph/reset', {method:'POST', body:'{}'})).json();
-    if (d.ok) flash(s, true, 'reset ✓ — she\'ll re-distil from the start on her next idle moment; watch the bar');
-    else flash(s, false, d.error || 'could not reset');
-  } catch(e){ flash(s, false, 'reset failed'); }
+    const d = await (await fetch('/api/mind_graph/rebuild', {method:'POST', body:'{}'})).json();
+    if (d.ok) flash(s, true, 'cleared ✓ — she\'ll re-distil everything from the start on her next idle moment; watch the bar');
+    else flash(s, false, d.error || 'could not rebuild');
+  } catch(e){ flash(s, false, 'rebuild failed'); }
   btn.textContent = old; btn.disabled = false;
   setTimeout(loadMindGraphStats, 800);
 }

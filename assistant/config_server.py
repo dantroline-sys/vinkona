@@ -407,26 +407,30 @@ class MemoryAdmin:
             c.commit()
         return {"ok": True, "queued": True}
 
-    def reset_mind_graph_checkpoint(self) -> dict:
-        """Rewind the distill checkpoint to the start so EVERY chat message is re-distilled.  The
-        un-stick for the case where the checkpoint advanced but nothing was folded (the big LM was
-        down during distillation): the graph is empty yet the backlog reads 0.  Re-folding over the
-        turns is idempotent (corroboration / supersede-in-order), so this rebuilds cleanly.  Also
-        queues a distill so the worker reprocesses on its next poll."""
+    def rebuild_mind_graph(self) -> dict:
+        """Wipe the durable graph's stored entities + relations and re-distil EVERY chat message
+        from scratch.  The locked 'you' anchor is kept; everything derived is cleared, the distill
+        checkpoint is rewound to the start, and a distill is queued for the worker.  Use this to get
+        a clean rebuild when the graph came up empty or wrong (e.g. the big LM produced nothing
+        usable on the first pass, or you've since improved the extraction).  Re-folding is
+        idempotent, so a clean transcript rebuilds deterministically."""
         if not (self.m.get("mind_graph") or {}).get("enabled"):
             return {"ok": False, "error": "Long-term memory is off — switch it on in Settings first."}
         if not Path(self.path).exists():
             return {"ok": False, "error": "no memory db yet"}
         with self._conn(ensure=True) as c:
-            try:
-                c.execute("UPDATE kg_state SET v='0' WHERE k='distill_last_id'")
-            except sqlite3.OperationalError:
-                pass                                       # never distilled → nothing to rewind
+            for sql in ("DELETE FROM kg_edges",
+                        "DELETE FROM kg_nodes WHERE id != 'user:self'",   # keep the locked anchor
+                        "UPDATE kg_state SET v='0' WHERE k='distill_last_id'"):
+                try:
+                    c.execute(sql)
+                except sqlite3.OperationalError:
+                    pass                                   # tables not created yet → nothing to clear
             c.execute("CREATE TABLE IF NOT EXISTS worker_state (key TEXT PRIMARY KEY, value TEXT)")
             c.execute("INSERT INTO worker_state(key,value) VALUES('mind_graph_request',?) "
                       "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str(time.time()),))
             c.commit()
-        return {"ok": True, "reset": True, "queued": True}
+        return {"ok": True, "rebuilt": True, "queued": True}
 
     def mind_graph_stats(self) -> dict:
         """Durable mind-graph size + how many USER turns are still to distil, for the Memory tab.
@@ -443,7 +447,8 @@ class MemoryAdmin:
                         return int(c.execute(sql, args).fetchone()[0])
                     except (sqlite3.OperationalError, TypeError):
                         return 0
-                out["nodes"] = scalar("SELECT COUNT(*) FROM kg_nodes WHERE status='active'")
+                out["nodes"] = scalar("SELECT COUNT(*) FROM kg_nodes WHERE status='active' "
+                                      "AND id != 'user:self'")   # entities, not the 'you' anchor
                 out["edges"] = scalar("SELECT COUNT(*) FROM kg_edges "
                                       "WHERE status='active' AND valid_to IS NULL")
                 last = 0
@@ -977,9 +982,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, MemoryAdmin(self._cfg()).request_mind_graph_distill())
             except Exception as e:
                 return self._json(500, {"ok": False, "error": str(e)})
-        if path == "/api/mind_graph/reset":
+        if path == "/api/mind_graph/rebuild":
             try:
-                return self._json(200, MemoryAdmin(self._cfg()).reset_mind_graph_checkpoint())
+                return self._json(200, MemoryAdmin(self._cfg()).rebuild_mind_graph())
             except Exception as e:
                 return self._json(500, {"ok": False, "error": str(e)})
         if path == "/api/reconcile":
