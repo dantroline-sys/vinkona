@@ -279,4 +279,22 @@ ok("detect: a running server NO tier points at is surfaced (the 'wire me up' cas
 assert eps == cfgmod.detect_lm_endpoints(dcfg, probe=_probe), "url-sorted, deterministic"
 ok("detect: deterministic")
 
+# ── suggest_tier_url: hand the user a ready free-port URL, never "pick a port" ──
+scfg = {"fast_lm": {"url": "http://127.0.0.1:11435"}, "big_lm": {"url": None}}
+# conventional big port (11438) is free → suggest it
+u = cfgmod.suggest_tier_url(scfg, "big_lm", is_free=lambda h, p: True)
+assert u == "http://127.0.0.1:11438", u
+ok("suggest: conventional port when it's free")
+# 11438 busy → walk to the next free port, skipping 11435 (taken by fast_lm)
+busy = {11438, 11435, 11436, 11437}
+u2 = cfgmod.suggest_tier_url(scfg, "big_lm", is_free=lambda h, p: p not in busy)
+assert u2 == "http://127.0.0.1:11439", u2
+ok("suggest: next free port when the conventional one is busy")
+# a port another tier already claims is never suggested even if 'free'
+u3 = cfgmod.suggest_tier_url(scfg, "big_lm", is_free=lambda h, p: True) if False else \
+     cfgmod.suggest_tier_url({"fast_lm": {"url": "http://127.0.0.1:11438"}}, "big_lm",
+                             is_free=lambda h, p: True)
+assert u3 != "http://127.0.0.1:11438", u3
+ok("suggest: never a port another tier already uses")
+
 print(f"test_remote_lm: {N[0]} checks OK")

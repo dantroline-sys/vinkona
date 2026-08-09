@@ -760,6 +760,10 @@ class Handler(BaseHTTPRequestHandler):
             "extra_args": block.get("extra_args", []),
             "lead": block.get("lead", 1),              # big tier: how much it drives the chat
         }
+        try:                                           # a ready free-port url to offer when it's off
+            settings["suggested_url"] = CFGMOD.suggest_tier_url(cfg, key)
+        except Exception:
+            settings["suggested_url"] = ""
         if key == "big_lm":                            # editable briefing prompt + its default
             settings["briefing_prompt"] = block.get("briefing_prompt") or ""
             settings["briefing_default"] = _briefing_default()

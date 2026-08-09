@@ -1406,6 +1406,44 @@ def detect_lm_endpoints(cfg: dict, *, host: str = "127.0.0.1", ports=None,
     return live
 
 
+# Conventional local port per tier (see the architecture map): fast 11435, TTS 11436, embed
+# 11437, big 11438, tts_lm 11439, big2 11440.  Used only to SUGGEST a url — never forced.
+_TIER_DEFAULT_PORTS = {"fast_lm": 11435, "embed_lm": 11437, "big_lm": 11438,
+                       "tts_lm": 11439, "big_lm2": 11440}
+
+
+def _port_free(host: str, port: int) -> bool:
+    """True if nothing is listening on host:port (we could bind it) — so it's safe to launch here."""
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            s.bind((host, port))
+            return True
+        except OSError:
+            return False
+
+
+def suggest_tier_url(cfg: dict, tier: str, *, host: str = "127.0.0.1", is_free=None) -> str:
+    """A ready-to-use local URL for a tier the user wants to LAUNCH here — the tier's conventional
+    port if free, else the next free port in the LM range, skipping ports other tiers already claim.
+    So enabling a tier is one click, never 'pick a port you happen to know is free'.  `is_free(host,
+    port) -> bool` is injected for tests."""
+    is_free = is_free or _port_free
+    used = set()
+    for t in LM_TIERS:
+        if t == tier:
+            continue
+        m = re.search(r":(\d+)", str((cfg.get(t) or {}).get("url") or ""))
+        if m:
+            used.add(int(m.group(1)))
+    start = _TIER_DEFAULT_PORTS.get(tier, 11435)
+    for p in [start] + [x for x in range(11435, 11460) if x != start]:
+        if p not in used and is_free(host, p):
+            return f"http://{host}:{p}"
+    return f"http://{host}:{start}"
+
+
 def resolve_remote_lms(cfg: dict, timeout: float = 3.0, log=print) -> None:
     """Reconcile remote LM tiers' model names with what each server serves.
 

@@ -683,6 +683,11 @@ async function loadModels() {
 }
 // Point a tier at a detected live server: fill the URL (and its model, adding the option if it's a
 // remote/served name the GGUF list doesn't have).  So a running server is CHOSEN, never typed.
+// Fill a tier's URL with the suggested free-port local address (launch-here, no port to know).
+function fillUrl(tier, url) {
+  const el = document.querySelector('#model-' + tier + ' [data-f="url"]');
+  if (el && url) el.value = url;
+}
 function useDetected(tier, val) {
   if (!val) return;
   const i = val.indexOf('|'); const url = val.slice(0, i), model = val.slice(i + 1);
@@ -714,8 +719,10 @@ async function renderModelTier(tier, eps = []) {
     <div class="persona-head"><b>${TIER_LABEL[tier]}</b>
       <span class="pill">${disabled ? 'disabled (no url)' : escHtml(s.url)}</span></div>
     <label>Server URL <span class="muted">— where this tier is served; <b>blank = tier OFF</b></span></label>
-    <div class="row" style="grid-template-columns:1fr auto; gap:6px">
-      <input data-f="url" value="${escAttr(s.url || '')}" placeholder="http://127.0.0.1:PORT — blank disables this tier">
+    <div class="row" style="grid-template-columns:1fr auto auto; gap:6px">
+      <input data-f="url" value="${escAttr(s.url || '')}" placeholder="${escAttr(s.suggested_url || 'http://127.0.0.1:PORT')} — blank disables">
+      <button class="btn secondary" type="button" onclick="fillUrl('${tier}', '${escAttr(s.suggested_url || '')}')"
+              title="Use a free local port and launch a server here">use :${escHtml((String(s.suggested_url || '').match(/:(\d+)/) || [, ''])[1])}</button>
       <select onchange="useDetected('${tier}', this.value); this.value=''" title="Live LM servers detected on this machine — pick one to fill the URL">
         <option value="">${eps.length ? 'detected ▾' : 'none detected'}</option>
         ${eps.map(e => `<option value="${escAttr(e.url + '|' + (e.models[0] || ''))}">${escHtml(e.url)} — ${escHtml(e.models[0] || '?')}${e.models.length > 1 ? ' (+' + (e.models.length - 1) + ')' : ''}${e.tiers.length ? ' [' + e.tiers.join(',') + ']' : ' [free]'}</option>`).join('')}
