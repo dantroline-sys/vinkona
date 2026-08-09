@@ -261,4 +261,22 @@ assert "http://127.0.0.1:11435" not in cfgmod._REMOTE_PROBE_FAILED, \
     "local (non-remote) tier must never be probed"
 ok("unreachable server: names untouched, backoff set; local tiers ignored")
 
+# ── detect_lm_endpoints: discover live servers so a tier is PICKED, not typed ──
+_seen = {"http://127.0.0.1:11435": ["fast-model"], "http://127.0.0.1:11438": ["big"]}
+def _probe(url, timeout=1.0):
+    return _seen.get(url.rstrip("/"), [])
+dcfg = {"fast_lm": {"url": "http://127.0.0.1:11435"}, "big_lm": {"url": None},
+        "embed_lm": {"url": "http://127.0.0.1:11434"}}
+eps = cfgmod.detect_lm_endpoints(dcfg, probe=_probe)
+assert {e["url"] for e in eps} == {"http://127.0.0.1:11435", "http://127.0.0.1:11438"}, eps
+ok("detect: only live servers are returned (dead ports dropped)")
+fast = next(e for e in eps if e["url"].endswith("11435"))
+assert fast["models"] == ["fast-model"] and fast["tiers"] == ["fast_lm"], fast
+ok("detect: a live endpoint reports its model(s) + which tier already uses it")
+big = next(e for e in eps if e["url"].endswith("11438"))
+assert big["tiers"] == [], big
+ok("detect: a running server NO tier points at is surfaced (the 'wire me up' case)")
+assert eps == cfgmod.detect_lm_endpoints(dcfg, probe=_probe), "url-sorted, deterministic"
+ok("detect: deterministic")
+
 print(f"test_remote_lm: {N[0]} checks OK")

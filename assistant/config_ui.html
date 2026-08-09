@@ -677,9 +677,26 @@ function removePersona(name) {
 // ── Models ──────────────────────────────────────────────────────────────────
 const TIER_LABEL = { fast: 'Fast LM', big: 'Big LM', embed: 'Embed LM' };
 async function loadModels() {
-  await Promise.all(['fast', 'big', 'embed'].map(renderModelTier));
+  let eps = [];
+  try { eps = (await (await fetch('/api/lm_endpoints')).json()).endpoints || []; } catch (e) {}
+  await Promise.all(['fast', 'big', 'embed'].map(t => renderModelTier(t, eps)));
 }
-async function renderModelTier(tier) {
+// Point a tier at a detected live server: fill the URL (and its model, adding the option if it's a
+// remote/served name the GGUF list doesn't have).  So a running server is CHOSEN, never typed.
+function useDetected(tier, val) {
+  if (!val) return;
+  const i = val.indexOf('|'); const url = val.slice(0, i), model = val.slice(i + 1);
+  const el = document.getElementById('model-' + tier);
+  const u = el.querySelector('[data-f="url"]'); if (u) u.value = url;
+  if (model) {
+    const sel = el.querySelector('[data-f="model"]');
+    if (sel) {
+      if (![...sel.options].some(o => o.value === model)) sel.add(new Option(model + ' (detected)', model));
+      sel.value = model;
+    }
+  }
+}
+async function renderModelTier(tier, eps = []) {
   const el = document.getElementById('model-' + tier);
   el.innerHTML = `<b>${TIER_LABEL[tier]}</b> <span class="muted">loading…</span>`;
   let d;
@@ -696,7 +713,20 @@ async function renderModelTier(tier) {
   el.innerHTML = `
     <div class="persona-head"><b>${TIER_LABEL[tier]}</b>
       <span class="pill">${disabled ? 'disabled (no url)' : escHtml(s.url)}</span></div>
-    <label>GGUF model <span class="muted">— in ${escHtml(d.models_dir)}/</span></label>
+    <label>Server URL <span class="muted">— where this tier is served; <b>blank = tier OFF</b></span></label>
+    <div class="row" style="grid-template-columns:1fr auto; gap:6px">
+      <input data-f="url" value="${escAttr(s.url || '')}" placeholder="http://127.0.0.1:PORT — blank disables this tier">
+      <select onchange="useDetected('${tier}', this.value); this.value=''" title="Live LM servers detected on this machine — pick one to fill the URL">
+        <option value="">${eps.length ? 'detected ▾' : 'none detected'}</option>
+        ${eps.map(e => `<option value="${escAttr(e.url + '|' + (e.models[0] || ''))}">${escHtml(e.url)} — ${escHtml(e.models[0] || '?')}${e.models.length > 1 ? ' (+' + (e.models.length - 1) + ')' : ''}${e.tiers.length ? ' [' + e.tiers.join(',') + ']' : ' [free]'}</option>`).join('')}
+      </select>
+    </div>
+    <label>Served by <span class="muted">— "launch here" starts &amp; manages a server for this tier; "connect only" uses one that's ALREADY running (a detected endpoint, or another machine's) — no local launch, model = its served name</span></label>
+    <select data-f="remote">
+      <option value="false"${!s.remote ? ' selected' : ''}>launch &amp; manage a server here</option>
+      <option value="true"${s.remote ? ' selected' : ''}>connect only (already running — here or remote)</option>
+    </select>
+    <label>GGUF model <span class="muted">— in ${escHtml(d.models_dir)}/ (local); a remote server's served name is filled by "detected"</span></label>
     <select data-f="model">${missing}${opts}${installed.length||missing?'':'<option value="">(no .gguf files found)</option>'}</select>
     <div class="row">
       <div><label>GPU index</label><input data-f="gpu" type="number" min="0" value="${s.gpu!=null?s.gpu:0}"></div>
@@ -718,7 +748,7 @@ async function renderModelTier(tier) {
     <div class="bar"><button class="btn secondary" type="button" onclick="resetBriefing()">Reset to default</button><span class="muted">fills the box with the built-in default — edit it or save as-is</span></div>` : ''}
     <div class="bar">
       <button class="btn" onclick="saveModel('${tier}')">Save</button>
-      <button class="btn secondary" onclick="renderModelTier('${tier}')">Refresh</button>
+      <button class="btn secondary" onclick="loadModels()">Refresh / re-detect</button>
       <span class="muted">change needs a server restart</span>
       <span id="ms-${tier}" class="status"></span>
     </div>`;
@@ -729,6 +759,8 @@ async function saveModel(tier) {
   const cfg = JSON.parse(await (await fetch('/api/config')).text());
   const key = { fast: 'fast_lm', big: 'big_lm', embed: 'embed_lm' }[tier];
   Object.assign(cfg[key], {
+    url: g('url').trim() || null,                     // blank ⇒ null ⇒ tier disabled
+    remote: g('remote') === 'true',
     model: g('model'),
     gpu: parseInt(g('gpu')) || 0,
     ctx_size: parseInt(g('ctx_size')) || 4096,

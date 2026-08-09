@@ -651,6 +651,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, CFGMOD.resolve_read(self._personas_path()).read_text())
         if path == "/api/models":
             return self._get_models()
+        if path == "/api/lm_endpoints":               # live LM servers, so a tier is picked not typed
+            try:
+                eps = CFGMOD.detect_lm_endpoints(self._cfg())
+            except Exception as e:
+                return self._json(200, {"endpoints": [], "error": str(e)})
+            return self._json(200, {"endpoints": eps})
         if path == "/api/trace":
             return self._get_trace()
         if path == "/api/working_graph":

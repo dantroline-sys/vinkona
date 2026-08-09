@@ -1375,6 +1375,37 @@ def served_model_ids(url: str, timeout: float = 3.0) -> list:
         return []
 
 
+# Common local ports for OpenAI-compatible LM servers (llama-server / vLLM / ollama).  A tier's
+# configured url is always probed too, so a non-standard port a user already set is still found.
+_LM_SCAN_PORTS = (11434, 11435, 11436, 11437, 11438, 11439, 11440, 8000, 8080)
+
+
+def detect_lm_endpoints(cfg: dict, *, host: str = "127.0.0.1", ports=None,
+                        probe=None, timeout: float = 1.2, max_workers: int = 12) -> list:
+    """Discover live OpenAI-compatible LM servers so a tier can be pointed at one by PICKING, not
+    by typing a URL.  Candidates = every configured tier url + a scan of the common local LM ports.
+    Returns [{url, models:[ids], tiers:[tier names already using it]}] for the LIVE ones only,
+    url-sorted (deterministic).  `probe(url, timeout) -> [model ids]` is injected for offline
+    testing; the default asks each server GET /v1/models."""
+    probe = probe or served_model_ids
+    ports = _LM_SCAN_PORTS if ports is None else ports
+    tier_of: dict = {}
+    for tier in LM_TIERS:
+        u = str((cfg.get(tier) or {}).get("url") or "").rstrip("/")
+        if u:
+            tier_of.setdefault(u, []).append(tier)
+    cand = set(tier_of)
+    for p in ports:
+        cand.add(f"http://{host}:{p}")
+    from concurrent.futures import ThreadPoolExecutor
+    live = []
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        for url, models in ex.map(lambda u: (u, probe(u, timeout)), sorted(cand)):
+            if models:
+                live.append({"url": url, "models": models, "tiers": tier_of.get(url, [])})
+    return live
+
+
 def resolve_remote_lms(cfg: dict, timeout: float = 3.0, log=print) -> None:
     """Reconcile remote LM tiers' model names with what each server serves.
 
