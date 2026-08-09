@@ -412,7 +412,7 @@ class MemoryAdmin:
         Zeroes (not an error) before the kg_* tables exist.  `enabled` mirrors the config toggle so
         the UI can nudge the user to turn it on."""
         out = {"enabled": bool((self.m.get("mind_graph") or {}).get("enabled")),
-               "nodes": 0, "edges": 0, "backlog": 0}
+               "nodes": 0, "edges": 0, "backlog": 0, "total": 0, "processed": 0}
         if not Path(self.path).exists():
             return out
         try:
@@ -431,8 +431,10 @@ class MemoryAdmin:
                     last = int(r[0]) if r and r[0] is not None else 0
                 except (sqlite3.OperationalError, TypeError, ValueError):
                     last = 0
+                out["total"] = scalar("SELECT COUNT(*) FROM chat_logs WHERE role='user'")
                 out["backlog"] = scalar("SELECT COUNT(*) FROM chat_logs WHERE role='user' AND id > ?",
                                         (last,))
+                out["processed"] = max(0, out["total"] - out["backlog"])
         except Exception:
             pass
         return out

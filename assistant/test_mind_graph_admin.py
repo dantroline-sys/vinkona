@@ -64,6 +64,8 @@ def test_stats_reads_graph_and_backlog():
     check("stats reports the folded edges", st["edges"] == 2)
     check("backlog counts the undistilled user turn (kg_state k/v checkpoint read correctly)",
           st["backlog"] == 1)
+    check("total counts all user turns (3 user, 2 assistant)", st["total"] == 3)
+    check("processed = total − backlog (2 of 3 distilled)", st["processed"] == 2)
     check("stats mirrors the enabled flag", st["enabled"] is True)
 
 

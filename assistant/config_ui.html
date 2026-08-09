@@ -173,10 +173,17 @@
   .seg-group .seg + .seg { border-left:1px solid #2c303a; }
   .seg-group .seg.active { background:#2c303a; color:#e6e8ec; font-weight:600; }
   .cfg-levelnote { font-size:12px; }
-  .mg-bar { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin:0 0 12px;
-            padding:8px 12px; background:#12151b; border:1px solid #2c303a; border-radius:8px; }
-  .mg-bar .mg-label { font-size:13px; color:#e6e8ec; font-weight:600; }
-  .mg-bar #mgStats { font-size:12px; flex:1; min-width:120px; }
+  .mg-card { background:#12151b; border:1px solid #2c303a; border-left:3px solid #5a86c9;
+             border-radius:0 8px 8px 0; padding:11px 14px; margin:0 0 14px; }
+  .mg-card .mg-head { margin-bottom:6px; }
+  .mg-card .mg-title { font-size:14px; color:#e6e8ec; font-weight:600; }
+  .mg-card #mgStats { font-size:13px; }
+  .mg-card #mgStats b { color:#e6e8ec; font-variant-numeric:tabular-nums; }
+  .mg-progress { height:7px; background:#0d0f14; border:1px solid #2c303a; border-radius:5px;
+                 overflow:hidden; margin:9px 0; }
+  .mg-progress-bar { height:100%; width:0; background:#5a86c9; transition:width .4s ease; }
+  .mg-progress-bar.done { background:#4a9e6a; }
+  .mg-card .mg-actions { display:flex; align-items:center; gap:10px; }
   .recipe-preview { background:#12151b; border:1px solid #3d4350; border-left:3px solid #5a86c9;
                     border-radius:0 8px 8px 0; padding:11px 14px; margin:2px 0 12px; max-width:760px; }
   .recipe-preview .rp-head { font-size:14px; color:#e6e8ec; margin-bottom:4px; }
@@ -348,6 +355,19 @@
       connect (thicker line = mentioned together more). This is a live picture — enable
       <code>memory.working_graph</code> and talk to her to see it move.
     </div></details>
+    <div class="mg-card" id="mgCard">
+      <div class="mg-head">
+        <span class="mg-title">Long-term memory</span>
+        <span class="muted" style="font-size:12px">— the durable graph she builds from your chats (this one is kept, not discarded)</span>
+      </div>
+      <div id="mgStats" class="muted">…</div>
+      <div id="mgProgress" class="mg-progress" hidden><div id="mgProgressBar" class="mg-progress-bar"></div></div>
+      <div class="mg-actions">
+        <button class="btn secondary" id="mgBtn" onclick="distillMindGraph(this)"
+                title="Fold the new things you've said into her durable people/places/things graph now. This normally happens on its own while she's idle.">Distill chat history now</button>
+        <span id="mgStatus" class="status"></span>
+      </div>
+    </div>
     <div class="bar">
       <label style="margin:0"><input type="checkbox" id="autoWG" checked style="width:auto"> auto-refresh (2s)</label>
       <button class="btn secondary" onclick="loadWGraph()">Refresh now</button>
@@ -381,12 +401,6 @@
       </select>
       <span id="memCount" class="muted"></span>
       <span id="mstatus" class="status"></span>
-    </div>
-    <div class="mg-bar" id="mgBar">
-      <span class="mg-label">Long-term memory</span>
-      <span id="mgStats" class="muted">…</span>
-      <button class="btn secondary" id="mgBtn" onclick="distillMindGraph(this)"
-              title="Fold the new things you've said into her durable people/places/things graph now. This normally happens on its own while she's idle.">Distill chat history now</button>
     </div>
     <div class="mem-layout">
       <div id="memList" class="mem-list"></div>
@@ -893,8 +907,8 @@ function ts(t) { return new Date(t * 1000).toLocaleTimeString(); }
 
 // ── Working memory (VIN-WM-02 conversational graph) ─────────────────────────
 let wgTimer = null, wgPos = {};
-function startWGraph() { loadWGraph(); wgTimer = setInterval(() => {
-  if (document.getElementById('autoWG').checked) loadWGraph(); }, 2000); }
+function startWGraph() { loadWGraph(); loadMindGraphStats(); wgTimer = setInterval(() => {
+  if (document.getElementById('autoWG').checked) { loadWGraph(); loadMindGraphStats(); } }, 2000); }
 function wgAge(s) { if (s == null) return ''; if (s < 8) return 'live';
   if (s < 90) return Math.round(s) + 's ago'; if (s < 5400) return Math.round(s/60) + 'm ago'; return 'idle'; }
 function wgLerp(a, b, t) { return Math.round(a + (b - a) * t); }
@@ -1205,30 +1219,36 @@ async function loadMemory() {
   if (memSelId !== '__new__' && !memEntries.find(e => e.id === memSelId))
     memSelId = memEntries.length ? memEntries[0].id : null;
   renderMemList(); renderMemEditor(); updateMemCount();
-  loadMindGraphStats();
 }
-// ── Long-term memory (durable mind-graph) ────────────────────────────────────
+// ── Long-term memory (durable mind-graph) — lives in the Working memory tab ───
 async function loadMindGraphStats(){
   const el = document.getElementById('mgStats'), btn = document.getElementById('mgBtn');
+  const prog = document.getElementById('mgProgress'), bar = document.getElementById('mgProgressBar');
   if (!el) return;
   try {
     const s = await (await fetch('/api/mind_graph')).json();
     if (!s.enabled){
-      el.innerHTML = 'is off — switch on <b>Long-term memory</b> in Settings to build it from your chats';
+      el.innerHTML = 'is off — switch on <b>Long-term memory</b> in Settings, then talk to her (or Distill now) to build it from your chats';
       if (btn) btn.disabled = true;
+      if (prog) prog.hidden = true;
       return;
     }
     if (btn) btn.disabled = false;
-    el.textContent = `${s.nodes} thing(s) known, ${s.edges} relation(s)`
-      + (s.backlog ? ` · ${s.backlog} message(s) still to distil` : ' · all caught up');
-  } catch(e){ el.textContent = ''; }
+    const total = s.total || 0, done = s.processed || 0, pct = total ? Math.round(done / total * 100) : 0;
+    el.innerHTML = `<b>${s.nodes}</b> thing(s) known, <b>${s.edges}</b> relation(s) &nbsp;·&nbsp; `
+      + (total ? `distilled <b>${done}</b> of <b>${total}</b> of your messages`
+                 + (s.backlog ? ` — <b>${s.backlog}</b> still to go` : ' — all caught up ✓')
+               : 'no messages from you yet');
+    if (prog && bar){ prog.hidden = !total; bar.style.width = pct + '%';
+      bar.classList.toggle('done', total > 0 && s.backlog === 0); }
+  } catch(e){ el.textContent = ''; if (prog) prog.hidden = true; }
 }
 async function distillMindGraph(btn){
-  const s = document.getElementById('mstatus');
+  const s = document.getElementById('mgStatus');
   btn.disabled = true; const old = btn.textContent; btn.textContent = 'requesting…';
   try {
     const d = await (await fetch('/api/mind_graph/distill', {method:'POST', body:'{}'})).json();
-    if (d.ok) flash(s, true, 'requested ✓ — she distils it on her next idle moment; the count grows as she does (Refresh to watch)');
+    if (d.ok) flash(s, true, 'requested ✓ — she distils it on her next idle moment; watch the bar move (updates every few seconds)');
     else flash(s, false, d.error || 'could not queue the distill');
   } catch(e){ flash(s, false, 'request failed'); }
   btn.textContent = old; btn.disabled = false;
