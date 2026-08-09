@@ -1218,6 +1218,20 @@ async def main():
                     trace.write(kind="orient", sources=n, store_size=len(memory.entries))
             except Exception as e:
                 _log(f"orientation failed (continuing): {e}")
+        # Durable knowledge graph: fold new USER turns from the transcript into the long-term
+        # mind-graph (people/places/things + grounded relations).  A dreaming activity, so it runs
+        # here on every idle cycle — off unless memory.mind_graph.enabled and the big LM is up.
+        # Drains oldest-first, checkpointed, never re-distilling; a no-op once caught up.
+        _mgc = cfg.get("memory", {}).get("mind_graph", {})
+        if _mgc.get("enabled") and big.get("url"):
+            try:
+                st = await memory.distill_mind_graph(big["url"], big["model"])
+                if st and (st.get("nodes") or st.get("edges") or st.get("backlog")):
+                    _log(f"mind-graph: +{st.get('nodes',0)} node(s)/+{st.get('edges',0)} edge(s), "
+                         f"{st.get('refused',0)} refused, {st.get('backlog',0)} still to distil")
+                    trace.write(kind="mind_graph", **st, store_size=len(memory.entries))
+            except Exception as e:
+                _log(f"mind-graph distill failed (continuing): {e}")
         # Calendar consolidation: mirror every appointment into Vinkona's own calendar + refresh
         # the durable local copy.  Min-interval gated (persisted, so it survives restarts) so
         # it doesn't write to the calendar every idle tick.  Under the big-LM lease already.
@@ -1765,6 +1779,26 @@ async def main():
                 except Exception as e:
                     _log(f"manual export failed (continuing): {e}")
                 memory.set_state("export_handled", ereq)
+                continue
+            # Manual "Distill chat history now" from the Memory tab: fold new USER turns into the
+            # durable mind-graph on demand.  Honoured regardless of idle gating — the user asked —
+            # so it's a quick way to watch the graph populate without waiting for a dreaming pass.
+            mreq = memory.get_state("mind_graph_request")
+            if mreq and mreq != memory.get_state("mind_graph_handled"):
+                mgc = cfg.get("memory", {}).get("mind_graph", {})
+                if mgc.get("enabled") and big.get("url"):
+                    try:
+                        st = await run_big(memory.distill_mind_graph(big["url"], big["model"]))
+                        if st:
+                            _log(f"mind-graph (forced): +{st.get('nodes',0)} node(s)/+{st.get('edges',0)} "
+                                 f"edge(s), {st.get('refused',0)} refused, {st.get('backlog',0)} still to distil")
+                            trace.write(kind="mind_graph", forced=True, **st,
+                                        store_size=len(memory.entries))
+                    except Exception as e:
+                        _log(f"manual mind-graph distill failed (continuing): {e}")
+                else:
+                    _log("mind-graph distill requested but it's off or big_lm has no url — skipping")
+                memory.set_state("mind_graph_handled", mreq)
                 continue
             if _task_on("garden") and garden_interval and time.time() - last_garden >= garden_interval:
                 garden()

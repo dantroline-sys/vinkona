@@ -1,0 +1,105 @@
+#!/usr/bin/env python
+"""Panel-side mind-graph controls (config_server.MemoryAdmin).
+
+The Memory tab reads the durable graph's size + backlog and queues an on-demand distill for the
+research worker.  Those read the mind_graph tables the cascade owns — kg_nodes / kg_edges and the
+kg_state checkpoint (columns k/v, not key/value).  If that schema drifts these queries fail
+silently and the panel shows zeros forever, so pin the contract here.
+
+    python assistant/test_mind_graph_admin.py
+"""
+import asyncio
+import importlib.util
+import sqlite3
+import tempfile
+from pathlib import Path
+
+HERE = Path(__file__).parent
+
+
+def _load(name):
+    spec = importlib.util.spec_from_file_location(name, HERE / f"{name}.py")
+    mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+    return mod
+
+
+mg = _load("mind_graph")
+cs = _load("config_server")
+
+PASS = FAIL = 0
+def check(name, cond):
+    global PASS, FAIL
+    if cond: PASS += 1; print(f"  ok  {name}")
+    else: FAIL += 1; print(f"FAIL  {name}")
+
+
+def _build_db():
+    path = tempfile.mktemp(suffix=".db")
+    db = sqlite3.connect(path)
+    db.executescript("CREATE TABLE chat_logs(id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                     "session_id TEXT, ts REAL, role TEXT, text TEXT);")
+    for role, text in [("user", "My sister Mara lives in Bristol."), ("assistant", "nice"),
+                       ("user", "I work with Sam."), ("assistant", "ok"),
+                       ("user", "A turn not distilled yet.")]:
+        db.execute("INSERT INTO chat_logs(session_id,ts,role,text) VALUES('s',0,?,?)", (role, text))
+    db.commit()
+    g = mg.MindGraph(db, {"distill_batch_turns": 2, "distill_max_batches": 1})   # drain 1 batch = 2 user turns
+    stub = lambda _p: {"nodes": [{"type": "person", "label": "Mara"}, {"type": "place", "label": "Bristol"}],
+                       "edges": [{"src": "user", "dst": "Mara", "rel": "sibling_of", "quote": "My sister Mara"},
+                                 {"src": "Mara", "dst": "Bristol", "rel": "lives_in", "quote": "lives in Bristol"}]}
+    asyncio.run(g.catch_up(stub))
+    db.commit(); db.close()
+    return path
+
+
+def _adm(path, enabled=True):
+    return cs.MemoryAdmin({"memory": {"db_path": path, "mind_graph": {"enabled": enabled}},
+                           "embed_lm": {}})
+
+
+def test_stats_reads_graph_and_backlog():
+    path = _build_db()
+    st = _adm(path).mind_graph_stats()
+    check("stats reports the anchor + folded nodes", st["nodes"] == 3)
+    check("stats reports the folded edges", st["edges"] == 2)
+    check("backlog counts the undistilled user turn (kg_state k/v checkpoint read correctly)",
+          st["backlog"] == 1)
+    check("stats mirrors the enabled flag", st["enabled"] is True)
+
+
+def test_request_sets_worker_flag():
+    path = _build_db()
+    r = _adm(path).request_mind_graph_distill()
+    check("a distill request is queued", r.get("ok") and r.get("queued"))
+    c = sqlite3.connect(path)
+    row = c.execute("SELECT value FROM worker_state WHERE key='mind_graph_request'").fetchone()
+    c.close()
+    check("the worker flag mind_graph_request lands in worker_state", row is not None and row[0])
+
+
+def test_request_guarded_when_off():
+    path = _build_db()
+    r = _adm(path, enabled=False).request_mind_graph_distill()
+    check("a distill request is refused (with a plain message) when the feature is off",
+          r.get("ok") is False and "off" in (r.get("error") or "").lower())
+
+
+def test_stats_empty_db_is_zero_not_error():
+    empty = tempfile.mktemp(suffix=".db")
+    sqlite3.connect(empty).close()                         # exists but has no tables
+    st = _adm(empty).mind_graph_stats()
+    check("stats on a graph-less db returns zeros, not an error",
+          st["nodes"] == 0 and st["edges"] == 0 and st["backlog"] == 0)
+
+
+def main():
+    test_stats_reads_graph_and_backlog()
+    test_request_sets_worker_flag()
+    test_request_guarded_when_off()
+    test_stats_empty_db_is_zero_not_error()
+    print(f"\n{PASS} passed, {FAIL} failed")
+    raise SystemExit(1 if FAIL else 0)
+
+
+if __name__ == "__main__":
+    main()

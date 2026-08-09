@@ -392,6 +392,51 @@ class MemoryAdmin:
             c.commit()
         return {"ok": True, "queued": True}
 
+    def request_mind_graph_distill(self) -> dict:
+        """Queue a mind-graph distill (fold new chat turns into the durable knowledge graph) for the
+        research worker — the Memory tab's 'Distill chat history now'.  The worker honours it during
+        its dreaming phase regardless of idle gating.  Guarded so the button explains itself."""
+        if not (self.m.get("mind_graph") or {}).get("enabled"):
+            return {"ok": False, "error": "Long-term memory is off — switch it on in Settings first."}
+        if not Path(self.path).exists():
+            return {"ok": False, "error": "no memory db yet — talk to her once so there's history to distil."}
+        with self._conn(ensure=True) as c:
+            c.execute("CREATE TABLE IF NOT EXISTS worker_state (key TEXT PRIMARY KEY, value TEXT)")
+            c.execute("INSERT INTO worker_state(key,value) VALUES('mind_graph_request',?) "
+                      "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str(time.time()),))
+            c.commit()
+        return {"ok": True, "queued": True}
+
+    def mind_graph_stats(self) -> dict:
+        """Durable mind-graph size + how many USER turns are still to distil, for the Memory tab.
+        Zeroes (not an error) before the kg_* tables exist.  `enabled` mirrors the config toggle so
+        the UI can nudge the user to turn it on."""
+        out = {"enabled": bool((self.m.get("mind_graph") or {}).get("enabled")),
+               "nodes": 0, "edges": 0, "backlog": 0}
+        if not Path(self.path).exists():
+            return out
+        try:
+            with self._conn() as c:
+                def scalar(sql, args=()):
+                    try:
+                        return int(c.execute(sql, args).fetchone()[0])
+                    except (sqlite3.OperationalError, TypeError):
+                        return 0
+                out["nodes"] = scalar("SELECT COUNT(*) FROM kg_nodes WHERE status='active'")
+                out["edges"] = scalar("SELECT COUNT(*) FROM kg_edges "
+                                      "WHERE status='active' AND valid_to IS NULL")
+                last = 0
+                try:
+                    r = c.execute("SELECT v FROM kg_state WHERE k='distill_last_id'").fetchone()
+                    last = int(r[0]) if r and r[0] is not None else 0
+                except (sqlite3.OperationalError, TypeError, ValueError):
+                    last = 0
+                out["backlog"] = scalar("SELECT COUNT(*) FROM chat_logs WHERE role='user' AND id > ?",
+                                        (last,))
+        except Exception:
+            pass
+        return out
+
     def idle_status(self, cfg: dict) -> dict:
         """Effective idle-work state: the manual override (worker_state) resolved against
         the scheduled quiet hours (config), for the header button + Settings."""
@@ -659,6 +704,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, {"recipes": CFGMOD.FEATURE_RECIPES})
             except Exception as e:
                 return self._json(500, {"error": str(e)})
+        if path == "/api/mind_graph":
+            # Current durable mind-graph size + undistilled backlog, for the Memory tab.
+            try:
+                return self._json(200, MemoryAdmin(self._cfg()).mind_graph_stats())
+            except Exception as e:
+                return self._json(500, {"error": str(e)})
         if path == "/api/net":                        # the egress broker's window
             try:
                 netadmin = _load_mod("netadmin")
@@ -861,6 +912,11 @@ class Handler(BaseHTTPRequestHandler):
                     obj.get("id", ""), obj.get("status", "active")))
             except Exception as e:
                 return self._json(500, {"error": str(e)})
+        if path == "/api/mind_graph/distill":
+            try:
+                return self._json(200, MemoryAdmin(self._cfg()).request_mind_graph_distill())
+            except Exception as e:
+                return self._json(500, {"ok": False, "error": str(e)})
         if path == "/api/reconcile":
             try:
                 return self._json(200, MemoryAdmin(self._cfg()).request_reconcile())

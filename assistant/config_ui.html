@@ -173,6 +173,10 @@
   .seg-group .seg + .seg { border-left:1px solid #2c303a; }
   .seg-group .seg.active { background:#2c303a; color:#e6e8ec; font-weight:600; }
   .cfg-levelnote { font-size:12px; }
+  .mg-bar { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin:0 0 12px;
+            padding:8px 12px; background:#12151b; border:1px solid #2c303a; border-radius:8px; }
+  .mg-bar .mg-label { font-size:13px; color:#e6e8ec; font-weight:600; }
+  .mg-bar #mgStats { font-size:12px; flex:1; min-width:120px; }
   .recipe-preview { background:#12151b; border:1px solid #3d4350; border-left:3px solid #5a86c9;
                     border-radius:0 8px 8px 0; padding:11px 14px; margin:2px 0 12px; max-width:760px; }
   .recipe-preview .rp-head { font-size:14px; color:#e6e8ec; margin-bottom:4px; }
@@ -377,6 +381,12 @@
       </select>
       <span id="memCount" class="muted"></span>
       <span id="mstatus" class="status"></span>
+    </div>
+    <div class="mg-bar" id="mgBar">
+      <span class="mg-label">Long-term memory</span>
+      <span id="mgStats" class="muted">…</span>
+      <button class="btn secondary" id="mgBtn" onclick="distillMindGraph(this)"
+              title="Fold the new things you've said into her durable people/places/things graph now. This normally happens on its own while she's idle.">Distill chat history now</button>
     </div>
     <div class="mem-layout">
       <div id="memList" class="mem-list"></div>
@@ -1195,6 +1205,34 @@ async function loadMemory() {
   if (memSelId !== '__new__' && !memEntries.find(e => e.id === memSelId))
     memSelId = memEntries.length ? memEntries[0].id : null;
   renderMemList(); renderMemEditor(); updateMemCount();
+  loadMindGraphStats();
+}
+// ── Long-term memory (durable mind-graph) ────────────────────────────────────
+async function loadMindGraphStats(){
+  const el = document.getElementById('mgStats'), btn = document.getElementById('mgBtn');
+  if (!el) return;
+  try {
+    const s = await (await fetch('/api/mind_graph')).json();
+    if (!s.enabled){
+      el.innerHTML = 'is off — switch on <b>Long-term memory</b> in Settings to build it from your chats';
+      if (btn) btn.disabled = true;
+      return;
+    }
+    if (btn) btn.disabled = false;
+    el.textContent = `${s.nodes} thing(s) known, ${s.edges} relation(s)`
+      + (s.backlog ? ` · ${s.backlog} message(s) still to distil` : ' · all caught up');
+  } catch(e){ el.textContent = ''; }
+}
+async function distillMindGraph(btn){
+  const s = document.getElementById('mstatus');
+  btn.disabled = true; const old = btn.textContent; btn.textContent = 'requesting…';
+  try {
+    const d = await (await fetch('/api/mind_graph/distill', {method:'POST', body:'{}'})).json();
+    if (d.ok) flash(s, true, 'requested ✓ — she distils it on her next idle moment; the count grows as she does (Refresh to watch)');
+    else flash(s, false, d.error || 'could not queue the distill');
+  } catch(e){ flash(s, false, 'request failed'); }
+  btn.textContent = old; btn.disabled = false;
+  setTimeout(loadMindGraphStats, 800);
 }
 function updateMemCount() {
   const n = memEntries.length, emb = memEntries.filter(e => e.has_embedding).length;
