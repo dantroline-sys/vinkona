@@ -137,6 +137,9 @@
                    padding:8px 12px; margin-top:6px; border-radius:0 6px 6px 0; max-width:820px; }
   .cfg-field input[type=checkbox] { width:auto; }
   .cfg-field .ctl { min-width:0; }
+  .ctl-secret { display:flex; gap:6px; align-items:center; min-width:0; }
+  .ctl-secret input { flex:1; min-width:0; }
+  .ctl-secret .reveal { flex:none; padding:4px 8px; font-size:12px; }
   /* Working-memory inspector */
   .wg-metrics { display:flex; flex-wrap:wrap; gap:8px; margin:6px 0 12px; }
   .wg-chip { background:#161920; border:1px solid #2c303a; border-radius:6px; padding:6px 10px; font-size:12px; color:#9aa3b2; }
@@ -1958,16 +1961,32 @@ function widgetFor(parent, key, t){
   }
   if (t === 'objarray'){ return jsonEditor(parent, key); }   // list of objects → localized JSON editor
   // string or null
-  const isPrompt = /prompt$/.test(key) || (typeof v === 'string' && (v.length > 80 || v.includes('\n')));
+  // Secret-like keys (auth token, api key, passphrase…) render obfuscated, never clear text.
+  // Matches token / auth_token / hf_token / secret / passphrase / password / api_key; NOT
+  // token_file (a path) or max_tokens (a number, handled above).
+  const isSecret = /(^|_)(token|secret|passphrase|password|api_?key)$/i.test(key);
+  const isPrompt = !isSecret && (/prompt$/.test(key) || (typeof v === 'string' && (v.length > 80 || v.includes('\n'))));
   const el = document.createElement(isPrompt ? 'textarea' : 'input');
   if (isPrompt) el.className = 'prompt';
+  if (isSecret){
+    el.type = 'password'; el.autocomplete = 'off'; el.spellcheck = false;
+    el.title = 'stored value — obfuscated; use “show” to reveal while pasting';
+  }
   el.value = v == null ? '' : v;
-  if (v == null) el.placeholder = '(unset — uses the built-in default)';
+  if (v == null) el.placeholder = isSecret ? '(unset)' : '(unset — uses the built-in default)';
   el.oninput = () => {
     if (el.value === '') parent[key] = (/prompt$/.test(key) || v === null) ? null : '';
     else parent[key] = el.value;
   };
-  return el;
+  if (!isSecret) return el;
+  // wrap the masked field with a small show/hide toggle so a pasted token can be verified
+  const wrap = document.createElement('span'); wrap.className = 'ctl-secret';
+  const eye = document.createElement('button'); eye.type = 'button'; eye.className = 'btn secondary reveal';
+  eye.textContent = 'show'; eye.tabIndex = -1;
+  eye.onclick = () => { const on = el.type === 'password';
+    el.type = on ? 'text' : 'password'; eye.textContent = on ? 'hide' : 'show'; };
+  wrap.appendChild(el); wrap.appendChild(eye);
+  return wrap;
 }
 function jsonEditor(parent, key){
   const wrap = document.createElement('div');
