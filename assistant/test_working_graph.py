@@ -130,6 +130,28 @@ def test_common_gate():
           "world" in {g3.nodes[n]["label"] for n in g3.nodes})
 
 
+def test_load_drops_legacy_filler():
+    # A persisted snapshot written by the OLD extractor (before the commonness gate) is full of
+    # bare filler.  Loading it must NOT restore the word cloud — legacy singletons are dropped.
+    blob = {"nodes": {
+        "p:world": {"label": "world", "activation": 0.9, "last_ts": 0.0, "turns": [1], "grounds": ["the whole world"]},
+        "p:end": {"label": "end", "activation": 0.9, "last_ts": 0.0, "turns": [1], "grounds": ["in the end"]},
+        "p:perhaps": {"label": "perhaps", "activation": 0.9, "last_ts": 0.0, "turns": [1], "grounds": ["perhaps so"]},
+        "p:graphene battery": {"label": "graphene battery", "activation": 0.9, "last_ts": 0.0,
+                               "turns": [1], "grounds": ["a graphene battery lasts for years"]},
+        "p:graphene": {"label": "graphene", "activation": 0.9, "last_ts": 0.0, "turns": [1], "grounds": ["graphene sheets"]},
+    }, "edges": [{"a": "p:world", "b": "p:graphene", "weight": 3.0, "last_ts": 0.0, "turns": [1]}]}
+    g = wg.WorkingGraph({"persist_tau_s": 1e12})
+    g.load_persisted(blob, now=1.0)
+    labels = {n["label"] for n in g.nodes.values()}
+    check("legacy bare filler 'world' is not carried across sessions", "world" not in labels)
+    check("legacy bare filler 'end' is not carried", "end" not in labels)
+    check("legacy stopword 'perhaps' is not carried", "perhaps" not in labels)
+    check("a distinctive carried node survives (graphene)", "graphene" in labels)
+    check("a carried multi-word phrase survives (graphene battery)", "graphene battery" in labels)
+    check("an edge to a dropped node is not restored", not any("p:world" in k for k in g.edges))
+
+
 def test_grounded_frame_lines():
     # A frame node last mentioned long ago (its text has scrolled out of the LM's context)
     # gets its source clause inline; a just-mentioned node stays bare.
@@ -390,6 +412,7 @@ def main():
     test_bounded()
     test_grounded()
     test_common_gate()
+    test_load_drops_legacy_filler()
     test_grounded_frame_lines()
     test_grounding()
     test_briefing()

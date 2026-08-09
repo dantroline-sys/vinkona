@@ -473,7 +473,14 @@ class WorkingGraph:
         keep = int(self.c["keep_turns"])
         gmax = int(self.c["ground_max_chars"])
         gkeep = int(self.c["keep_grounds"])
+        drop_common = bool(self.c.get("drop_common_singletons", True))
         for nid, nd in sorted((data.get("nodes") or {}).items()):    # fixed order (determinism)
+            label = str(nd.get("label", nid))
+            # Don't carry legacy filler across sessions: a bare word the CURRENT extractor would
+            # never make a node (a stopword, or a common word under the gate) is dropped on load,
+            # so an old word-cloud snapshot self-heals instead of being faithfully restored.
+            if " " not in label and (label in _STOP or (drop_common and label in _COMMON)):
+                continue
             last = float(nd.get("last_ts", now))
             act = float(nd.get("activation", 0.0)) * math.exp(-max(0.0, now - last) / slow) * carry
             if act < floor:
