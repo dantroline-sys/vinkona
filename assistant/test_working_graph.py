@@ -177,26 +177,25 @@ def test_briefing_injects_held_sentences():
 
 
 def test_grounded_frame_lines():
-    # A frame node last mentioned long ago (its text has scrolled out of the LM's context)
-    # gets its source clause inline; a just-mentioned node stays bare.
-    g = wg.WorkingGraph({"tau_s": 1e12, "ground_after_turns": 3, "brief_ground_max": 3})
+    # Every held frame node gets its source clause inline — no turn-gate (a frozen config must
+    # never be able to silence the content), so even a just-mentioned node is grounded.
+    g = wg.WorkingGraph({"tau_s": 1e12})   # default cap fits all four distinct clauses
     g.ingest("the reactor runs on a graphene core, cooled by helium", now=0.0)  # turn 1
     for i, t in enumerate(["we chatted about lunch", "then the weather", "and a weekend trip"], start=1):
         g.ingest(t, now=float(i))                                               # turns 2-4
     b = g.briefing()
-    check("an old-but-hot frame node's source clause is injected inline",
+    check("a held frame node's source clause is injected inline",
           ' — "' in b and "helium" in b)
     check("the clause is the actual content, not just the label",
           "reactor runs on a graphene core" in b)
 
-    # A node mentioned THIS turn is bare — its text is still in the LM's context (stay lean).
-    g2 = wg.WorkingGraph({"tau_s": 1e12, "ground_after_turns": 3})
+    # A node mentioned THIS turn is ALSO grounded now (the fast LM may run with short context).
+    g2 = wg.WorkingGraph({"tau_s": 1e12})
     g2.ingest("the graphene core is hot", now=0.0)
-    check("a freshly-mentioned node is not grounded (bare bullet)",
-          "- graphene core\n" in g2.briefing() + "\n" and '"' not in g2.briefing())
+    check("a freshly-mentioned node is grounded too (no turn-gate)", ' — "' in g2.briefing())
 
     # Bounded: never more than brief_ground_max grounded lines.
-    g3 = wg.WorkingGraph({"tau_s": 1e12, "ground_after_turns": 1, "brief_ground_max": 2})
+    g3 = wg.WorkingGraph({"tau_s": 1e12, "brief_ground_max": 2})
     for i, t in enumerate(["alpha node one detail", "bravo node two detail", "charlie node three detail",
                            "delta node four detail", "echo now"], start=0):
         g3.ingest(t, now=float(i))
@@ -226,11 +225,11 @@ def test_grounding():
     check("a repeated clause isn't duplicated in grounds",
           g2.nodes["p:alpha token"]["grounds"].count("alpha token more") == 1)
 
-    # Within a session (no dormancy) the briefing carries NO recall line — the LM has context.
+    # Within a session (no dormancy) held content is injected but NOT flagged stale (the LM has it).
     g3 = wg.WorkingGraph()
     g3.ingest("the database index is corrupt", now=0.0)
     g3.ingest("the database index rebuild is slow", now=30.0)
-    check("within-session briefing has no 'Earlier' recall line", "Earlier" not in g3.briefing())
+    check("within-session content is not flagged stale", "may be stale" not in g3.briefing())
     check("woke count is zero with no carried nodes", g3.last_metrics["woke"] == 0)
 
     # Grounding survives the persistence round-trip.  Use a rich single-sentence source.
@@ -243,14 +242,15 @@ def test_grounding():
     g4.load_persisted(blob, now=3600.0)
     check("carried node keeps its grounds (content behind the label)",
           g4.nodes["p:north wall"]["grounds"] == rich)
-    check("a carried node is dormant and its content is not yet surfaced", "Earlier" not in g4.briefing())
+    check("a carried node is dormant and its content is not yet surfaced",
+          "window on the east" not in g4.briefing())
 
-    # Re-mention wakes it → the briefing hands back the CARRIED (older) clause, marked stale.
+    # Re-mention wakes it → the briefing hands back the CARRIED (older) clause, flagged stale inline.
     # (End the sentence ON the phrase so the extractor re-fires the same node, not a merged one.)
     g4.ingest("tell me about the north wall", now=7200.0)
     b = g4.briefing()
-    check("waking a carried node surfaces its earlier content in the briefing",
-          "Earlier (may be stale):" in b and "north wall" in b and "window on the east" in b)
+    check("waking a carried node surfaces its earlier content inline, flagged stale",
+          "(earlier, may be stale)" in b and "north wall" in b and "window on the east" in b)
     check("metrics report the reactivation (woke ≥ 1)", g4.last_metrics["woke"] >= 1)
     check("recall shows the carried clause, not the bare re-mention",
           "against the north wall" in b)

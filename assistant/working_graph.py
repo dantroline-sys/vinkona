@@ -343,28 +343,29 @@ class WorkingGraph:
             return ""
         # Grounded frame lines: hand the fast LM the actual CLAUSE behind each held phrase, not
         # just the label — that verbatim content IS the memory (without it the block is a word
-        # list).  ground_after_turns=0 (default) → always inject; >0 → only once a node's text
-        # has scrolled ground_after_turns off-screen.  Deduped: a clause shared by several phrases
-        # is shown once (the hottest node owns it, the rest stay bare).  Bounded by count + chars.
+        # list).  ONE pass over every frame node, whether it's a live phrase or a carried one that
+        # just woke from a past session (those get an "(earlier, may be stale)" flag — the LM has
+        # no rolling context for them at all).  Deduped: a clause shared by several phrases from one
+        # sentence is shown once (the hottest node owns it, the rest stay bare).  Bounded (count +
+        # chars).  No turn-gate: a frozen config must never be able to silence the content.
         lines = [_HEADER]
-        ground_after = int(self.c.get("ground_after_turns", 0))
         gmax = int(self.c.get("brief_ground_max", 6))
         gchars = int(self.c.get("brief_ground_chars", 120))
-        # Clauses already spoken by the cross-session "Earlier (may be stale)" block below own
-        # those nodes — don't also inject them inline (avoids a double, un-flagged copy).
-        seen_clauses = {" ".join(c[-1].lower().split()) for c in self._woke_grounds.values() if c}
+        seen_clauses: set = set()
         grounded = 0
         for nid in self.frame:
             nd = self.nodes[nid]
+            carried = self._woke_grounds.get(nid)              # cross-session clauses (no context at all)
+            source = carried if carried else (nd.get("grounds") or [])
             clause = None
-            if (grounded < gmax and nid not in self._woke_grounds
-                    and (self._turn - int(nd.get("last_boost_turn", self._turn))) >= ground_after):
-                for g in reversed(nd.get("grounds") or []):        # most recent distinct clause
+            if grounded < gmax:
+                for g in reversed(source):                     # most recent distinct clause
                     key = " ".join(g.lower().split())
                     if key and key not in seen_clauses:
                         clause = g[:gchars]; seen_clauses.add(key); break
             if clause:
-                lines.append(f'- {nd["label"]} — "{clause}"'); grounded += 1
+                mark = " (earlier, may be stale)" if carried else ""
+                lines.append(f'- {nd["label"]} — "{clause}"{mark}'); grounded += 1
             else:
                 lines.append(f"- {nd['label']}")
         threads = sorted(self.edges.items(),
@@ -373,18 +374,6 @@ class WorkingGraph:
                for (a, b), _ in threads if a in self.nodes and b in self.nodes]
         if thr:
             lines.append("Threads: " + "; ".join(thr))
-        # A carried association that just woke: hand back the clause it carried in from an
-        # earlier session — the LM has no rolling context for it, so this is the tangible
-        # recall.  Marked stale (it may be out of date); bounded, and only for woken nodes.
-        recalled = []
-        for nid in self.frame:
-            carried = self._woke_grounds.get(nid)
-            if carried:
-                recalled.append(f'{self.nodes[nid]["label"]} — "{carried[-1]}"')
-            if len(recalled) >= int(self.c["brief_recall"]):
-                break
-        if recalled:
-            lines.append("Earlier (may be stale): " + "; ".join(recalled))
         return "\n".join(lines)[: int(self.c["brief_max_chars"])]
 
     def stats(self) -> dict:
