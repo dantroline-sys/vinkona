@@ -130,6 +130,38 @@ def test_common_gate():
           "world" in {g3.nodes[n]["label"] for n in g3.nodes})
 
 
+def test_grounded_frame_lines():
+    # A frame node last mentioned long ago (its text has scrolled out of the LM's context)
+    # gets its source clause inline; a just-mentioned node stays bare.
+    g = wg.WorkingGraph({"tau_s": 1e12, "ground_after_turns": 3, "brief_ground_max": 3})
+    g.ingest("the reactor runs on a graphene core, cooled by helium", now=0.0)  # turn 1
+    for i, t in enumerate(["we chatted about lunch", "then the weather", "and a weekend trip"], start=1):
+        g.ingest(t, now=float(i))                                               # turns 2-4
+    b = g.briefing()
+    check("an old-but-hot frame node shows its source clause inline",
+          '- graphene core — "' in b and "helium" in b)
+    check("the clause is the actual content, not just the label",
+          "reactor runs on a graphene core" in b)
+
+    # A node mentioned THIS turn is bare — its text is still in the LM's context (stay lean).
+    g2 = wg.WorkingGraph({"tau_s": 1e12, "ground_after_turns": 3})
+    g2.ingest("the graphene core is hot", now=0.0)
+    check("a freshly-mentioned node is not grounded (bare bullet)",
+          "- graphene core\n" in g2.briefing() + "\n" and '"' not in g2.briefing())
+
+    # Bounded: never more than brief_ground_max grounded lines.
+    g3 = wg.WorkingGraph({"tau_s": 1e12, "ground_after_turns": 1, "brief_ground_max": 2})
+    for i, t in enumerate(["alpha node one detail", "bravo node two detail", "charlie node three detail",
+                           "delta node four detail", "echo now"], start=0):
+        g3.ingest(t, now=float(i))
+    check("grounded lines are capped at brief_ground_max",
+          g3.briefing().count(' — "') <= 2)
+    check("grounded frame lines are deterministic on replay",
+          (lambda mk: mk() == mk())(lambda: (lambda gg: [gg.ingest(x, now=float(j)) for j, x in
+              enumerate(["the graphene core detail here", "b", "c", "d"])] and gg.briefing())(
+              wg.WorkingGraph({"tau_s": 1e12, "ground_after_turns": 2}))))
+
+
 def test_grounding():
     # A node keeps the verbatim clause its phrase came from (a recall handle, not just a label),
     # and only ITS own sentence — not the rest of a multi-sentence turn.
@@ -358,6 +390,7 @@ def main():
     test_bounded()
     test_grounded()
     test_common_gate()
+    test_grounded_frame_lines()
     test_grounding()
     test_briefing()
     test_replay_determinism()

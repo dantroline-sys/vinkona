@@ -103,8 +103,11 @@ DEFAULTS: dict = {
     "drop_common_singletons": True,  # a bare high-frequency word (world/new/end) is filler, not a
                                 #   cue — drop it as a node; it survives inside a multi-word phrase
     "link_top": 6,              # …and lay co-occurrence edges among the best this many
-    "brief_max_chars": 700,     # hard cap on the rendered briefing
+    "brief_max_chars": 900,     # hard cap on the rendered briefing
     "brief_threads": 5,         # hottest edges shown as "threads"
+    "ground_after_turns": 6,    # a frame node unmentioned this many turns → show its source clause
+    "brief_ground_max": 3,      # …at most this many grounded lines per briefing
+    "brief_ground_chars": 120,  # …each clause truncated to this many chars in the briefing
     "keep_turns": 8,            # bound the per-node / per-edge supporting-turn lists
     # Grounding snippets: with each phrase we keep the clause it came from, so a node is a
     # recall *handle* (content behind it), not just a label.  Surfaced in the briefing ONLY
@@ -337,9 +340,24 @@ class WorkingGraph:
         graph is cold (so with the graph off/empty the prompt is unchanged — G-1/G-ACCEL)."""
         if not self.frame:
             return ""
+        # Grounded frame lines: a node still hot in the frame but last mentioned many turns
+        # ago has almost certainly scrolled out of the fast LM's rolling context — so hand
+        # back the clause it came from, turning "- graphene" into a memory cue the LM can't
+        # otherwise see.  Recent nodes stay bare (their text is still in context — keep it lean).
         lines = [_HEADER]
+        ground_after = int(self.c.get("ground_after_turns", 6))
+        gmax = int(self.c.get("brief_ground_max", 3))
+        gchars = int(self.c.get("brief_ground_chars", 120))
+        grounded = 0
         for nid in self.frame:
-            lines.append(f"- {self.nodes[nid]['label']}")
+            nd = self.nodes[nid]
+            g = nd.get("grounds") or []
+            if (g and grounded < gmax
+                    and (self._turn - int(nd.get("last_boost_turn", self._turn))) >= ground_after):
+                lines.append(f'- {nd["label"]} — "{g[-1][:gchars]}"')
+                grounded += 1
+            else:
+                lines.append(f"- {nd['label']}")
         threads = sorted(self.edges.items(),
                          key=lambda kv: (-kv[1]["weight"], _neg_key(kv[0])))[: int(self.c["brief_threads"])]
         thr = [f"{self.nodes[a]['label']} · {self.nodes[b]['label']}"

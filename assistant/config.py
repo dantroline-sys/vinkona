@@ -571,8 +571,13 @@ DEFAULTS: dict = {
             "drop_common_singletons": True,  # drop bare high-frequency words (world/new/end) as
                                      #   nodes — they're filler; kept inside multi-word phrases
             "link_top": 6,           # …and edges laid among the best this many
-            "brief_max_chars": 700,  # hard cap on the briefing block
+            "brief_max_chars": 900,  # hard cap on the briefing block
             "brief_threads": 5,      # hottest edges shown as "threads"
+            # Grounded frame lines: a frame node last mentioned ≥ground_after_turns ago has
+            # scrolled out of the fast LM's context — surface the clause it came from as a cue.
+            "ground_after_turns": 6,
+            "brief_ground_max": 3,   # at most this many grounded lines per briefing
+            "brief_ground_chars": 120,
             "keep_turns": 8,         # bound per-node / per-edge supporting-turn lists
             # Grounding: keep the clause each phrase came from, so a node is a recall handle,
             # not just a label. Surfaced in the briefing only when a carried node wakes.
