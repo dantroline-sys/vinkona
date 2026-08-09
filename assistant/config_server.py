@@ -641,6 +641,16 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, {"help": HELPMOD.load(Path(__file__).parent)})
             except Exception as e:
                 return self._json(500, {"error": str(e)})
+        if path == "/api/field_levels":
+            # Audience tier per dotted config path, so the Settings form can default to a small
+            # "Basic" view and reveal advanced/expert on demand.  Only non-default entries are
+            # sent; the client treats anything absent as 'advanced'.  See config.FIELD_LEVELS.
+            try:
+                return self._json(200, {"levels": CFGMOD.resolved_field_levels(self._cfg()),
+                                        "default": CFGMOD.LEVEL_DEFAULT,
+                                        "order": CFGMOD.LEVEL_ORDER})
+            except Exception as e:
+                return self._json(500, {"error": str(e)})
         if path == "/api/net":                        # the egress broker's window
             try:
                 netadmin = _load_mod("netadmin")

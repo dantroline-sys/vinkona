@@ -1277,6 +1277,111 @@ DEFAULTS: dict = {
 }
 
 
+# ── Settings-form audience tiers ───────────────────────────────────────────────────
+# The Settings form is generated from every DEFAULTS key (~450 of them), which buries a
+# newcomer.  Each field gets an audience LEVEL so the UI can default to a small "Basic" view:
+#   basic    — the handful per section that shape the everyday experience (on/off, which voice)
+#   advanced — tuning a power user might touch (intervals, caps, prompts)      [DEFAULT if unlisted]
+#   expert   — internals almost nobody should touch (decay/lock constants, recall weights, VAD
+#              probabilities, engine sampling params)
+# Entries are dotted paths; a trailing ".*" tiers a whole subtree at once.  An EXACT path wins
+# over any prefix, and the LONGEST prefix wins among prefixes — so a subtree can be globbed to
+# 'expert' and a couple of its keys promoted back to 'basic'.  Anything unlisted ⇒ 'advanced'.
+# This is the single curation point; keeping it small is the whole idea — most knobs SHOULD be
+# advanced/expert.  test_field_levels.py asserts every exact path and every glob prefix here
+# still resolves against DEFAULTS, so a renamed knob fails loudly instead of silently mis-tiering.
+LEVEL_DEFAULT = "advanced"
+LEVEL_ORDER = {"basic": 0, "advanced": 1, "expert": 2}
+
+FIELD_LEVELS: dict[str, str] = {
+    # — the everyday on/off + experience choices, one to three per feature —
+    "awareness.inject_time": "basic",
+    "awareness.location": "basic",
+    "awareness.holidays_country": "basic",
+    "default_persona": "basic",
+    "people.enabled": "basic",
+    "affect.enabled": "basic",
+    "asides.enabled": "basic",
+    "tts.engine": "basic",
+    "tts.default_voice": "basic",
+    "memory.enabled": "basic",
+    "memory.grounding.enabled": "basic",
+    "memory.working_graph.enabled": "basic",
+    "memory.working_graph.persist.enabled": "basic",
+    "memory.mind_graph.enabled": "basic",
+    "tools.enabled": "basic",
+    "tools.confirm_required": "basic",
+    "tools.wikipedia": "basic",
+    "tools.calculator": "basic",
+    "music.enabled": "basic",
+    "knowledge.enabled": "basic",
+    "knowledge_host.enabled": "basic",
+    "local_kb.enabled": "basic",
+    "research.enabled": "basic",
+    "research.web_search": "basic",
+    "research.scholarly": "basic",
+    "research.rss.enabled": "basic",
+    "research.rss.digest.enabled": "basic",
+    "research.idle.enabled": "basic",
+    "research.plans.enabled": "basic",
+    "research.plans.surface_user_questions": "basic",
+    "ambient.enabled": "basic",
+    "notifications.enabled": "basic",
+    "notifications.lead_times_min": "basic",
+    "spontaneity.enabled": "basic",
+    "proactive.enabled": "basic",
+    "calendar_sync.enabled": "basic",
+    # — noisy internal subtrees globbed down, with a few useful knobs promoted back up —
+    "vad.*": "expert",                                  # onset/offset probabilities & frame counts
+    "memory.weights.*": "expert",                       # recall-ranking weight tuning
+    "memory.embed_prefixes.*": "expert",
+    "memory.working_graph.*": "expert",                 # 30+ decay/lock/brief constants…
+    "memory.working_graph.drop_common_singletons": "advanced",   # …but a few are power-user knobs
+    "memory.working_graph.brief_max_chars": "advanced",
+    "memory.working_graph.brief_threads": "advanced",
+    "memory.working_graph.keep_turns": "advanced",
+    "big_lm.deliberate.*": "expert",                    # deliberation-loop timing internals
+    "big_lm.context.*": "expert",                       # per-task context-window budgets
+    "tts.orpheus_gguf.*": "expert",                     # sampling params for the default TTS engine
+}
+
+
+def field_level(path: str) -> str:
+    """The audience tier for a dotted config path: exact match wins, else the longest matching
+    ``prefix.*`` glob, else ``LEVEL_DEFAULT`` ('advanced').  Pure lookup — no DEFAULTS access."""
+    lvl = FIELD_LEVELS.get(path)
+    if lvl is not None:
+        return lvl
+    best, best_len = LEVEL_DEFAULT, -1
+    for k, v in FIELD_LEVELS.items():
+        if k.endswith(".*"):
+            pre = k[:-2]
+            if (path == pre or path.startswith(pre + ".")) and len(pre) > best_len:
+                best, best_len = v, len(pre)
+    return best
+
+
+def resolved_field_levels(cfg: dict | None = None) -> dict:
+    """``{dotted_leaf_path: level}`` for every field whose tier isn't the default, computed over
+    ``cfg`` (defaults to DEFAULTS).  The Settings UI fetches this to show/hide fields per tier;
+    only non-default entries are sent, so the client treats anything absent as 'advanced'."""
+    tree = DEFAULTS if cfg is None else cfg
+    out: dict = {}
+
+    def walk(d: dict, p: str = "") -> None:
+        for k, v in d.items():
+            dp = f"{p}.{k}" if p else k
+            if isinstance(v, dict):
+                walk(v, dp)
+            else:
+                lvl = field_level(dp)
+                if lvl != LEVEL_DEFAULT:
+                    out[dp] = lvl
+
+    walk(tree)
+    return out
+
+
 def resolve_read(path: str | Path) -> Path:
     """Path to actually read: the user's file if present, else its `.example` sibling.
 

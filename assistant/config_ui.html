@@ -166,6 +166,13 @@
   textarea.cfg-json.err { border-color:#f08a8a; }
   .cfg-err { color:#f08a8a; font-size:11px; margin-top:3px; }
   .cfg-search { margin:10px 0 4px; }
+  .cfg-levelbar { display:flex; align-items:center; gap:10px; margin:10px 0 2px; flex-wrap:wrap; }
+  .cfg-levellabel { font-size:12px; color:#9aa3b2; }
+  .seg-group { display:inline-flex; border:1px solid #2c303a; border-radius:7px; overflow:hidden; }
+  .seg-group .seg { background:#161920; color:#9aa3b2; border:none; padding:5px 13px; font-size:13px; cursor:pointer; }
+  .seg-group .seg + .seg { border-left:1px solid #2c303a; }
+  .seg-group .seg.active { background:#2c303a; color:#e6e8ec; font-weight:600; }
+  .cfg-levelnote { font-size:12px; }
   .cfg-hide { display:none !important; }
   @media (max-width:680px){ .cfg-field{ grid-template-columns:1fr; } }
 </style>
@@ -522,7 +529,16 @@
 
   <section id="tab-settings" class="tab">
     <h2>Settings <span class="muted">— every option in config.json, structured. New options appear here automatically.</span></h2>
-    <input id="cfgSearch" class="cfg-search" placeholder="Filter settings…  (e.g. calendar, timeout, port)" oninput="filterConfig(this.value)">
+    <div class="cfg-levelbar">
+      <span class="cfg-levellabel">Show:</span>
+      <div id="cfgLevelSeg" class="seg-group">
+        <button class="seg" data-level="basic" onclick="setCfgLevel('basic')" title="Just the everyday choices — on/off and which-voice">Basic</button>
+        <button class="seg" data-level="advanced" onclick="setCfgLevel('advanced')" title="Tuning a power user might touch">Advanced</button>
+        <button class="seg" data-level="expert" onclick="setCfgLevel('expert')" title="Every internal knob, including decay constants and thresholds">Expert</button>
+      </div>
+      <span id="cfgLevelNote" class="cfg-levelnote muted"></span>
+    </div>
+    <input id="cfgSearch" class="cfg-search" placeholder="Filter settings…  (searches every tier)" oninput="filterConfig(this.value)">
     <div id="cfgForm"></div>
     <div class="bar">
       <button class="btn" onclick="saveConfig()">Save settings</button>
@@ -1881,8 +1897,10 @@ function nodeType(v){
   return 'string';
 }
 async function loadConfig() {
+  await loadFieldLevels();
   _cfgObj = JSON.parse(await (await fetch('/api/config')).text());
-  renderConfigForm();
+  setCfgLevel(cfgLevel);                 // reflect the saved tier on the segmented control
+  renderConfigForm();                    // renders, then applyCfgView() shows the current tier
   document.getElementById('rawConfig').value = JSON.stringify(_cfgObj, null, 2);
 }
 function renderConfigForm(){
@@ -1891,8 +1909,8 @@ function renderConfigForm(){
     if (CFG_SKIP.has(key)) continue;
     root.appendChild(renderNode(_cfgObj, key, [key], true));
   }
-  const q = document.getElementById('cfgSearch').value;
-  if (q) filterConfig(q);
+  cfgQuery = (document.getElementById('cfgSearch').value || '').trim().toLowerCase();
+  applyCfgView();
 }
 // Render parent[key]; objects become collapsible groups, everything else a labelled widget.
 // Help: HELP[dotted.path] (from /api/help — config.py's own comments) hangs a ? on the
@@ -1926,6 +1944,7 @@ function renderNode(parent, key, path, top){
   field.className = 'cfg-field' + (t === 'bool' ? ' bool' : '');
   // searchable by path AND by help words, so "stutter"/"penalty" finds the knob
   field.dataset.search = (dp + ' ' + (HELP[dp] || '')).toLowerCase();
+  field.dataset.level = fieldLevel(dp);              // basic | advanced | expert (audience tier)
   const lab = document.createElement('label'); lab.textContent = humanize(key);
   if (HELP[dp]) {
     const hd = document.createElement('div'); hd.className = 'cfg-help';
@@ -2014,16 +2033,42 @@ function applyRaw() {
   catch(e){ flash(s, false, 'invalid JSON: '+e.message); return; }
   renderConfigForm(); flash(s, true, 'applied to form ✓ — review, then Save settings');
 }
-function filterConfig(q){
-  q = (q || '').trim().toLowerCase();
-  for (const f of document.querySelectorAll('#cfgForm .cfg-field'))
-    f.classList.toggle('cfg-hide', !!q && !f.dataset.search.includes(q));
+// Audience tiers: default to a small "Basic" view, reveal Advanced/Expert on demand. Levels come
+// from /api/field_levels (config.FIELD_LEVELS); anything absent is 'advanced'. A search cuts across
+// ALL tiers so a knob is always findable by name, even one the current tier hides.
+let LEVELS = {}, LEVEL_ORDER = { basic:0, advanced:1, expert:2 }, LEVEL_DEFAULT = 'advanced';
+let cfgLevel = localStorage.getItem('cfgLevel') || 'basic';
+let cfgQuery = '';
+async function loadFieldLevels(){
+  try { const d = await (await fetch('/api/field_levels')).json();
+        LEVELS = d.levels || {}; if (d.order) LEVEL_ORDER = d.order; if (d.default) LEVEL_DEFAULT = d.default;
+  } catch(e){ LEVELS = {}; }
+}
+function fieldLevel(dp){ return LEVELS[dp] || LEVEL_DEFAULT; }
+function setCfgLevel(lvl){
+  cfgLevel = lvl; try { localStorage.setItem('cfgLevel', lvl); } catch(e){}
+  for (const b of document.querySelectorAll('#cfgLevelSeg .seg')) b.classList.toggle('active', b.dataset.level === lvl);
+  applyCfgView();
+}
+function applyCfgView(){
+  const maxRank = LEVEL_ORDER[cfgLevel] ?? 0, q = cfgQuery;
+  let tierHidden = 0;
+  for (const f of document.querySelectorAll('#cfgForm .cfg-field')){
+    const lvlOk = (LEVEL_ORDER[f.dataset.level] ?? 1) <= maxRank;
+    const qOk = !q || f.dataset.search.includes(q);
+    f.classList.toggle('cfg-hide', !(q ? qOk : lvlOk));    // searching overrides the tier filter
+    if (!q && !lvlOk) tierHidden++;
+  }
   for (const g of document.querySelectorAll('#cfgForm .cfg-group')){
     const anyVisible = g.querySelector('.cfg-field:not(.cfg-hide)');
     g.classList.toggle('cfg-hide', !anyVisible);
     if (q && anyVisible) g.open = true;
   }
+  const note = document.getElementById('cfgLevelNote');
+  if (note) note.textContent = (!q && tierHidden)
+    ? `+${tierHidden} more setting${tierHidden===1?'':'s'} in ${cfgLevel==='basic'?'Advanced / Expert':'Expert'}` : '';
 }
+function filterConfig(q){ cfgQuery = (q || '').trim().toLowerCase(); applyCfgView(); }
 
 // Point the "Open text chat" link at the cascade server (served from its port).
 async function setChatLink() {
