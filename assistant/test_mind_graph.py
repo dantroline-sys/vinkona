@@ -243,8 +243,43 @@ def test_catch_up_backfills_old_chats():
     check("a new turn is distilled without re-processing the old", st4["turns"] == 1)
 
 
+def test_failed_extraction_does_not_advance():
+    db = fresh_db()
+    add_turn(db, "user", "My sister Mara lives in Bristol.")
+    g = mg.MindGraph(db)
+    # A FAILED extraction call (None: LM down / non-JSON) must NOT advance the checkpoint —
+    # else the turn is silently 'processed' to nothing and can never be revisited.
+    st = distill(g, None)
+    check("a failed extraction is flagged, not folded", st.get("failed") is True and st["turns"] == 1)
+    check("a failed extraction leaves the whole backlog intact", g.backlog() == 1)
+    check("nothing was folded on failure (only the locked anchor exists, no edges)",
+          g.stats()["nodes"] == 1 and g.stats()["edges"] == 0)
+    # once the LM is back, the SAME turn distils normally (it was never checkpointed away)
+    distill(g, {"nodes": [{"type": "person", "label": "Mara"}],
+                "edges": [{"src": "user", "dst": "Mara", "rel": "sibling_of", "quote": "My sister Mara"}]})
+    check("the retried turn folds and now advances", g.backlog() == 0 and g.stats()["edges"] == 1)
+    # an EMPTY-but-successful extraction ({}) DOES advance (the LM genuinely found nothing)
+    add_turn(db, "user", "Just chatting, nothing to note.")
+    st2 = distill(g, {})
+    check("an empty successful extraction advances (no infinite retry)",
+          st2.get("failed") is None and g.backlog() == 0)
+
+
+def test_catch_up_stops_on_failure():
+    db = fresh_db()
+    for i in range(4):
+        add_turn(db, "user", f"Message number {i} to distil.")
+    g = mg.MindGraph(db, {"distill_batch_turns": 1, "distill_max_batches": 6})
+    st = asyncio.run(g.catch_up(stub(None)))            # every call fails
+    check("catch_up stops on failure instead of looping the cap", st.get("failed") is True
+          and st["batches"] == 0)
+    check("catch_up preserves the full backlog on failure", st["backlog"] == 4)
+
+
 def main():
     test_anchor_and_schema()
+    test_failed_extraction_does_not_advance()
+    test_catch_up_stops_on_failure()
     test_grounded_fold()
     test_grounding_refuses_invention()
     test_identity_firewall()

@@ -79,6 +79,21 @@ def test_request_sets_worker_flag():
     check("the worker flag mind_graph_request lands in worker_state", row is not None and row[0])
 
 
+def test_reset_rewinds_checkpoint_and_requeues():
+    path = _build_db()                                   # 2 of 3 user turns distilled → backlog 1
+    before = _adm(path).mind_graph_stats()
+    check("precondition: some turns already processed", before["processed"] >= 1)
+    r = _adm(path).reset_mind_graph_checkpoint()
+    check("reset reports ok", r.get("ok") and r.get("reset"))
+    after = _adm(path).mind_graph_stats()
+    check("after reset the whole transcript is backlog again (nothing processed)",
+          after["processed"] == 0 and after["backlog"] == after["total"])
+    c = sqlite3.connect(path)
+    row = c.execute("SELECT value FROM worker_state WHERE key='mind_graph_request'").fetchone()
+    c.close()
+    check("reset also queues a re-distill for the worker", row is not None and row[0])
+
+
 def test_request_guarded_when_off():
     path = _build_db()
     r = _adm(path, enabled=False).request_mind_graph_distill()
@@ -121,6 +136,7 @@ def test_stats_empty_db_is_zero_not_error():
 def main():
     test_stats_reads_graph_and_backlog()
     test_request_sets_worker_flag()
+    test_reset_rewinds_checkpoint_and_requeues()
     test_request_guarded_when_off()
     test_snapshot_renders_grounded_relations()
     test_snapshot_empty_db_is_empty_not_error()

@@ -178,8 +178,14 @@ class MindGraph:
 
     async def distill(self, extract_fn: tp.Callable, *, now: tp.Optional[float] = None) -> dict:
         """Fold new user turns into the graph.  `extract_fn(prompt)` performs the LM call and
-        returns the parsed JSON dict (or None) — injected so this is deterministic + testable.
-        Returns a stats dict.  A no-op (advances nothing) when there is nothing new."""
+        returns the parsed JSON dict (or None on a FAILED call) — injected so this is deterministic
+        + testable.  Returns a stats dict; a no-op (advances nothing) when there is nothing new.
+
+        CRITICAL: the checkpoint is advanced ONLY when the extraction call SUCCEEDS (returns a
+        dict — even an empty one, meaning the LM genuinely found nothing to assert).  If the call
+        FAILS (None: big LM down / non-JSON / timeout) the checkpoint is LEFT WHERE IT IS, so a
+        spell of big-LM trouble can never silently 'process' turns to nothing and strand them
+        beyond reach — the backlog stays and the next pass retries them."""
         now = time.time() if now is None else now
         turns = self._new_user_turns(int(self.c["distill_batch_turns"]))
         if not turns:
@@ -187,8 +193,10 @@ class MindGraph:
         data = extract_fn(self.build_prompt(turns))
         if hasattr(data, "__await__"):
             data = await data
-        stats = self._fold(data or {}, turns, now)
-        self._set_last_id(max(t["id"] for t in turns))
+        if data is None:                                  # the LM call FAILED — do not advance
+            return {"turns": len(turns), "nodes": 0, "edges": 0, "refused": 0, "failed": True}
+        stats = self._fold(data, turns, now)
+        self._set_last_id(max(t["id"] for t in turns))    # only on a successful extraction
         self.db.commit()
         stats["turns"] = len(turns)
         return stats
@@ -210,6 +218,9 @@ class MindGraph:
         total = {"turns": 0, "nodes": 0, "edges": 0, "refused": 0, "batches": 0}
         for _ in range(max(1, cap)):
             st = await self.distill(extract_fn, now=now)
+            if st.get("failed"):                       # LM call failed — stop; backlog is preserved
+                total["failed"] = True
+                break
             if not st.get("turns"):
                 break                                  # caught up — nothing new to fold
             for k in ("turns", "nodes", "edges", "refused"):

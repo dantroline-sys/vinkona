@@ -407,6 +407,27 @@ class MemoryAdmin:
             c.commit()
         return {"ok": True, "queued": True}
 
+    def reset_mind_graph_checkpoint(self) -> dict:
+        """Rewind the distill checkpoint to the start so EVERY chat message is re-distilled.  The
+        un-stick for the case where the checkpoint advanced but nothing was folded (the big LM was
+        down during distillation): the graph is empty yet the backlog reads 0.  Re-folding over the
+        turns is idempotent (corroboration / supersede-in-order), so this rebuilds cleanly.  Also
+        queues a distill so the worker reprocesses on its next poll."""
+        if not (self.m.get("mind_graph") or {}).get("enabled"):
+            return {"ok": False, "error": "Long-term memory is off — switch it on in Settings first."}
+        if not Path(self.path).exists():
+            return {"ok": False, "error": "no memory db yet"}
+        with self._conn(ensure=True) as c:
+            try:
+                c.execute("UPDATE kg_state SET v='0' WHERE k='distill_last_id'")
+            except sqlite3.OperationalError:
+                pass                                       # never distilled → nothing to rewind
+            c.execute("CREATE TABLE IF NOT EXISTS worker_state (key TEXT PRIMARY KEY, value TEXT)")
+            c.execute("INSERT INTO worker_state(key,value) VALUES('mind_graph_request',?) "
+                      "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str(time.time()),))
+            c.commit()
+        return {"ok": True, "reset": True, "queued": True}
+
     def mind_graph_stats(self) -> dict:
         """Durable mind-graph size + how many USER turns are still to distil, for the Memory tab.
         Zeroes (not an error) before the kg_* tables exist.  `enabled` mirrors the config toggle so
@@ -954,6 +975,11 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/mind_graph/distill":
             try:
                 return self._json(200, MemoryAdmin(self._cfg()).request_mind_graph_distill())
+            except Exception as e:
+                return self._json(500, {"ok": False, "error": str(e)})
+        if path == "/api/mind_graph/reset":
+            try:
+                return self._json(200, MemoryAdmin(self._cfg()).reset_mind_graph_checkpoint())
             except Exception as e:
                 return self._json(500, {"ok": False, "error": str(e)})
         if path == "/api/reconcile":

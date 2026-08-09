@@ -1226,7 +1226,10 @@ async def main():
         if _mgc.get("enabled") and big.get("url"):
             try:
                 st = await memory.distill_mind_graph(big["url"], big["model"])
-                if st and (st.get("nodes") or st.get("edges") or st.get("backlog")):
+                if st and st.get("failed"):
+                    _log("mind-graph: the big LM returned nothing usable — backlog left intact to retry")
+                    trace.write(kind="mind_graph", **st, store_size=len(memory.entries))
+                elif st and (st.get("nodes") or st.get("edges") or st.get("backlog")):
                     _log(f"mind-graph: +{st.get('nodes',0)} node(s)/+{st.get('edges',0)} edge(s), "
                          f"{st.get('refused',0)} refused, {st.get('backlog',0)} still to distil")
                     trace.write(kind="mind_graph", **st, store_size=len(memory.entries))
@@ -1789,9 +1792,13 @@ async def main():
                 if mgc.get("enabled") and big.get("url"):
                     try:
                         st = await run_big(memory.distill_mind_graph(big["url"], big["model"]))
-                        if st:
+                        if st and st.get("failed"):
+                            _log("mind-graph (forced): the big LM returned nothing usable — is it "
+                                 "serving and does it support JSON output? backlog left intact to retry")
+                        elif st:
                             _log(f"mind-graph (forced): +{st.get('nodes',0)} node(s)/+{st.get('edges',0)} "
                                  f"edge(s), {st.get('refused',0)} refused, {st.get('backlog',0)} still to distil")
+                        if st:
                             trace.write(kind="mind_graph", forced=True, **st,
                                         store_size=len(memory.entries))
                     except Exception as e:
