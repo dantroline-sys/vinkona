@@ -651,6 +651,14 @@ class Handler(BaseHTTPRequestHandler):
                                         "order": CFGMOD.LEVEL_ORDER})
             except Exception as e:
                 return self._json(500, {"error": str(e)})
+        if path == "/api/feature_recipes":
+            # Plain-English "what this does" + companion changes for each Basic on/off, so the UI
+            # can preview-then-confirm a feature toggle instead of silently flipping hidden knobs.
+            # See config.FEATURE_RECIPES.
+            try:
+                return self._json(200, {"recipes": CFGMOD.FEATURE_RECIPES})
+            except Exception as e:
+                return self._json(500, {"error": str(e)})
         if path == "/api/net":                        # the egress broker's window
             try:
                 netadmin = _load_mod("netadmin")

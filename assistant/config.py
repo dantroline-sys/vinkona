@@ -1382,6 +1382,153 @@ def resolved_field_levels(cfg: dict | None = None) -> dict:
     return out
 
 
+# ── Basic-view "feature recipes" ───────────────────────────────────────────────────
+# A Basic on/off only flips its own key, but a feature's intended experience often needs a few
+# COMPANION knobs the Basic user never sees (turn on "Research" and nothing visibly happens
+# because the background-reading switch is elsewhere).  A recipe, keyed by the feature's own
+# `*.enabled` path, carries: a plain-English summary of what the toggle does, the companion
+# `changes` (each with its own non-technical label) applied together, an optional `note` about
+# related switches left to the user, and `requires` — things that must already be set up or the
+# feature can't act.  The UI uses this for a PREVIEW-THEN-CONFIRM step: it shows what WILL happen
+# and changes nothing until the user confirms.  All copy is deliberately non-technical.
+# test_feature_recipes.py asserts every path here exists in DEFAULTS and every value matches the
+# option's type, so a renamed knob fails loudly instead of silently mis-setting.
+FEATURE_RECIPES: dict = {
+    "research.enabled": {
+        "title": "Researching on her own",
+        "enable": {
+            "summary": "She'll read up on things in the background so she can answer you better next "
+                       "time — using what she already has; she won't browse the web unless you switch "
+                       "that on separately.",
+            "changes": [{"path": "research.idle.enabled", "value": True,
+                         "label": "quiet reading while you're not talking"}],
+            "note": "Following the news and a daily digest are a separate switch (News).",
+        },
+        "disable": {
+            "summary": "She'll stop reading up on her own.",
+            "changes": [{"path": "research.idle.enabled", "value": False,
+                         "label": "background reading stops too"}],
+        },
+    },
+    "research.idle.enabled": {
+        "title": "Background reading",
+        "enable": {
+            "summary": "When you're not talking, she uses the quiet time to read up and tidy what "
+                       "she's learned.",
+            "note": "This is what “Researching on her own” switches on for you.",
+        },
+        "disable": {"summary": "She'll leave the quiet time alone."},
+    },
+    "research.rss.enabled": {
+        "title": "News",
+        "enable": {
+            "summary": "She'll keep an eye on news headlines so she can mention what's relevant to you.",
+            "changes": [{"path": "research.rss.digest.enabled", "value": True,
+                         "label": "a short daily news digest"}],
+        },
+        "disable": {
+            "summary": "She'll stop following the news.",
+            "changes": [{"path": "research.rss.digest.enabled", "value": False,
+                         "label": "the daily digest stops too"}],
+        },
+    },
+    "memory.working_graph.enabled": {
+        "title": "Working memory (the current conversation)",
+        "enable": {
+            "summary": "She keeps track of what you're talking about right now, so she can refer back "
+                       "to it naturally without you having to repeat yourself.",
+            "note": "Remembering across different conversations is the separate switch just below.",
+        },
+        "disable": {"summary": "She'll only see the recent messages, not a running picture of the chat."},
+    },
+    "memory.working_graph.persist.enabled": {
+        "title": "Carry memory across conversations",
+        "enable": {
+            "summary": "What she's holding in mind won't be wiped when a conversation ends, so she can "
+                       "pick up threads next time.",
+            "requires": [{"path": "memory.working_graph.enabled", "label": "Working memory"}],
+        },
+        "disable": {"summary": "Each conversation starts with a clean slate."},
+    },
+    "memory.mind_graph.enabled": {
+        "title": "Long-term memory of your world",
+        "enable": {
+            "summary": "Over time she'll build a private picture of the people, places and things you "
+                       "mention — from your own words — so she can recall them later.",
+            "requires": [{"path": "big_lm.url", "label": "the ‘big’ thinking model (Models tab)"}],
+            "note": "It learns only from what YOU say, while she's idle, and nothing leaves your machine.",
+        },
+        "disable": {"summary": "She'll stop building the long-term picture. What she's learned so far is kept."},
+    },
+    "tools.enabled": {
+        "title": "Doing things for you (calendar, mail, and so on)",
+        "enable": {
+            "summary": "She can use your connected tools — like reading your calendar or sending mail — "
+                       "when you ask.",
+            "requires": [{"path": "tools.url", "label": "the tool connection address"}],
+            "note": "She'll ask before doing anything that changes things, unless you turn that off.",
+        },
+        "disable": {"summary": "She'll answer from what she knows, without touching your tools."},
+    },
+    "music.enabled": {
+        "title": "Playing music",
+        "enable": {
+            "summary": "She can play music for you when you ask.",
+            "requires": [{"path": "music.tool_url", "label": "the music service address"}],
+        },
+        "disable": {"summary": "Music playback is off."},
+    },
+    "knowledge_host.enabled": {
+        "title": "Deep knowledge library",
+        "enable": {
+            "summary": "For how-to and factual questions she can consult your curated knowledge "
+                       "library, for well-grounded answers.",
+            "requires": [{"path": "knowledge_host.url", "label": "the knowledge library address"}],
+        },
+        "disable": {"summary": "She'll answer from her own memory instead of the library."},
+    },
+    "calendar_sync.enabled": {
+        "title": "Mirroring your calendar",
+        "enable": {
+            "summary": "She'll keep a copy of the relevant events on your calendar, so reminders and "
+                       "her sense of time work.",
+            "requires": [{"path": "tools.enabled", "label": "Doing things for you (the tool connection)"}],
+        },
+        "disable": {"summary": "She'll stop mirroring your calendar."},
+    },
+    "notifications.enabled": {
+        "title": "Reminders before events",
+        "enable": {
+            "summary": "She'll give you a heads-up shortly before things on your calendar.",
+            "requires": [{"path": "tools.enabled", "label": "Doing things for you (the tool connection)"}],
+        },
+        "disable": {"summary": "No advance reminders."},
+    },
+    "ambient.enabled": {
+        "title": "A sense of what's going on",
+        "enable": {"summary": "She'll keep a light awareness of the day — the time, the weather, what's "
+                              "coming up — so she feels present rather than out of the loop."},
+        "disable": {"summary": "She'll be less aware of the wider context around your conversation."},
+    },
+    "spontaneity.enabled": {
+        "title": "Bringing things up herself",
+        "enable": {"summary": "Now and then she'll mention something relevant she's come across, instead "
+                              "of only answering what you ask."},
+        "disable": {"summary": "She'll stick to answering what you ask."},
+    },
+    "affect.enabled": {
+        "title": "Emotional expressiveness",
+        "enable": {"summary": "She'll colour her replies with a little feeling, rather than staying flat."},
+        "disable": {"summary": "She'll keep an even, neutral tone."},
+    },
+    "people.enabled": {
+        "title": "Personas",
+        "enable": {"summary": "She'll take on the persona you've set — its name, voice and style."},
+        "disable": {"summary": "She'll be the plain assistant, with no persona."},
+    },
+}
+
+
 def resolve_read(path: str | Path) -> Path:
     """Path to actually read: the user's file if present, else its `.example` sibling.
 

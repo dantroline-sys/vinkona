@@ -173,6 +173,16 @@
   .seg-group .seg + .seg { border-left:1px solid #2c303a; }
   .seg-group .seg.active { background:#2c303a; color:#e6e8ec; font-weight:600; }
   .cfg-levelnote { font-size:12px; }
+  .recipe-preview { background:#12151b; border:1px solid #3d4350; border-left:3px solid #5a86c9;
+                    border-radius:0 8px 8px 0; padding:11px 14px; margin:2px 0 12px; max-width:760px; }
+  .recipe-preview .rp-head { font-size:14px; color:#e6e8ec; margin-bottom:4px; }
+  .recipe-preview .rp-sum { color:#c3c9d4; font-size:13px; line-height:1.45; }
+  .recipe-preview .rp-also { color:#9aa3b2; font-size:12px; margin-top:8px; }
+  .recipe-preview .rp-list { margin:4px 0 0; padding-left:20px; color:#c3c9d4; font-size:13px; }
+  .recipe-preview .rp-note { color:#9aa3b2; font-size:12px; margin-top:8px; font-style:italic; }
+  .recipe-preview .rp-warn { color:#f0b078; background:#241a10; border-radius:6px; padding:6px 9px;
+                             font-size:12px; margin-top:8px; }
+  .recipe-preview .rp-act { display:flex; gap:8px; margin-top:11px; }
   .cfg-hide { display:none !important; }
   @media (max-width:680px){ .cfg-field{ grid-template-columns:1fr; } }
 </style>
@@ -1897,7 +1907,7 @@ function nodeType(v){
   return 'string';
 }
 async function loadConfig() {
-  await loadFieldLevels();
+  await Promise.all([loadFieldLevels(), loadFeatureRecipes()]);
   _cfgObj = JSON.parse(await (await fetch('/api/config')).text());
   setCfgLevel(cfgLevel);                 // reflect the saved tier on the segmented control
   renderConfigForm();                    // renders, then applyCfgView() shows the current tier
@@ -1945,26 +1955,32 @@ function renderNode(parent, key, path, top){
   // searchable by path AND by help words, so "stutter"/"penalty" finds the knob
   field.dataset.search = (dp + ' ' + (HELP[dp] || '')).toLowerCase();
   field.dataset.level = fieldLevel(dp);              // basic | advanced | expert (audience tier)
+  field.dataset.path = dp;                            // for recipe companion refresh & lookup
   const lab = document.createElement('label'); lab.textContent = humanize(key);
   if (HELP[dp]) {
     const hd = document.createElement('div'); hd.className = 'cfg-help';
     hd.textContent = HELP[dp]; hd.style.display = 'none';
     lab.appendChild(helpToggle(HELP[dp], hd));
     const p = document.createElement('div'); p.className = 'cfg-path'; p.textContent = dp; lab.appendChild(p);
-    const ctl = document.createElement('div'); ctl.className = 'ctl'; ctl.appendChild(widgetFor(parent, key, t));
+    const ctl = document.createElement('div'); ctl.className = 'ctl'; ctl.appendChild(widgetFor(parent, key, t, dp));
     field.appendChild(lab); field.appendChild(ctl); field.appendChild(hd);
     return field;
   }
   const p = document.createElement('div'); p.className = 'cfg-path'; p.textContent = dp; lab.appendChild(p);
-  const ctl = document.createElement('div'); ctl.className = 'ctl'; ctl.appendChild(widgetFor(parent, key, t));
+  const ctl = document.createElement('div'); ctl.className = 'ctl'; ctl.appendChild(widgetFor(parent, key, t, dp));
   field.appendChild(lab); field.appendChild(ctl);
   return field;
 }
-function widgetFor(parent, key, t){
+function widgetFor(parent, key, t, dp){
   const v = parent[key];
   if (t === 'bool'){
     const i = document.createElement('input'); i.type = 'checkbox'; i.checked = v;
-    i.onchange = () => { parent[key] = i.checked; }; return i;
+    // A feature toggle with a recipe previews what it will do and changes nothing until confirmed;
+    // a plain toggle commits immediately as before.
+    i.onchange = RECIPES[dp]
+      ? () => openRecipePreview(dp, i, i.checked, parent, key)
+      : () => { parent[key] = i.checked; };
+    return i;
   }
   if (t === 'number'){
     const i = document.createElement('input'); i.type = 'number'; i.step = 'any'; i.value = v;
@@ -2069,6 +2085,60 @@ function applyCfgView(){
     ? `+${tierHidden} more setting${tierHidden===1?'':'s'} in ${cfgLevel==='basic'?'Advanced / Expert':'Expert'}` : '';
 }
 function filterConfig(q){ cfgQuery = (q || '').trim().toLowerCase(); applyCfgView(); }
+
+// ── Feature recipes: preview-then-confirm for Basic on/off toggles ────────────
+// A recipe (config.FEATURE_RECIPES) explains, in plain words, what a feature toggle does and which
+// companion switches move with it. Flipping such a toggle opens a preview; NOTHING changes until
+// the user confirms. Changes are staged into _cfgObj like any edit — the user still clicks Save.
+let RECIPES = {};
+async function loadFeatureRecipes(){
+  try { RECIPES = (await (await fetch('/api/feature_recipes')).json()).recipes || {}; }
+  catch(e){ RECIPES = {}; }
+}
+function getPath(obj, path){ return path.split('.').reduce((o,k)=> (o==null ? undefined : o[k]), obj); }
+function setPath(obj, path, val){
+  const ks = path.split('.'); let o = obj;
+  for (let i=0;i<ks.length-1;i++){ if (o[ks[i]]==null || typeof o[ks[i]]!=='object') o[ks[i]] = {}; o = o[ks[i]]; }
+  o[ks[ks.length-1]] = val;
+}
+function refreshWidget(path){                        // reflect a staged _cfgObj value back into its widget
+  const f = document.querySelector('#cfgForm .cfg-field[data-path="'+CSS.escape(path)+'"]');
+  if (!f) return;
+  const inp = f.querySelector('input,textarea,select'); if (!inp) return;
+  const val = getPath(_cfgObj, path);
+  if (inp.type === 'checkbox') inp.checked = !!val; else inp.value = (val==null ? '' : val);
+}
+function openRecipePreview(dp, cb, desired, parent, key){
+  const field = cb.closest('.cfg-field');
+  if (!field){ parent[key] = cb.checked; return; }    // no anchor → just commit, don't trap the user
+  const nxt = field.nextElementSibling;               // one preview per field
+  if (nxt && nxt.classList.contains('recipe-preview')) nxt.remove();
+  const rec = RECIPES[dp], block = (desired ? rec.enable : rec.disable) || {};
+  const changes = block.changes || [];
+  const unmet = desired ? (block.requires || []).filter(r => !getPath(_cfgObj, r.path)) : [];
+  let html = `<div class="rp-head">${escHtml(rec.title || humanize(key))} — <b>${desired ? 'turn on?' : 'turn off?'}</b></div>`;
+  if (block.summary) html += `<div class="rp-sum">${escHtml(block.summary)}</div>`;
+  if (unmet.length) html += `<div class="rp-warn">⚠ This needs ${unmet.map(r=>escHtml(r.label)).join(', ')} — you can turn it on, but it won't do anything until that's set up.</div>`;
+  if (changes.length){
+    html += `<div class="rp-also">It will also ${desired ? 'switch on' : 'switch off'}:</div><ul class="rp-list">`;
+    for (const c of changes) html += `<li>${escHtml(c.label)}</li>`;
+    html += '</ul>';
+  }
+  if (block.note) html += `<div class="rp-note">${escHtml(block.note)}</div>`;
+  html += `<div class="rp-act"><button class="btn" data-a="ok">${desired ? 'Turn on' : 'Turn off'}${changes.length ? ' with these' : ''}</button>`
+        + `<button class="btn secondary" data-a="no">Cancel</button></div>`;
+  const panel = document.createElement('div'); panel.className = 'recipe-preview'; panel.innerHTML = html;
+  field.after(panel);
+  panel.querySelector('[data-a="ok"]').onclick = () => {
+    parent[key] = desired;                            // the toggle itself
+    for (const c of changes){ setPath(_cfgObj, c.path, c.value); refreshWidget(c.path); }
+    panel.remove();
+    document.getElementById('rawConfig').value = JSON.stringify(_cfgObj, null, 2);
+    applyCfgView();
+    flash(document.getElementById('cstatus'), true, 'staged — click “Save settings” to keep');
+  };
+  panel.querySelector('[data-a="no"]').onclick = () => { cb.checked = !desired; panel.remove(); };
+}
 
 // Point the "Open text chat" link at the cascade server (served from its port).
 async function setChatLink() {
