@@ -693,7 +693,8 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 return self._json(200, {"levels": CFGMOD.resolved_field_levels(self._cfg()),
                                         "default": CFGMOD.LEVEL_DEFAULT,
-                                        "order": CFGMOD.LEVEL_ORDER})
+                                        "order": CFGMOD.LEVEL_ORDER,
+                                        "labels": getattr(CFGMOD, "FIELD_LABELS", {})})
             except Exception as e:
                 return self._json(500, {"error": str(e)})
         if path == "/api/feature_recipes":

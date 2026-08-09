@@ -811,22 +811,36 @@ DEFAULTS: dict = {
         # force it either way.  Results are fenced as untrusted data like any tool result.
         "wikipedia": "auto",
         "wikipedia_lang": "en",             # xx.wikipedia.org language code
-        # The Mac tool host stays bound to 127.0.0.1:8765 (never on the LAN); reach it
-        # over SSH.  Run ./serve_tunnel.sh — it forwards local 8765 → the Mac's
-        # 127.0.0.1:8765, so tools.url above resolves to it securely.
+        # Connecting Vinkona to your tools on another computer (usually a Mac).
+        # Vinkona runs HERE ("this machine"); your tools — calendar, mail, and so on —
+        # run on ANOTHER computer (your Mac).  For safety the tool host on the Mac only
+        # ever answers itself, never the network, so Vinkona reaches it through a private,
+        # encrypted SSH tunnel: it opens a port on THIS machine that quietly relays to the
+        # tool host on the Mac.  Throughout the fields below, "this machine" = where Vinkona
+        # runs and "the Mac" = where the tools run.  In practice you only fill in the Mac's
+        # address and your Mac username — the rest already fit the common setup.  One-time
+        # key generation + setup steps are in serve_tunnel.sh.
         "tunnel": {
-            "enabled": False,
-            "host": "192.168.1.50",         # ← the Mac's IP / hostname (edit this)
-            "user": "user",                 # ssh login on the Mac
-            "port": 22,                     # ssh port on the Mac
-            "identity": "~/.ssh/vinkona_tunnel",   # private key; its .pub goes in the Mac's authorized_keys
+            "enabled": False,               # turn the tunnel on once the fields below are filled in
+            "host": "192.168.1.50",         # your Mac's address on the network — its IP (e.g.
+                                            # 192.168.1.50) or hostname (e.g. macmini.local)
+            "user": "user",                 # the username you log in to your Mac with
+            "port": 22,                     # the SSH port on your Mac — almost always 22
+            "identity": "~/.ssh/vinkona_tunnel",   # the private key file used to log in to the Mac
+                                            # without a password; its ".pub" twin goes in the Mac's
+                                            # ~/.ssh/authorized_keys (see serve_tunnel.sh to make it)
+            # A free port to open ON THIS MACHINE.  Vinkona connects here and the tunnel relays it
+            # through to the Mac.  Keep it the SAME as the port in the tools address (tools.url) above
+            # — both default to 8765 — since that address is how Vinkona finds this end of the tunnel.
             "local_port": 8765,
-            "remote_host": "127.0.0.1",     # where the tool host listens on the Mac
-            "remote_port": 8765,
-            # Extra ports to forward over the SAME ssh connection (same key/host), e.g. a
-            # SearXNG instance bound to 127.0.0.1:8888 on the Mac for research's web
-            # fallback.  Each: {local_port, remote_host (default 127.0.0.1), remote_port}.
-            # Then point research.searxng_url at the local end, e.g. http://127.0.0.1:8888.
+            # Where the tool host is listening ON THE MAC.  127.0.0.1 means "the Mac talking only to
+            # itself" (that's why it's safe) — leave this as it is unless you know otherwise.
+            "remote_host": "127.0.0.1",
+            "remote_port": 8765,            # the port the tool host is listening on, over on the Mac
+            # Extra ports to relay over the SAME tunnel (same key + Mac), e.g. a SearXNG search server
+            # bound to 127.0.0.1:8888 on the Mac for research's web fallback.  Each entry:
+            # {local_port, remote_host (default 127.0.0.1), remote_port}.  Then point
+            # research.searxng_url at the this-machine end, e.g. http://127.0.0.1:8888.
             "extra_forwards": [],
         },
     },
@@ -1380,6 +1394,26 @@ def resolved_field_levels(cfg: dict | None = None) -> dict:
 
     walk(tree)
     return out
+
+
+# ── Friendly field labels ──────────────────────────────────────────────────────────
+# The Settings form title-cases each config key for its label (local_port → "Local Port").  For
+# most keys that's fine, but networking terms like local/remote port/host are perspective-dependent
+# jargon a normal user can't picture.  This map overrides the LABEL (not the value) for such fields;
+# the dotted path is still shown beneath it for reference.  Keyed by dotted path; unlisted keys keep
+# the title-cased default.  test_field_levels.py asserts every key here exists in DEFAULTS.
+FIELD_LABELS: dict[str, str] = {
+    # The SSH tunnel to the tool host — "this machine" = where Vinkona runs, "the Mac" = the tools.
+    "tools.tunnel.enabled": "Use the tunnel",
+    "tools.tunnel.host": "Your Mac's address",
+    "tools.tunnel.user": "Your Mac username",
+    "tools.tunnel.port": "Mac SSH port",
+    "tools.tunnel.identity": "Login key file",
+    "tools.tunnel.local_port": "Port to open on this machine",
+    "tools.tunnel.remote_host": "Where the tools listen on the Mac",
+    "tools.tunnel.remote_port": "The tools' port on the Mac",
+    "tools.tunnel.extra_forwards": "Extra ports to relay",
+}
 
 
 # ── Basic-view "feature recipes" ───────────────────────────────────────────────────

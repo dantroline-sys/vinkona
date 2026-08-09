@@ -1991,10 +1991,10 @@ function renderNode(parent, key, path, top){
   const field = document.createElement('div');
   field.className = 'cfg-field' + (t === 'bool' ? ' bool' : '');
   // searchable by path AND by help words, so "stutter"/"penalty" finds the knob
-  field.dataset.search = (dp + ' ' + (HELP[dp] || '')).toLowerCase();
+  field.dataset.search = (dp + ' ' + fieldLabel(dp, key) + ' ' + (HELP[dp] || '')).toLowerCase();
   field.dataset.level = fieldLevel(dp);              // basic | advanced | expert (audience tier)
   field.dataset.path = dp;                            // for recipe companion refresh & lookup
-  const lab = document.createElement('label'); lab.textContent = humanize(key);
+  const lab = document.createElement('label'); lab.textContent = fieldLabel(dp, key);
   if (HELP[dp]) {
     const hd = document.createElement('div'); hd.className = 'cfg-help';
     hd.textContent = HELP[dp]; hd.style.display = 'none';
@@ -2090,15 +2090,17 @@ function applyRaw() {
 // Audience tiers: default to a small "Basic" view, reveal Advanced/Expert on demand. Levels come
 // from /api/field_levels (config.FIELD_LEVELS); anything absent is 'advanced'. A search cuts across
 // ALL tiers so a knob is always findable by name, even one the current tier hides.
-let LEVELS = {}, LEVEL_ORDER = { basic:0, advanced:1, expert:2 }, LEVEL_DEFAULT = 'advanced';
+let LEVELS = {}, LABELS = {}, LEVEL_ORDER = { basic:0, advanced:1, expert:2 }, LEVEL_DEFAULT = 'advanced';
 let cfgLevel = localStorage.getItem('cfgLevel') || 'basic';
 let cfgQuery = '';
 async function loadFieldLevels(){
   try { const d = await (await fetch('/api/field_levels')).json();
-        LEVELS = d.levels || {}; if (d.order) LEVEL_ORDER = d.order; if (d.default) LEVEL_DEFAULT = d.default;
-  } catch(e){ LEVELS = {}; }
+        LEVELS = d.levels || {}; LABELS = d.labels || {};
+        if (d.order) LEVEL_ORDER = d.order; if (d.default) LEVEL_DEFAULT = d.default;
+  } catch(e){ LEVELS = {}; LABELS = {}; }
 }
 function fieldLevel(dp){ return LEVELS[dp] || LEVEL_DEFAULT; }
+function fieldLabel(dp, key){ return LABELS[dp] || humanize(key); }   // friendly label override
 function setCfgLevel(lvl){
   cfgLevel = lvl; try { localStorage.setItem('cfgLevel', lvl); } catch(e){}
   for (const b of document.querySelectorAll('#cfgLevelSeg .seg')) b.classList.toggle('active', b.dataset.level === lvl);
