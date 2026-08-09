@@ -189,6 +189,60 @@ def test_snapshot():
           any(n["locked"] for n in snap["nodes"] if n["id"] == mg.USER_ID))
 
 
+def _per_turn_stub():
+    """extract_fn that grounds one edge in every user turn present in the prompt (quoting it
+    verbatim), so a catch_up drain folds something from each batch regardless of size."""
+    import re as _re
+    def fn(prompt):
+        nodes, edges = [], []
+        for m in _re.finditer(r"^\[(\d+)\] (.+)$", prompt, _re.M):
+            label = f"item{m.group(1)}"
+            nodes.append({"type": "thing", "label": label})
+            edges.append({"src": "user", "dst": label, "rel": "mentioned",
+                          "quote": m.group(2).strip()[:20]})
+        return {"nodes": nodes, "edges": edges}
+    return fn
+
+
+def test_no_duplicate_distilling():
+    db = fresh_db()
+    add_turn(db, "user", "My sister Mara lives in Bristol.")
+    g = mg.MindGraph(db)
+    data = {"nodes": [{"type": "person", "label": "Mara"}, {"type": "place", "label": "Bristol"}],
+            "edges": [{"src": "user", "dst": "Mara", "rel": "sibling_of", "quote": "sister Mara"},
+                      {"src": "Mara", "dst": "Bristol", "rel": "lives_in", "quote": "lives in Bristol"}]}
+    asyncio.run(g.catch_up(stub(data)))
+    e1 = g.db.execute("SELECT COUNT(*) FROM kg_edges").fetchone()[0]
+    # re-running over already-distilled turns (no new user turns) must process nothing…
+    st = asyncio.run(g.catch_up(stub(data)))
+    e2 = g.db.execute("SELECT COUNT(*) FROM kg_edges").fetchone()[0]
+    check("a re-run over already-distilled turns processes no turns", st["turns"] == 0)
+    check("…and folds no batches", st["batches"] == 0)
+    check("…and creates no duplicate edges", e1 == 2 and e2 == 2)
+    check("stats exposes a zero backlog once caught up", g.stats()["backlog"] == 0)
+
+
+def test_catch_up_backfills_old_chats():
+    db = fresh_db()
+    for i in range(5):                                   # a backlog of 5 old user turns…
+        add_turn(db, "user", f"Historic fact number {i} that was said earlier.")
+        add_turn(db, "assistant", "noted")               # …interleaved with assistant turns
+    g = mg.MindGraph(db, {"distill_batch_turns": 1, "distill_max_batches": 3})
+    check("backlog counts unprocessed USER turns only (assistant ignored)", g.backlog() == 5)
+    st = asyncio.run(g.catch_up(_per_turn_stub()))
+    check("one pass drains up to distill_max_batches batches", st["batches"] == 3)
+    check("three old user turns were distilled this pass", st["turns"] == 3)
+    check("the backlog shrank but is not yet empty", st["backlog"] == 2)
+    st2 = asyncio.run(g.catch_up(_per_turn_stub()))
+    check("the next pass drains the remainder", st2["turns"] == 2 and st2["backlog"] == 0)
+    st3 = asyncio.run(g.catch_up(_per_turn_stub()))
+    check("once caught up a pass is a no-op", st3["turns"] == 0 and st3["batches"] == 0)
+    # a fresh turn arriving later is picked up next pass — not blocked, not re-doing the old
+    add_turn(db, "user", "A brand new fact stated just now for the record.")
+    st4 = asyncio.run(g.catch_up(_per_turn_stub()))
+    check("a new turn is distilled without re-processing the old", st4["turns"] == 1)
+
+
 def main():
     test_anchor_and_schema()
     test_grounded_fold()
@@ -199,6 +253,8 @@ def main():
     test_reversible_retract()
     test_deterministic_fold()
     test_snapshot()
+    test_no_duplicate_distilling()
+    test_catch_up_backfills_old_chats()
     print(f"\n{PASS} passed, {FAIL} failed")
     raise SystemExit(1 if FAIL else 0)
 

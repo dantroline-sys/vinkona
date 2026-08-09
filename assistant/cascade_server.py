@@ -1508,9 +1508,11 @@ class _Session:
         try:
             if self.cfg.get("memory", {}).get("mind_graph", {}).get("enabled"):
                 st = await self.s.memory.distill_mind_graph(big["url"], big["model"])
-                if st.get("nodes") or st.get("edges"):
+                if st.get("nodes") or st.get("edges") or st.get("backlog"):
                     _log(f"mind-graph: +{st.get('nodes', 0)} node(s) / +{st.get('edges', 0)} "
-                         f"edge(s), {st.get('refused', 0)} refused")
+                         f"edge(s), {st.get('refused', 0)} refused "
+                         f"({st.get('batches', 0)} batch(es), {st.get('backlog', 0)} turn(s) "
+                         f"still to distil)")
                 if self.s.trace and st.get("turns"):
                     self._trace({"ts": time.time(), "kind": "mind_graph", **st})
         except Exception as e:

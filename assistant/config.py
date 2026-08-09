@@ -614,7 +614,10 @@ DEFAULTS: dict = {
         # recall time.  Off by default; opt-in like working_graph.  See [[personal-graph]].
         "mind_graph": {
             "enabled": False,
-            "distill_batch_turns": 40,   # user turns folded per dreaming pass
+            "distill_batch_turns": 40,   # user turns folded per LM call (one extraction batch)
+            "distill_max_batches": 6,    # batches drained per dreaming pass — 6*40=240 turns, so a
+                                         #   backlog of old chats catches up over a few passes and
+                                         #   the checkpoint means none is ever distilled twice
             "max_context_nodes": 6,      # entities surfaced into a recall context block
             "max_context_edges": 12,     # …and relations among them
             "min_quote_len": 6,          # a grounding quote must be at least this long

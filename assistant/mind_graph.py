@@ -59,7 +59,9 @@ _SELF_WORDS = frozenset({"user", "me", "i", "myself", "my", "we", "us"})
 
 DEFAULTS: dict = {
     "enabled": False,             # opt-in, like working_graph — built only when turned on
-    "distill_batch_turns": 40,    # user turns folded per dreaming pass
+    "distill_batch_turns": 40,    # user turns folded per LM call (one extraction batch)
+    "distill_max_batches": 6,     # batches drained per dreaming pass — lets a backlog catch up
+                                  #   (6*40 = 240 user turns/pass) without an unbounded cold run
     "max_context_nodes": 6,       # entities surfaced into a recall context block
     "max_context_edges": 12,      # …and relations among them
     "min_quote_len": 6,           # a grounding quote must be at least this long to count
@@ -143,6 +145,13 @@ class MindGraph:
             (self._last_id(), int(limit))).fetchall()
         return [{"id": int(r[0]), "text": r[1] or ""} for r in rows]
 
+    def backlog(self) -> int:
+        """USER turns not yet folded — how far behind the transcript the graph is.  Drops to 0
+        once caught up; the number a dreaming pass drives down."""
+        r = self.db.execute("SELECT COUNT(*) FROM chat_logs WHERE role='user' AND id > ?",
+                            (self._last_id(),)).fetchone()
+        return int(r[0]) if r else 0
+
     # -- distillation (the LM slow lane) ------------------------------------------------
     def build_prompt(self, turns: list[dict]) -> str:
         """The extraction prompt.  Numbered so the model can't drift on which turn a fact came
@@ -183,6 +192,31 @@ class MindGraph:
         self.db.commit()
         stats["turns"] = len(turns)
         return stats
+
+    async def catch_up(self, extract_fn: tp.Callable, *, max_batches: tp.Optional[int] = None,
+                       now: tp.Optional[float] = None) -> dict:
+        """One dreaming pass: drain the backlog of undistilled USER turns, oldest-first, over up
+        to `max_batches` successive batches (default from config `distill_max_batches`), stopping
+        early the moment we're caught up.
+
+        Oldest-first is deliberate, not incidental: cardinality-one relations supersede in
+        PROCESSING order, so replaying the user's turns in the order they were said means the
+        newest value (their current home / employer) correctly wins.  Each batch checkpoints as it
+        lands (`distill` commits + advances `distill_last_id`), so a crash mid-drain re-folds
+        nothing and loses nothing — the next pass just resumes from the checkpoint.  The cap keeps
+        a cold backlog from turning one dreaming pass into an unbounded LM run; the leftover simply
+        drains over the following passes, which `backlog()` makes visible."""
+        cap = int(self.c["distill_max_batches"] if max_batches is None else max_batches)
+        total = {"turns": 0, "nodes": 0, "edges": 0, "refused": 0, "batches": 0}
+        for _ in range(max(1, cap)):
+            st = await self.distill(extract_fn, now=now)
+            if not st.get("turns"):
+                break                                  # caught up — nothing new to fold
+            for k in ("turns", "nodes", "edges", "refused"):
+                total[k] += int(st.get(k, 0))
+            total["batches"] += 1
+        total["backlog"] = self.backlog()
+        return total
 
     def _fold(self, data: dict, turns: list[dict], now: float) -> dict:
         """Deterministic fold of one extraction into the store.  The LM output is untrusted: every
@@ -372,4 +406,5 @@ class MindGraph:
     def stats(self) -> dict:
         n = self.db.execute("SELECT COUNT(*) FROM kg_nodes WHERE status='active'").fetchone()[0]
         e = self.db.execute("SELECT COUNT(*) FROM kg_edges WHERE status='active' AND valid_to IS NULL").fetchone()[0]
-        return {"nodes": int(n), "edges": int(e), "last_id": self._last_id()}
+        return {"nodes": int(n), "edges": int(e), "last_id": self._last_id(),
+                "backlog": self.backlog()}

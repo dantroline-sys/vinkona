@@ -1584,7 +1584,9 @@ class MemoryStore:
     async def distill_mind_graph(self, big_url: str, big_model: str) -> dict:
         """Dreaming pass: fold new USER turns into the durable knowledge graph.  Off unless
         memory.mind_graph.enabled.  The big LM extracts entities + grounded relations; the fold
-        is deterministic (grounding-required, identity-locked, supersession-aware)."""
+        is deterministic (grounding-required, identity-locked, supersession-aware).  Drains the
+        backlog oldest-first over several batches per pass (so old chats get distilled if not
+        already done, and never twice — the checkpoint guarantees it)."""
         if not self._mg_cfg.get("enabled") or not big_url:
             return {}
         mg = self._ensure_mind_graph()
@@ -1592,7 +1594,7 @@ class MemoryStore:
         async def _extract(prompt: str):
             return await self._chat_json(big_url, big_model, prompt)
 
-        return await mg.distill(_extract)
+        return await mg.catch_up(_extract)
 
     def mind_context(self, text: str) -> str:
         """A grounded 'what I already know about this' block from the durable graph, for the recall
