@@ -480,6 +480,12 @@ class _Session:
         self.out_q: asyncio.Queue = asyncio.Queue()          # float32 frames → client
         self.sentence_q: asyncio.Queue = asyncio.Queue()     # LLM sentences → speaker
         self.user_turn_queue: asyncio.Queue = asyncio.Queue(maxsize=16)
+        # ASR runs one clip at a time, in the order utterances ended: _transcribe is dispatched
+        # fire-and-forget per end-of-speech, so without this two clips landing close together (a
+        # greeting then the first request — common at the START of a conversation) would transcribe
+        # CONCURRENTLY on the one, non-thread-safe Whisper model and could enqueue turns out of
+        # order or duplicated — which looks like the assistant answering a previous turn again.
+        self._asr_lock = asyncio.Lock()
         self.interrupt = False                                # barge-in: drop current speech
         self._just_clarified = False                          # last turn was a "say again?" re-ask
         # Shared with the LLM bridge: it sets .deliberating while the big LM is thinking
@@ -1792,6 +1798,13 @@ class _Session:
         return ("People in this conversation: " + ", ".join(names) + ".") if names else None
 
     async def _transcribe(self, clip: np.ndarray):
+        # Serialize the whole body: one ASR call at a time AND turns enqueued in end-of-speech
+        # order.  The lock is held across put_nowait so a slow transcription of an earlier clip
+        # can't let a later one overtake it (which would answer turns out of order).
+        async with self._asr_lock:
+            await self._transcribe_locked(clip)
+
+    async def _transcribe_locked(self, clip: np.ndarray):
         loop = asyncio.get_running_loop()
         prompt = self._asr_name_bias()
         try:
