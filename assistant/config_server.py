@@ -485,12 +485,19 @@ class MemoryAdmin:
                               "AND id != 'user:self' ORDER BY mentions DESC, id LIMIT ?", (max_nodes,)):
                     out["nodes"].append({"id": r[0], "type": r[1] or "thing",
                                          "label": r[2], "mentions": int(r[3] or 1)})
-                for r in rows("SELECT src,dst,rel,mentions,quote FROM kg_edges "
-                              "WHERE status='active' AND valid_to IS NULL "
-                              "ORDER BY mentions DESC, id LIMIT ?", (max_edges,)):
+                erows = rows("SELECT src,dst,rel,mentions,quote,fact FROM kg_edges "
+                             "WHERE status='active' AND valid_to IS NULL "
+                             "ORDER BY mentions DESC, id LIMIT ?", (max_edges,))
+                if not erows:            # pre-`fact` graph (column not migrated yet) → quote-only
+                    erows = [(*r, "") for r in
+                             rows("SELECT src,dst,rel,mentions,quote FROM kg_edges "
+                                  "WHERE status='active' AND valid_to IS NULL "
+                                  "ORDER BY mentions DESC, id LIMIT ?", (max_edges,))]
+                for r in erows:
                     out["edges"].append({"subj": labels.get(r[0], r[0]), "obj": labels.get(r[1], r[1]),
                                          "rel": (r[2] or "").replace("_", " "),
-                                         "mentions": int(r[3] or 1), "quote": r[4] or ""})
+                                         "mentions": int(r[3] or 1), "quote": r[4] or "",
+                                         "fact": (r[5] or "").strip()})
         except Exception:
             pass
         return out

@@ -253,12 +253,60 @@ def test_prompt_carries_a_grounded_worked_example():
     ex = _j.loads(mg.MindGraph._EXAMPLE_OUT)
     check("the example is valid JSON in the required schema",
           isinstance(ex.get("nodes"), list) and isinstance(ex.get("edges"), list)
-          and all(k in e for e in ex["edges"] for k in ("src", "dst", "rel", "quote")))
+          and all(k in e for e in ex["edges"] for k in ("src", "dst", "rel", "quote", "fact")))
     # the example must itself be GROUNDED (each quote occurs in the example input) — we teach
     # exactly the behaviour _fold enforces, so a model copying it produces edges that survive.
     low = mg.MindGraph._EXAMPLE_IN.lower()
     check("every example edge quote actually occurs in the example input (grounded)",
           all(e["quote"].lower() in low for e in ex["edges"]))
+    check("prompt teaches the snippet→clean-fact paraphrase (traffic-lights example)",
+          "The user likes traffic lights" in p and "traffic lights are awesome" in p)
+    check("every example edge carries a clean paraphrased fact",
+          all(e.get("fact", "").strip() for e in ex["edges"]))
+
+
+def test_paraphrased_fact_is_surfaced_not_the_snippet():
+    db = fresh_db()
+    add_turn(db, "user", "honestly traffic lights are awesome, and they just make me happy")
+    g = mg.MindGraph(db)
+    distill(g, {"nodes": [{"type": "thing", "label": "traffic lights"}],
+                "edges": [{"src": "user", "dst": "traffic lights", "rel": "likes",
+                           "quote": "traffic lights are awesome",
+                           "fact": "The user likes traffic lights"}]})
+    ctx = g.context_for("what about traffic lights")
+    check("recall surfaces the clean paraphrased fact", "The user likes traffic lights" in ctx)
+    check("recall does NOT surface the raw snippet", "and they" not in ctx and "awesome" not in ctx)
+    snap = g.snapshot()
+    e = next(e for e in snap["edges"] if e["dst"] == "thing:traffic lights")
+    check("the edge keeps BOTH the clean fact and the grounding quote (evidence)",
+          e["fact"] == "The user likes traffic lights" and "awesome" in e["quote"])
+
+
+def test_fact_absent_falls_back_to_triple():
+    db = fresh_db()
+    add_turn(db, "user", "My sister Mara lives in Bristol.")
+    g = mg.MindGraph(db)
+    distill(g, {"nodes": [{"type": "person", "label": "Mara"}, {"type": "place", "label": "Bristol"}],
+                "edges": [{"src": "Mara", "dst": "Bristol", "rel": "lives_in",
+                           "quote": "lives in Bristol"}]})   # no 'fact' → old/weak extraction
+    ctx = g.context_for("tell me about Mara")
+    check("an edge with no fact still reads as a plain triple", "Mara lives in Bristol" in ctx)
+
+
+def test_corroboration_updates_the_fact():
+    db = fresh_db()
+    add_turn(db, "user", "I love traffic lights.")
+    g = mg.MindGraph(db)
+    distill(g, {"nodes": [{"type": "thing", "label": "traffic lights"}],
+                "edges": [{"src": "user", "dst": "traffic lights", "rel": "likes",
+                           "quote": "love traffic lights", "fact": "The user likes traffic lights"}]})
+    add_turn(db, "user", "traffic lights are the best thing ever, I adore them")
+    distill(g, {"edges": [{"src": "user", "dst": "traffic lights", "rel": "likes",
+                           "quote": "traffic lights are the best",
+                           "fact": "The user adores traffic lights"}]})
+    e = next(e for e in g.snapshot()["edges"] if e["dst"] == "thing:traffic lights")
+    check("corroboration keeps the latest clean fact", e["fact"] == "The user adores traffic lights")
+    check("corroboration bumps mentions, not a duplicate edge", e["mentions"] >= 2)
 
 
 def test_failed_extraction_does_not_advance():
@@ -297,6 +345,9 @@ def test_catch_up_stops_on_failure():
 def main():
     test_anchor_and_schema()
     test_prompt_carries_a_grounded_worked_example()
+    test_paraphrased_fact_is_surfaced_not_the_snippet()
+    test_fact_absent_falls_back_to_triple()
+    test_corroboration_updates_the_fact()
     test_failed_extraction_does_not_advance()
     test_catch_up_stops_on_failure()
     test_grounded_fold()

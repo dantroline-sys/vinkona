@@ -1329,7 +1329,11 @@ async function renderMindGraphView(){
   if (edges.length){
     html += '<div class="mg-sec" style="margin-top:12px">What she\'s learned <span class="muted">('+edges.length+')</span></div><div class="mg-rels">';
     for (const e of edges){
-      html += '<div class="mg-rel"><span class="mg-fact">'+escHtml(e.subj)+' <span class="mg-relw">'+escHtml(e.rel)+'</span> '+escHtml(e.obj)+'</span>'
+      // Prefer the LM's clean paraphrase; fall back to the plain triple for pre-`fact` edges.
+      const headline = e.fact && e.fact.trim()
+        ? escHtml(e.fact.trim())
+        : escHtml(e.subj)+' <span class="mg-relw">'+escHtml(e.rel)+'</span> '+escHtml(e.obj);
+      html += '<div class="mg-rel"><span class="mg-fact">'+headline+'</span>'
             + (e.quote ? '<span class="mg-quote">“'+escHtml(e.quote)+'”</span>' : '') + '</div>';
     }
     html += '</div>';

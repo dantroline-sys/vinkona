@@ -45,8 +45,10 @@ def _build_db():
     db.commit()
     g = mg.MindGraph(db, {"distill_batch_turns": 2, "distill_max_batches": 1})   # drain 1 batch = 2 user turns
     stub = lambda _p: {"nodes": [{"type": "person", "label": "Mara"}, {"type": "place", "label": "Bristol"}],
-                       "edges": [{"src": "user", "dst": "Mara", "rel": "sibling_of", "quote": "My sister Mara"},
-                                 {"src": "Mara", "dst": "Bristol", "rel": "lives_in", "quote": "lives in Bristol"}]}
+                       "edges": [{"src": "user", "dst": "Mara", "rel": "sibling_of",
+                                  "quote": "My sister Mara", "fact": "Mara is the user's sister"},
+                                 {"src": "Mara", "dst": "Bristol", "rel": "lives_in",
+                                  "quote": "lives in Bristol", "fact": "Mara lives in Bristol"}]}
     asyncio.run(g.catch_up(stub))
     db.commit(); db.close()
     return path
@@ -119,6 +121,8 @@ def test_snapshot_renders_grounded_relations():
           len(ue) == 1 and ue[0]["rel"] == "sibling of")
     check("relations keep the verbatim grounding quote (viewable as knowledge)",
           ue and "My sister Mara" in ue[0]["quote"])
+    check("snapshot surfaces the clean paraphrased fact alongside the quote",
+          ue and ue[0].get("fact") == "Mara is the user's sister")
 
 
 def test_snapshot_empty_db_is_empty_not_error():

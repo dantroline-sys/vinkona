@@ -112,11 +112,17 @@ class MindGraph:
             id TEXT PRIMARY KEY, src TEXT, dst TEXT, rel TEXT,
             mentions INTEGER DEFAULT 1, first_ts REAL, last_ts REAL,
             valid_from REAL, valid_to REAL, source_turn INTEGER, quote TEXT,
-            status TEXT DEFAULT 'active'
+            fact TEXT, status TEXT DEFAULT 'active'
         );
         CREATE INDEX IF NOT EXISTS idx_kg_edges_src ON kg_edges(src, rel);
         CREATE TABLE IF NOT EXISTS kg_state (k TEXT PRIMARY KEY, v TEXT);
         """)
+        # Migration for graphs created before `fact` existed: the clean paraphrase the LM writes
+        # per relation, which is what recall surfaces (the quote is only grounding evidence).
+        try:
+            self.db.execute("ALTER TABLE kg_edges ADD COLUMN fact TEXT")
+        except Exception:
+            pass                                            # column already present
         self.db.commit()
 
     def _ensure_anchor(self, user_label: str) -> None:
@@ -157,14 +163,21 @@ class MindGraph:
     # the exact output shape it must produce.  Weaker / differently-tuned models (Gemma, Llama,
     # Mistral) infer the schema poorly from a description but copy it reliably from an example —
     # this is what makes the extractor model-agnostic.
-    _EXAMPLE_IN = "[41] My sister Mara just moved to Bristol and started at the museum there."
+    _EXAMPLE_IN = ("[41] My sister Mara just moved to Bristol and started at the museum there. "
+                   "Honestly traffic lights are awesome, and they")
     _EXAMPLE_OUT = (
         '{"nodes":[{"type":"person","label":"Mara","aliases":[]},'
         '{"type":"place","label":"Bristol","aliases":[]},'
-        '{"type":"org","label":"the museum","aliases":[]}],'
-        '"edges":[{"src":"user","dst":"Mara","rel":"sibling_of","quote":"My sister Mara"},'
-        '{"src":"Mara","dst":"Bristol","rel":"lives_in","quote":"moved to Bristol"},'
-        '{"src":"Mara","dst":"the museum","rel":"works_at","quote":"started at the museum"}]}')
+        '{"type":"org","label":"the museum","aliases":[]},'
+        '{"type":"thing","label":"traffic lights","aliases":[]}],'
+        '"edges":[{"src":"user","dst":"Mara","rel":"sibling_of","quote":"My sister Mara",'
+        '"fact":"Mara is the user\'s sister"},'
+        '{"src":"Mara","dst":"Bristol","rel":"lives_in","quote":"moved to Bristol",'
+        '"fact":"Mara lives in Bristol"},'
+        '{"src":"Mara","dst":"the museum","rel":"works_at","quote":"started at the museum",'
+        '"fact":"Mara works at the museum"},'
+        '{"src":"user","dst":"traffic lights","rel":"likes","quote":"traffic lights are awesome",'
+        '"fact":"The user likes traffic lights"}]}')
 
     def build_prompt(self, turns: list[dict]) -> str:
         """The extraction prompt.  Numbered so the model can't drift on which turn a fact came
@@ -183,13 +196,19 @@ class MindGraph:
             "not output an is_named/identity relation with src \"user\".\n"
             "- For every relation include a short verbatim \"quote\" copied EXACTLY from the turn "
             "that states it (this is how the fact is grounded — no quote, no edge).\n"
+            "- For every relation ALSO write a \"fact\": ONE clean, self-contained, third-person "
+            "sentence that states what was meant in plain, internally-consistent language — NOT the "
+            "raw words. Resolve fragments and casual phrasing into a proper statement (e.g. the "
+            "quote 'traffic lights are awesome, and they' becomes the fact 'The user likes traffic "
+            "lights'). The fact is what gets remembered and read back later; the quote is only the "
+            "evidence it rests on.\n"
             "- Use short snake_case relation names (lives_in, works_at, sibling_of, friend_of, "
             "owns, working_on, located_in, part_of, happened_on).\n"
             "- Labels in edges must match node labels (or \"user\").\n"
             "- Output ONLY the JSON object — no prose, no markdown fences, no explanation. Output "
             "exactly {} if nothing is asserted.\n"
             'Schema: {"nodes":[{"type":"person|place|org|thing|event","label":"..","aliases":[".."]}],'
-            '"edges":[{"src":"..","dst":"..","rel":"..","quote":".."}]}\n\n'
+            '"edges":[{"src":"..","dst":"..","rel":"..","quote":"..","fact":".."}]}\n\n'
             "EXAMPLE\n"
             f"User turns:\n{self._EXAMPLE_IN}\n"
             f"Output:\n{self._EXAMPLE_OUT}\n\n"
@@ -271,6 +290,7 @@ class MindGraph:
         for ed in (data.get("edges") or []):
             rel = _rel_norm(ed.get("rel") or "")
             quote = (ed.get("quote") or "").strip()
+            fact = _WS.sub(" ", (ed.get("fact") or "").strip())    # the clean paraphrase (surfaced)
             src = self._ref_to_id(ed.get("src"), label2id, now)
             dst = self._ref_to_id(ed.get("dst"), label2id, now)
             if not (rel and src and dst) or src == dst:
@@ -284,7 +304,7 @@ class MindGraph:
             if turn_id is None:
                 refused += 1
                 continue
-            if self._add_edge(src, dst, rel, quote, turn_id, now):
+            if self._add_edge(src, dst, rel, quote, fact, turn_id, now):
                 n_edges += 1
         return {"nodes": n_nodes, "edges": n_edges, "refused": refused}
 
@@ -344,14 +364,17 @@ class MindGraph:
             (nid, typ, label.strip(), norm, json.dumps(sorted({a for a in aliases if a})), now, now))
         return nid
 
-    def _add_edge(self, src: str, dst: str, rel: str, quote: str, turn_id: int, now: float) -> bool:
+    def _add_edge(self, src: str, dst: str, rel: str, quote: str, fact: str,
+                  turn_id: int, now: float) -> bool:
         """Add or reinforce an edge.  Cardinality-one relations from the same subject supersede an
-        existing (different) value: the old edge is closed (valid_to set), not deleted."""
+        existing (different) value: the old edge is closed (valid_to set), not deleted.  `fact` is
+        the clean paraphrase surfaced at recall; on corroboration the latest non-empty one wins."""
         eid = _edge_key(src, rel, dst)
         row = self.db.execute("SELECT mentions FROM kg_edges WHERE id=? AND status='active'", (eid,)).fetchone()
         if row:                                        # same fact again → corroborate
             self.db.execute("UPDATE kg_edges SET mentions=mentions+1, last_ts=?, valid_to=NULL, "
-                            "source_turn=?, quote=? WHERE id=?", (now, turn_id, quote, eid))
+                            "source_turn=?, quote=?, fact=COALESCE(NULLIF(?,''), fact) WHERE id=?",
+                            (now, turn_id, quote, fact, eid))
             return True
         if rel in _CARD_ONE:                           # one current value → close the others
             self.db.execute("UPDATE kg_edges SET valid_to=?, status='superseded' "
@@ -359,8 +382,8 @@ class MindGraph:
                             (now, src, rel))
         self.db.execute(
             "INSERT INTO kg_edges(id,src,dst,rel,mentions,first_ts,last_ts,valid_from,valid_to,"
-            "source_turn,quote,status) VALUES (?,?,?,?,1,?,?,?,NULL,?,?,'active')",
-            (eid, src, dst, rel, now, now, now, turn_id, quote))
+            "source_turn,quote,fact,status) VALUES (?,?,?,?,1,?,?,?,NULL,?,?,?,'active')",
+            (eid, src, dst, rel, now, now, now, turn_id, quote, fact))
         return True
 
     # -- audit / reversibility ----------------------------------------------------------
@@ -395,17 +418,27 @@ class MindGraph:
             return ""
         lines = ["What I already know about this (from earlier conversations):"]
         seen = 0
+        seen_facts: set = set()
         cap = int(self.c["max_context_edges"])
         for nid, label in hits:
             rels = self.db.execute(
-                "SELECT src, dst, rel FROM kg_edges WHERE status='active' AND valid_to IS NULL "
+                "SELECT src, dst, rel, fact FROM kg_edges WHERE status='active' AND valid_to IS NULL "
                 "AND (src=? OR dst=?) ORDER BY mentions DESC, id", (nid, nid)).fetchall()
-            for src, dst, rel in rels:
-                other = dst if src == nid else src
-                phrase = rel.replace("_", " ")
-                subj = label if src == nid else self._label(other)
-                obj = self._label(dst) if src == nid else label
-                lines.append(f"- {subj} {phrase} {obj}")
+            for src, dst, rel, fact in rels:
+                # Surface the LM's clean paraphrase; fall back to a plain triple for pre-`fact`
+                # edges (so old graphs still read, just less naturally).
+                if fact and fact.strip():
+                    line = fact.strip()
+                else:
+                    other = dst if src == nid else src
+                    subj = label if src == nid else self._label(other)
+                    obj = self._label(dst) if src == nid else label
+                    line = f"{subj} {rel.replace('_', ' ')} {obj}"
+                key = line.lower()
+                if key in seen_facts:                  # a shared edge hit from both endpoints
+                    continue
+                seen_facts.add(key)
+                lines.append(f"- {line}")
                 seen += 1
                 if seen >= cap:
                     break
@@ -427,9 +460,9 @@ class MindGraph:
                      "SELECT id,type,label,mentions,locked FROM kg_nodes WHERE status='active' "
                      "ORDER BY mentions DESC, id LIMIT ?", (max_nodes,)).fetchall()]
         ids = {n["id"] for n in nodes}
-        edges = [{"src": r[0], "dst": r[1], "rel": r[2], "mentions": r[3], "quote": r[4]}
+        edges = [{"src": r[0], "dst": r[1], "rel": r[2], "mentions": r[3], "quote": r[4], "fact": r[5]}
                  for r in self.db.execute(
-                     "SELECT src,dst,rel,mentions,quote FROM kg_edges WHERE status='active' "
+                     "SELECT src,dst,rel,mentions,quote,fact FROM kg_edges WHERE status='active' "
                      "AND valid_to IS NULL ORDER BY mentions DESC, id LIMIT ?", (max_edges,)).fetchall()
                  if r[0] in ids and r[1] in ids]
         return {"nodes": nodes, "edges": edges, "counts": self.stats()}
