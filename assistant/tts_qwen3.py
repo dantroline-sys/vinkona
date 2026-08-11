@@ -92,6 +92,11 @@ class Qwen3TTSEngine:
         sample_rate: int = DEFAULT_SAMPLE_RATE,
         gen_kwargs: tp.Optional[dict] = None,
         seed: tp.Optional[int] = None,
+        mode: str = "design",
+        ref_audio: tp.Optional[str] = None,
+        ref_text: tp.Optional[str] = None,
+        x_vector_only: bool = True,
+        speaker: tp.Optional[str] = None,
     ):
         import torch                                  # lazy: only this engine's venv has it
         from qwen_tts import Qwen3TTSModel
@@ -137,7 +142,54 @@ class Qwen3TTSEngine:
             raise RuntimeError(
                 "this qwen-tts build has no generate_voice_design(); check the "
                 "package version / model repo (need a -VoiceDesign checkpoint)")
-        _log(f"ready in {time.monotonic()-t0:.1f}s  voices={self.voices}")
+
+        # Voice MODE (see synthesize).  "design" varies the timbre per call; "clone"
+        # and "custom" are FIXED voices (consistent across turns).  Prepare the
+        # fixed-voice state here so it's paid once; fall back to "design" (which any
+        # -VoiceDesign checkpoint supports) if the chosen mode can't be set up.
+        self._mode = (mode or "design").lower()
+        self._speaker = speaker
+        self._clone_prompt = None
+        if self._mode == "clone":
+            path = self._resolve_ref(ref_audio)
+            if not path:
+                _log(f"WARNING: mode=clone but ref_audio {ref_audio!r} not found — "
+                     f"using design mode")
+                self._mode = "design"
+            else:
+                try:
+                    self._clone_prompt = self._model.create_voice_clone_prompt(
+                        ref_audio=path, ref_text=ref_text,
+                        x_vector_only_mode=bool(x_vector_only))
+                    _log(f"voice-clone prompt built from {path} "
+                         f"(x_vector_only={bool(x_vector_only)})")
+                except Exception as e:
+                    _log(f"WARNING: create_voice_clone_prompt failed "
+                         f"({type(e).__name__}: {e}) — using design mode")
+                    self._mode = "design"
+        elif self._mode == "custom":
+            supported = None
+            try:
+                supported = self._model.get_supported_speakers()
+            except Exception:
+                pass
+            if not self._speaker or (supported and self._speaker not in supported):
+                _log(f"WARNING: mode=custom needs a valid speaker (have {self._speaker!r}; "
+                     f"supported={supported}) — using design mode")
+                self._mode = "design"
+        _log(f"ready in {time.monotonic()-t0:.1f}s  mode={self._mode}  voices={self.voices}")
+
+    def _resolve_ref(self, ref: tp.Optional[str]) -> tp.Optional[str]:
+        """A ref-audio path as given, or resolved against this file's dir; None if
+        it doesn't exist (serve_tts runs from the assistant dir, but be robust)."""
+        if not ref:
+            return None
+        import os
+        from pathlib import Path
+        for cand in (ref, str(Path(__file__).resolve().parent / ref)):
+            if os.path.exists(cand):
+                return cand
+        return None
 
     @property
     def voices(self) -> list:
@@ -165,15 +217,27 @@ class Qwen3TTSEngine:
 
     # ── engine contract ───────────────────────────────────────────────────────
 
+    def _generate(self, text: str, voice: tp.Optional[str]):
+        """Dispatch to the package call for the active mode → (wavs, sr)."""
+        if self._seed is not None:
+            # Seed right before generation so a sampled voice is reproducible
+            # (stable persona voice across turns).
+            self._torch.manual_seed(int(self._seed))
+        if self._mode == "clone":
+            return self._model.generate_voice_clone(
+                text=text, language=self.language,
+                voice_clone_prompt=self._clone_prompt, **self._gen_kwargs)
+        if self._mode == "custom":
+            return self._model.generate_custom_voice(
+                text=text, speaker=self._speaker, language=self.language,
+                **self._gen_kwargs)
+        return self._model.generate_voice_design(          # design (default)
+            text=text, language=self.language,
+            instruct=self.resolve_style(voice), **self._gen_kwargs)
+
     def synthesize(self, text: str, voice: tp.Optional[str] = None) -> np.ndarray:
         """One utterance → float32 PCM.  BLOCKING — worker thread."""
-        instruct = self.resolve_style(voice)
-        if self._seed is not None:
-            # Seed right before generation so the voice VoiceDesign builds from the
-            # instruct is the same every call (stable persona voice across turns).
-            self._torch.manual_seed(int(self._seed))
-        wavs, sr = self._model.generate_voice_design(
-            text=text, language=self.language, instruct=instruct, **self._gen_kwargs)
+        wavs, sr = self._generate(text, voice)
         self.sample_rate = int(sr)
         pcm = wavs[0] if len(wavs) else wavs
         if hasattr(pcm, "detach"):                    # a torch tensor

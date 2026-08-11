@@ -519,9 +519,19 @@ DEFAULTS: dict = {
             "dtype": "bfloat16",             # bfloat16 | float16 | float32
             "attn_implementation": None,     # e.g. "flash_attention_2" | "sdpa"; null = package default
             "chunk_ms": 200,                 # streaming chunk size (synth-then-chunk; see module)
-            # Fixed RNG seed so VoiceDesign builds the SAME voice every call (it designs
-            # a voice from `instruct` per call, so without this the timbre drifts between
-            # sentences).  null → don't seed (voice varies).  Change it to reroll the voice.
+            # Voice MODE: "design" (natural-language `instruct` — expressive but the
+            # timbre still drifts between sentences even seeded, since it re-designs the
+            # voice each call), "clone" (clone a FIXED reference clip — consistent voice,
+            # best for a persona; reuses the neutts/chatterbox sample by default), or
+            # "custom" (a preset speaker from get_supported_speakers(), if the checkpoint
+            # has any).  A mode that can't be set up falls back to "design".
+            "mode": "design",
+            "ref_audio": "voices/vinkona.wav",   # clone mode: the reference clip
+            "ref_text": None,                    # clone mode: its transcript (optional)
+            "x_vector_only": True,               # clone mode: clone timbre only (steadier)
+            "speaker": None,                     # custom mode: a get_supported_speakers() name
+            # Fixed RNG seed so a sampled voice is reproducible per call.  null → don't
+            # seed (voice varies).  Most useful in design mode; harmless in clone/custom.
             "seed": 20240811,
             # Generation kwargs forwarded to generate_voice_design (do_sample/temperature/
             # top_k/top_p/repetition_penalty); empty → the package/checkpoint defaults.
