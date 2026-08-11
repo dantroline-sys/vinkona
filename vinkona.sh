@@ -115,7 +115,21 @@ case "$cmd" in
         say "done — './vinkona.sh status' to check, './vinkona.sh logs' to watch"
         ;;
     stop)     sup stop ;;
-    restart)  sup restart "$@" ;;
+    restart)
+        if [ $# -eq 0 ]; then
+            # A bare "restart everything" must reload the supervisor's OWN code too
+            # (e.g. after a git pull) — not just bounce its child services in the
+            # already-running process — so stop the supervisor and start a fresh one.
+            # A named target (a service, or normal/knowledge mode) keeps the fast
+            # in-process bounce.
+            resolve_services
+            sup stop
+            # shellcheck disable=SC2046
+            sup start $(kb_flags)
+            say "done — './vinkona.sh status' to check, './vinkona.sh logs' to watch"
+        else
+            sup restart "$@"
+        fi ;;
     status)
         resolve_services
         echo "Vinkona @ $ROOT  (this machine runs: $SERVICES)"

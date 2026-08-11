@@ -1,14 +1,21 @@
 # Qwen3-TTS — the "qwen3" engine's OWN uv project, kept apart from
 # ../../pyproject.toml on purpose: the official `qwen-tts` package pulls torch +
-# transformers, which cap numpy and lag new CPython releases.  Resolving it
-# jointly with the core project would drag vinkona_env's pins down to this stack's
-# ceilings; quarantined here, each side gets its best working set (exactly like
-# the neutts / chatterbox projects).
+# transformers + librosa, which cap numpy and lag new CPython releases.  Resolving
+# it jointly with the core project would drag vinkona_env's pins down to this
+# stack's ceilings; quarantined here, each side gets its best working set (exactly
+# like the neutts / chatterbox projects).
 #
 # install_tts.sh syncs this into qwen3_env (UV_PROJECT_ENVIRONMENT).  When the
 # system Python is newer than requires-python allows, uv downloads a matching
 # CPython into var/uv/python automatically.  No uv.lock is shipped yet — uv
 # resolves + writes one on the first sync (network needed once).
+#
+# WHEEL CEILING (why 3.12, not 3.13): qwen-tts -> librosa -> numba -> llvmlite.
+# On CPython 3.13 there is no wheel for a numba new enough to build, so uv
+# backtracks to numba 0.53.1 whose llvmlite (0.36) is source-only and refuses to
+# build on >=3.10 — the sync then fails.  Pinning <3.13 makes uv use (or fetch)
+# 3.12, and the numba floor below stops it choosing that ancient chain.  Raise the
+# ceiling once numba/llvmlite ship 3.13 wheels this resolution can reach.
 #
 # flash-attention is optional (a big source build); the engine's
 # attn_implementation defaults to null (the package's own default), so it runs
@@ -18,12 +25,15 @@
 name = "vinkona-qwen3-tts"
 version = "0"
 description = "Qwen3-TTS engine environment (natural-language voice design; torch + qwen-tts)"
-requires-python = ">=3.11,<3.14"    # torch/transformers wheel ceiling — raise when the stack catches up
+requires-python = ">=3.11,<3.13"    # 3.13 has no reachable numba/llvmlite wheels for this stack
 
 dependencies = [
     "qwen-tts",
     "soundfile",
     "numpy",       # imported directly by tts_qwen3.py / tts_server.py
+    # Floor numba to a version with cp311/cp312 wheels (and a buildable llvmlite),
+    # so uv can't fall back to numba 0.53.1 -> llvmlite 0.36 (sdist, unbuildable).
+    "numba>=0.60",
 ]
 
 [tool.uv]
