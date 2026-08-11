@@ -301,6 +301,21 @@
       <b>Extra args</b> are passed straight to <code>llama-server</code> (e.g. <code>-ctk q8_0 -ctv q8_0</code> for a quantised KV cache).
       Any change here needs that tier's server restarted (<code>./serve_fast_lm.sh</code> etc).
     </div>
+
+    <!-- Speech engine (TTS): swap the whole voice stack from here, no CLI -->
+    <div id="tts-engine-card" class="card" style="margin-top:16px">
+      <h3 style="margin:0 0 8px">Speech engine (TTS) <span class="muted" id="ttsCurrent">— …</span></h3>
+      <div id="ttsEngines"></div>
+      <div class="bar" style="margin-top:10px">
+        <button class="btn" id="ttsApplyNow" onclick="applyTts('now')" disabled>Apply &amp; restart now</button>
+        <button class="btn secondary" id="ttsApplyLater" onclick="applyTts('next_restart')" disabled>Apply at next restart</button>
+        <span id="ttsStatus" class="status"></span>
+      </div>
+      <div class="hint">Pick the voice Vinkona speaks with. The first time you switch to an engine she
+        <b>installs it automatically</b> (a one-time download) before speaking — so the first start after a
+        switch can take a few minutes. <b>Apply &amp; restart now</b> restarts the stack to take effect;
+        <b>Apply at next restart</b> just records the choice.</div>
+    </div>
   </section>
 
   <!-- ── Tuning ───────────────────────────────────────────────────────────── -->
@@ -762,6 +777,63 @@ async function loadModels() {
   let eps = [];
   try { eps = (await (await fetch('/api/lm_endpoints')).json()).endpoints || []; } catch (e) {}
   await Promise.all(['fast', 'big', 'embed'].map(t => renderModelTier(t, eps)));
+  loadTtsEngines();
+}
+
+// ── Speech engine (TTS) swap ────────────────────────────────────────────────
+let TTS_SELECTED = null, TTS_CURRENT = null;
+async function loadTtsEngines() {
+  const box = document.getElementById('ttsEngines'); if (!box) return;
+  let s; try { s = await (await fetch('/api/tts')).json(); } catch (e) { return; }
+  if (s.error) return;
+  TTS_CURRENT = s.current;
+  if (!TTS_SELECTED) TTS_SELECTED = s.current;
+  const cur = document.getElementById('ttsCurrent');
+  if (cur) cur.textContent = '— currently: ' + s.current;
+  box.innerHTML = '';
+  for (const e of s.engines) {
+    const badge = e.installed
+      ? '<span class="pill" style="color:#8fe0a5;border-color:#356a45">installed</span>'
+      : '<span class="pill muted">not installed</span>';
+    const inUse = e.current ? ' <span class="pill" style="color:#7aa7ff;border-color:#3a4a6a">in use</span>' : '';
+    const row = document.createElement('label');
+    row.style.cssText = 'display:flex;gap:10px;align-items:flex-start;padding:8px;border:1px solid #2c303a;border-radius:8px;margin-bottom:6px;cursor:pointer';
+    row.innerHTML =
+      `<input type="radio" name="ttsengine" value="${e.key}" ${e.key === TTS_SELECTED ? 'checked' : ''} style="width:auto;margin-top:3px">
+       <div style="flex:1">
+         <div><b>${escHtml(e.label)}</b>${inUse} ${badge}</div>
+         <div class="muted" style="font-size:12px">${escHtml(e.footprint)}</div>
+         <div style="font-size:12px;margin-top:2px">${escHtml(e.note)}</div>
+       </div>`;
+    row.querySelector('input').onchange = () => { TTS_SELECTED = e.key; refreshTtsButtons(); };
+    box.appendChild(row);
+  }
+  refreshTtsButtons();
+}
+function refreshTtsButtons() {
+  const changed = TTS_SELECTED && TTS_SELECTED !== TTS_CURRENT;
+  const a = document.getElementById('ttsApplyNow'), b = document.getElementById('ttsApplyLater');
+  if (a) a.disabled = !changed;
+  if (b) b.disabled = !changed;
+}
+async function applyTts(when) {
+  if (!TTS_SELECTED) return;
+  const st = document.getElementById('ttsStatus');
+  st.textContent = when === 'now' ? 'applying…' : 'saving…';
+  try {
+    const r = await (await fetch('/api/tts/select', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ engine: TTS_SELECTED, when })
+    })).json();
+    if (!r.ok) { st.textContent = 'error: ' + (r.error || 'failed'); return; }
+    if (when === 'now')
+      st.textContent = r.installed
+        ? 'restarting the stack…'
+        : 'restarting — the first start installs this engine (may take a few minutes)…';
+    else
+      st.textContent = r.installed ? 'saved — active on next restart' : 'saved — installs on next restart';
+  } catch (e) { st.textContent = 'error: ' + e; }
+  setTimeout(loadTtsEngines, 1500);
 }
 // Point a tier at a detected live server: fill the URL (and its model, adding the option if it's a
 // remote/served name the GGUF list doesn't have).  So a running server is CHOSEN, never typed.

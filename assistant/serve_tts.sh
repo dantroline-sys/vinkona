@@ -23,6 +23,26 @@ export CUDA_DEVICE_ORDER=PCI_BUS_ID
 : "${CUDA_VISIBLE_DEVICES:=1}"
 export CUDA_VISIBLE_DEVICES
 
+# Self-provision: if the chosen engine isn't installed yet, install it now
+# (install.sh is idempotent).  THIS is what makes "switch TTS engine" in the config
+# UI just work — the panel writes tts.engine and restarts; we build the right venv
+# before serving.  The process stays alive throughout, so the supervisor (which only
+# respawns on exit) doesn't mistake the install for a crash.
+_tts_installed() {
+  case "$1" in
+    orpheus_gguf) ls "$SCRIPT_DIR"/vinkona_env/lib/python*/site-packages/onnxruntime >/dev/null 2>&1 ;;
+    neutts)       ls "$SCRIPT_DIR"/neutts_env/lib/python*/site-packages/numpy >/dev/null 2>&1 ;;
+    chatterbox)   ls -d "$SCRIPT_DIR"/chatterbox_env/lib/python*/site-packages/chatterbox >/dev/null 2>&1 ;;
+    qwen3)        ls -d "$SCRIPT_DIR"/qwen3_env/lib/python*/site-packages/qwen_tts >/dev/null 2>&1 ;;
+    *) return 0 ;;
+  esac
+}
+if ! _tts_installed "$ENGINE"; then
+  echo "[serve_tts] engine '$ENGINE' not installed yet — installing it now (one-time) ..." >&2
+  (cd "$SCRIPT_DIR" && ./install.sh tts "$ENGINE") \
+    || { echo "[serve_tts] install of '$ENGINE' failed — see above" >&2; exit 1; }
+fi
+
 case "$ENGINE" in
   orpheus_gguf) source "$SCRIPT_DIR/vinkona_env/bin/activate" ;;   # no engine venv: the
                                 # backbone is the tts_lm llama-server, SNAC runs on CPU

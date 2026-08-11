@@ -27,7 +27,10 @@ case "$ENGINE" in
     chatterbox)
         ENV_DIR="$SCRIPT_DIR/chatterbox_env"
         ;;
-    *) echo "usage: $0 {neutts|chatterbox}"; exit 1 ;;
+    qwen3)
+        ENV_DIR="$SCRIPT_DIR/qwen3_env"          # torch + the official qwen-tts package
+        ;;
+    *) echo "usage: $0 {neutts|chatterbox|qwen3}"; exit 1 ;;
 esac
 
 echo "== Isolated venv: $ENV_DIR (uv sync from deps/$ENGINE — its own project, none of the core deps) =="
@@ -45,6 +48,7 @@ echo "== Verifying the install (a failed sync must never look like a green tick)
 case "$ENGINE" in
     neutts)     "$ENV_DIR/bin/python" -c "import numpy, soundfile; print('neutts_env sanity: numpy + soundfile present')" ;;
     chatterbox) "$ENV_DIR/bin/python" -c "import chatterbox, numpy, soundfile; print('chatterbox_env sanity: chatterbox + numpy + soundfile present')" ;;
+    qwen3)      "$ENV_DIR/bin/python" -c "import qwen_tts, numpy, soundfile; print('qwen3_env sanity: qwen_tts + numpy + soundfile present')" ;;
 esac
 
 echo ""

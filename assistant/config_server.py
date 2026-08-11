@@ -66,6 +66,79 @@ HELPMOD = _load_mod("confighelp")      # /api/help — extracted config.py comme
 WACT = _load_mod("worker_activity")    # /api/activity — what she's doing (worker + session)
 UI_PATH = Path(__file__).parent / "config_ui.html"
 LOGS_DIR = Path(__file__).parent / "logs"            # written by vinkona.sh (shared filesystem)
+ASSIST_DIR = Path(__file__).resolve().parent         # where the venvs + install.sh live
+
+
+# ── TTS engine swap (Models tab): pick an engine → set config, provision on
+#    (re)start.  The heavy install lives in serve_tts.sh (self-provisions the venv
+#    on start), so here we only read install-status and write the choice. ─────────
+TTS_ENGINES = [
+    {"key": "orpheus_gguf", "label": "Orpheus",
+     "footprint": "≈3B backbone on llama.cpp + SNAC on CPU (shares vinkona_env)",
+     "note": "The tuned default: preset voices, emotive <laugh>/<sigh> tags, low latency."},
+    {"key": "chatterbox", "label": "Chatterbox",
+     "footprint": "≈0.5B, own venv (torch)",
+     "note": "Voice cloned from a clip + an emotion knob. The low-footprint pick for small machines."},
+    {"key": "neutts", "label": "NeuTTS Air",
+     "footprint": "own venv (torch)",
+     "note": "Voice cloned from a short reference clip."},
+    {"key": "qwen3", "label": "Qwen3-TTS (experimental)",
+     "footprint": "≈1.7B, own venv (torch + qwen-tts)",
+     "note": "Natural-language voice style ('a warm, slow storyteller'). New — not yet live-tested here."},
+]
+_TTS_ENGINE_KEYS = {e["key"] for e in TTS_ENGINES}
+
+
+def _venv_has(venv: str, module: str) -> bool:
+    """A venv counts as installed only if the module's package actually landed —
+    a failed pip leaves bin/activate behind, so a bare dir check lies.  Mirrors
+    install.sh's _venv_has, by filesystem so this (config) process needn't import."""
+    base = ASSIST_DIR / venv
+    if not base.exists():
+        return False
+    for sp in base.glob("lib/python*/site-packages"):
+        if (sp / module).exists() or (sp / f"{module}.py").exists() \
+                or any(sp.glob(f"{module}-*.dist-info")):
+            return True
+    return False
+
+
+def _tts_installed(engine: str) -> bool:
+    if engine == "orpheus_gguf":                 # onnxruntime in the shared venv + an Orpheus GGUF
+        models = ASSIST_DIR / "Models"
+        gguf = models.exists() and any(models.glob("**/*orpheus*.gguf"))
+        return _venv_has("vinkona_env", "onnxruntime") and bool(gguf)
+    if engine == "neutts":
+        return _venv_has("neutts_env", "numpy")
+    if engine == "chatterbox":
+        return _venv_has("chatterbox_env", "chatterbox")
+    if engine == "qwen3":
+        return _venv_has("qwen3_env", "qwen_tts")
+    return False
+
+
+def tts_status(cfg: dict) -> dict:
+    """The current engine + the catalogue with per-engine install status, for the
+    Models-tab picker."""
+    cur = (cfg.get("tts") or {}).get("engine") or "orpheus_gguf"
+    if cur == "orpheus":                          # legacy alias
+        cur = "orpheus_gguf"
+    engines = [{**e, "installed": _tts_installed(e["key"]), "current": e["key"] == cur}
+               for e in TTS_ENGINES]
+    return {"current": cur, "engines": engines}
+
+
+def tts_select(config_path: str, engine: str) -> dict:
+    """Write the chosen TTS engine to config.json (atomic).  Restarting is the
+    caller's job — a full restart reconciles the service set (only orpheus_gguf
+    runs the tts_lm llama-server) and serve_tts.sh then provisions the venv."""
+    if engine not in _TTS_ENGINE_KEYS:
+        return {"ok": False, "error": f"unknown TTS engine {engine!r}"}
+    p = Path(config_path)
+    cj = json.loads(p.read_text()) if p.exists() else {}
+    cj.setdefault("tts", {})["engine"] = engine
+    _atomic_json(p, cj)
+    return {"ok": True, "engine": engine, "installed": _tts_installed(engine)}
 
 
 def _research_defaults() -> dict:
@@ -913,6 +986,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, MemoryAdmin(cfg).activity_status(cfg))
             except Exception as e:
                 return self._json(500, {"error": str(e)})
+        if path == "/api/tts":
+            try:
+                return self._json(200, tts_status(self._cfg()))
+            except Exception as e:
+                return self._json(500, {"error": str(e)})
         if path == "/api/research_defaults":
             return self._json(200, _research_defaults())
         if path == "/api/research/deadends":
@@ -1010,6 +1088,24 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/config":
             _atomic_json(Path(self.config_path), obj)
             return self._json(200, {"ok": True})
+        if path == "/api/tts/select":
+            try:
+                engine = str(obj.get("engine") or "")
+                when = str(obj.get("when") or "next_restart")
+                res = tts_select(self.config_path, engine)
+                if res.get("ok") and when == "now":
+                    # A FULL restart, not just the tts service: switching to/from
+                    # orpheus_gguf changes whether the tts_lm llama-server runs, and
+                    # only a full restart reconciles the service set.  serve_tts.sh
+                    # then provisions the engine's venv before serving.
+                    (LOGS_DIR / "control").mkdir(parents=True, exist_ok=True)
+                    (LOGS_DIR / "control" / "__restart__.req").write_text(str(time.time()))
+                    res["restarting"] = True
+                else:
+                    res["scheduled"] = res.get("ok") and when != "now"
+                return self._json(200 if res.get("ok") else 400, res)
+            except Exception as e:
+                return self._json(500, {"error": str(e)})
         if path == "/api/net":                        # broker action (revoke / rule toggle)
             try:
                 return self._json(200, _load_mod("netadmin").action(obj))

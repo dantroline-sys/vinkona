@@ -1,0 +1,30 @@
+# Qwen3-TTS — the "qwen3" engine's OWN uv project, kept apart from
+# ../../pyproject.toml on purpose: the official `qwen-tts` package pulls torch +
+# transformers, which cap numpy and lag new CPython releases.  Resolving it
+# jointly with the core project would drag vinkona_env's pins down to this stack's
+# ceilings; quarantined here, each side gets its best working set (exactly like
+# the neutts / chatterbox projects).
+#
+# install_tts.sh syncs this into qwen3_env (UV_PROJECT_ENVIRONMENT).  When the
+# system Python is newer than requires-python allows, uv downloads a matching
+# CPython into var/uv/python automatically.  No uv.lock is shipped yet — uv
+# resolves + writes one on the first sync (network needed once).
+#
+# flash-attention is optional (a big source build); the engine's
+# attn_implementation defaults to null (the package's own default), so it runs
+# without it.  Add "flash-attn" here if you want it and can build it.
+
+[project]
+name = "vinkona-qwen3-tts"
+version = "0"
+description = "Qwen3-TTS engine environment (natural-language voice design; torch + qwen-tts)"
+requires-python = ">=3.11,<3.14"    # torch/transformers wheel ceiling — raise when the stack catches up
+
+dependencies = [
+    "qwen-tts",
+    "soundfile",
+    "numpy",       # imported directly by tts_qwen3.py / tts_server.py
+]
+
+[tool.uv]
+package = false     # env-only project — sync manages dependencies, nothing installs

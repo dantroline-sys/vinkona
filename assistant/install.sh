@@ -76,8 +76,8 @@ step_tts() {
         orpheus_gguf) bash install_orpheus_gguf.sh ;;
         orpheus)      say "engine 'orpheus' (vLLM) was retired — installing orpheus_gguf"
                       bash install_orpheus_gguf.sh ;;
-        neutts|chatterbox) bash install_tts.sh "$engine" ;;
-        *) die "unknown TTS engine: $engine (orpheus_gguf|neutts|chatterbox)" ;;
+        neutts|chatterbox|qwen3) bash install_tts.sh "$engine" ;;
+        *) die "unknown TTS engine: $engine (orpheus_gguf|neutts|chatterbox|qwen3)" ;;
     esac
 }
 

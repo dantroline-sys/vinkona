@@ -41,7 +41,7 @@ TASKS=(assistant-core tts models llama vinur)
 desc() {
     case "$1" in
         assistant-core) echo "assistant core (vinkona_env: cascade, ASR, memory, research, config UI)" ;;
-        tts)            echo "TTS engine (orpheus_gguf: llama.cpp + SNAC, no venv — default; neutts or chatterbox, own venv)" ;;
+        tts)            echo "TTS engine (orpheus_gguf: llama.cpp + SNAC, no venv — default; neutts / chatterbox / qwen3, own venv)" ;;
         models)         echo "LM weights (download defaults from HF, or select models you copied in)" ;;
         llama)          echo "llama-server binary (llama.cpp — system PATH or built in-tree)" ;;
         vinur)          if [ -d "$VINUR" ]; then
@@ -194,7 +194,7 @@ case "$cmd" in
                         t="${TASKS[$((choice-1))]}"
                         extra=""
                         if [ "$t" = "tts" ]; then
-                            printf "engine [orpheus_gguf] / neutts / chatterbox: "; read -r extra
+                            printf "engine [orpheus_gguf] / neutts / chatterbox / qwen3: "; read -r extra
                         elif [ "$t" = "vinur" ]; then
                             printf "format flags (e.g. --all or --pdf --epub) [none]: "; read -r extra
                         fi
