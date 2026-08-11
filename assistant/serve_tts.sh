@@ -28,9 +28,9 @@ case "$ENGINE" in
                                 # backbone is the tts_lm llama-server, SNAC runs on CPU
   neutts)     source "$SCRIPT_DIR/neutts_env/bin/activate" ;;
   chatterbox) source "$SCRIPT_DIR/chatterbox_env/bin/activate" ;;
-  qwen3)      source "$SCRIPT_DIR/vinkona_env/bin/activate" ;;   # scaffold: numpy+urllib only;
-                                # the real 12Hz-codec runtime (onnxruntime/torch) is added when
-                                # the engine is finished from the model card (see tts_qwen3.py)
+  qwen3)      source "$SCRIPT_DIR/qwen3_env/bin/activate" ;;   # torch + qwen-tts
+                                # (pip install qwen-tts); the -VoiceDesign checkpoint downloads
+                                # into the in-tree HF cache on first start (see tts_qwen3.py)
   orpheus)                      # pre-gguf configs: the vLLM engine was removed
      echo "note: engine 'orpheus' (vLLM) was retired — using orpheus_gguf" >&2
      ENGINE=orpheus_gguf; source "$SCRIPT_DIR/vinkona_env/bin/activate" ;;

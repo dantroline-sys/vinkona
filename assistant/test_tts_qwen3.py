@@ -1,27 +1,26 @@
-"""Tests for the qwen3 TTS engine SCAFFOLD (tts_qwen3.py).
+"""Tests for the qwen3 TTS engine (tts_qwen3.py), which wraps the official
+`qwen-tts` package.
 
-The model-specific decode isn't written yet (it needs the Qwen3-TTS model card),
-so these pin the parts that ARE real and must stay correct when the decode is
-filled in:
-  • the engine contract (sample_rate / voices / resolve_style);
-  • the streaming SSE client against a fake token server;
-  • the synthesize_stream → synthesize orchestration + PCM framing, exercised
-    through a FAKE codec (so the plumbing is proven without the real 12Hz codec);
-  • the honest failure: with no real codec, a synth call raises a clear, named
-    error rather than silence or noise; and the two model-specific stubs raise.
+The heavy deps (torch + qwen-tts + a GPU) aren't in the sandbox, so we inject a
+FAKE qwen_tts + torch and pin the engine's own logic against the documented API
+shape:
+  • contract: sample_rate / voices;
+  • natural-language voice control: a voice NAME → its style DESCRIPTION as the
+    `instruct` arg (unknown name → literal; default falls back to a real style);
+  • synthesize(): calls generate_voice_design(text, language, instruct=…), takes
+    wavs[0], returns float32 in [-1,1], and adopts the returned sample rate;
+  • synthesize_stream(): synth-then-chunk framing to 16-bit PCM byte chunks.
 
-Needs numpy (like the Orpheus engine test) — skips cleanly without it.
+Needs numpy (the engine returns np arrays) — skips cleanly without it.
 
-Run inside vinkona_env:  python test_tts_qwen3.py
+Run inside qwen3_env:  python test_tts_qwen3.py
 """
-import json
-import threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import sys
+import types
 
 try:
     import numpy as np
-    import tts_qwen3 as q3
-except Exception as e:                       # numpy (or the engine's deps) absent
+except Exception as e:
     print(f"  skip qwen3 engine tests (needs numpy): {e}")
     raise SystemExit(0)
 
@@ -33,143 +32,94 @@ def check(label, cond):
 check.failed = 0
 
 
-class _FakeServer(BaseHTTPRequestHandler):
-    """/health OK + a streamed /completion emitting canned token-id chunks."""
-    token_ids = []
-    last_payload = None
+# ── fake torch + qwen_tts, injected before importing the engine ───────────────
+class _FakeModel:
+    last = None                       # records the last generate_voice_design call
 
-    def do_GET(self):
-        body = b'{"status":"ok"}'
-        self.send_response(200)
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+    @classmethod
+    def from_pretrained(cls, repo, **kw):
+        m = cls(); m.repo = repo; m.kw = kw
+        return m
 
-    def do_POST(self):
-        length = int(self.headers.get("Content-Length", 0))
-        try:
-            _FakeServer.last_payload = json.loads(self.rfile.read(length) or b"{}")
-        except Exception:
-            _FakeServer.last_payload = None
-        self.send_response(200)
-        self.send_header("Content-Type", "text/event-stream")
-        self.end_headers()
-        ids = list(self.token_ids)
-        for i in range(0, len(ids), 2):
-            self._chunk({"tokens": ids[i:i + 2]})
-        self._chunk({"tokens": [], "stop": True})
-
-    def _chunk(self, obj):
-        self.wfile.write(b"data: " + json.dumps(obj).encode() + b"\n\n")
-
-    def log_message(self, *a):
-        pass
+    def generate_voice_design(self, text, language, instruct, **gen):
+        _FakeModel.last = {"text": text, "language": language,
+                           "instruct": instruct, "gen": gen}
+        # 0.1 s of quiet-ish audio at 24 kHz, batch of one, as numpy (the model
+        # may return torch or numpy; the engine must handle numpy at least).
+        wav = (np.linspace(-0.5, 0.5, 2400, dtype=np.float32))
+        return [wav], 24000
 
 
-class _FakeCodec:
-    """A stand-in 12Hz codec: 1 frame per token id, 2 samples of PCM per frame —
-    just enough to prove the engine's streaming/framing orchestration."""
-    ready = True
-    sample_rate = 24000
-
-    def frames_from_tokens(self, token_ids):
-        for i in token_ids:
-            yield [int(i)]
-
-    def decode_frames(self, frame):
-        return np.array([frame[0] % 100, -(frame[0] % 100)], dtype=np.int16).tobytes()
+def _install_fakes():
+    torch = types.ModuleType("torch")
+    torch.float32 = "float32"; torch.bfloat16 = "bfloat16"; torch.float16 = "float16"
+    torch.cuda = types.SimpleNamespace(is_available=lambda: False)
+    torch.backends = types.SimpleNamespace(mps=types.SimpleNamespace(is_available=lambda: False))
+    sys.modules["torch"] = torch
+    qt = types.ModuleType("qwen_tts")
+    qt.Qwen3TTSModel = _FakeModel
+    sys.modules["qwen_tts"] = qt
 
 
-def _serve():
-    srv = ThreadingHTTPServer(("127.0.0.1", 0), _FakeServer)
-    threading.Thread(target=srv.serve_forever, daemon=True).start()
-    return srv, f"http://127.0.0.1:{srv.server_port}"
+_install_fakes()
+import tts_qwen3 as q3     # noqa: E402 — must follow the fake-module install
+
+
+def _engine(default_voice="vinkona"):
+    return q3.Qwen3TTSEngine(
+        model_repo="Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign", device="auto",
+        default_voice=default_voice,
+        voices={"vinkona": "A warm, calm assistant.",
+                "narrator": "A slow storyteller with a faint British accent."})
 
 
 def test_contract_and_voice_style():
-    srv, url = _serve()
-    try:
-        eng = q3.Qwen3TTSEngine(
-            lm_url=url, default_voice="vinkona", wait_for_lm_s=5,
-            voices={"vinkona": "A warm, calm assistant.",
-                    "narrator": "A slow storyteller with a faint British accent."})
-        check("sample_rate is exposed", eng.sample_rate == q3.DEFAULT_SAMPLE_RATE)
-        check("voices are the configured names", set(eng.voices) == {"vinkona", "narrator"})
-        check("a known voice resolves to its description",
-              eng.resolve_style("narrator").startswith("A slow storyteller"))
-        check("an unknown voice is used as a literal style",
-              eng.resolve_style("A brisk newsreader.") == "A brisk newsreader.")
-        check("no voice → the default's description",
-              eng.resolve_style(None) == "A warm, calm assistant.")
-    finally:
-        srv.shutdown()
+    eng = _engine()
+    check("voices are the configured names", set(eng.voices) == {"vinkona", "narrator"})
+    check("a known voice resolves to its description",
+          eng.resolve_style("narrator").startswith("A slow storyteller"))
+    check("an unknown voice is used as a literal style",
+          eng.resolve_style("A brisk newsreader.") == "A brisk newsreader.")
+    check("no voice → the default's description",
+          eng.resolve_style(None) == "A warm, calm assistant.")
 
 
-def test_sse_client_parses_stream():
-    srv, url = _serve()
-    _FakeServer.token_ids = [11, 22, 33, 44]
-    try:
-        eng = q3.Qwen3TTSEngine(lm_url=url, wait_for_lm_s=5, voices={"v": "x"})
-        chunks = list(eng._sse({"prompt": "p", "stream": True}))
-        got = [i for c in chunks for i in (c.get("tokens") or [])]
-        check("SSE client yields every streamed token id", got == [11, 22, 33, 44])
-        check("request marked streaming", _FakeServer.last_payload.get("stream") is True)
-        check("request asks for token ids", _FakeServer.last_payload.get("return_tokens") is True)
-    finally:
-        srv.shutdown()
+def test_default_voice_falls_back_to_a_real_style():
+    # "tara" (the Orpheus default) isn't a qwen3 style → must fall back, not be
+    # sent as a literal instruct.
+    eng = _engine(default_voice="tara")
+    check("unknown default_voice falls back to a configured style",
+          eng.default_voice in ("vinkona", "narrator"))
 
 
-def test_orchestration_with_fake_codec():
-    """With a real codec in place, synthesize_stream/​synthesize should flow
-    tokens → frames → PCM.  Prove that plumbing with a fake codec + a stubbed
-    input format (the two model-specific pieces), leaving the engine code real."""
-    srv, url = _serve()
-    _FakeServer.token_ids = [1, 2, 3, 4, 5]
-    orig_fmt = q3._format_input
-    q3._format_input = lambda text, style: f"[{style}] {text}"     # stand in for the real prompt
-    try:
-        eng = q3.Qwen3TTSEngine(lm_url=url, wait_for_lm_s=5, voices={"v": "warm"})
-        eng._codec = _FakeCodec()
-        chunks = list(eng.synthesize_stream("hello", "v"))
-        check("one PCM chunk per token frame", len(chunks) == 5)
-        pcm = eng.synthesize("hello", "v")
-        check("synthesize concatenates to float32 in [-1,1]",
-              pcm.dtype == np.float32 and float(np.abs(pcm).max()) <= 1.0)
-        check("synthesize produced the expected sample count", pcm.shape == (10,))
-    finally:
-        q3._format_input = orig_fmt
-        srv.shutdown()
+def test_synthesize_calls_api_and_returns_float32():
+    eng = _engine()
+    pcm = eng.synthesize("hello world", "narrator")
+    call = _FakeModel.last
+    check("generate_voice_design got the resolved instruct",
+          call["instruct"].startswith("A slow storyteller"))
+    check("…and the text + language", call["text"] == "hello world" and call["language"] == "English")
+    check("returns float32 in [-1,1]",
+          pcm.dtype == np.float32 and float(np.abs(pcm).max()) <= 1.0)
+    check("adopts the model's returned sample rate", eng.sample_rate == 24000)
+    check("sample count matches the returned wav", pcm.shape == (2400,))
 
 
-def test_honest_failure_when_unfinished():
-    srv, url = _serve()
-    try:
-        eng = q3.Qwen3TTSEngine(lm_url=url, wait_for_lm_s=5, voices={"v": "warm"})
-        # The real codec is not ready → a synth call must raise a clear, named error.
-        try:
-            list(eng.synthesize_stream("hi", "v"))
-            raised = False
-        except NotImplementedError as e:
-            raised = "model card" in str(e).lower() or "qwen3" in str(e).lower()
-        check("unfinished engine raises a clear error, not silence", raised)
-        # the two model-specific stubs each name what they need
-        for fn in (lambda: q3._format_input("t", "s"),
-                   lambda: list(q3.Qwen3Codec(None, "r", None, 24000).frames_from_tokens([1])),
-                   lambda: q3.Qwen3Codec(None, "r", None, 24000).decode_frames([1])):
-            try:
-                fn(); ok = False
-            except NotImplementedError:
-                ok = True
-            check("model-specific stub raises NotImplementedError", ok)
-    finally:
-        srv.shutdown()
+def test_synthesize_stream_frames_pcm():
+    eng = _engine()
+    chunks = list(eng.synthesize_stream("hi", "vinkona"))
+    total = sum(len(c) for c in chunks)
+    check("stream yields 16-bit PCM bytes for the whole utterance", total == 2400 * 2)
+    step = int(eng.sample_rate * eng._chunk_ms / 1000)
+    check("chunks are sized by chunk_ms", len(chunks) == (2400 + step - 1) // step)
+    check("every chunk is non-empty", all(len(c) > 0 for c in chunks))
 
 
 def main():
     test_contract_and_voice_style()
-    test_sse_client_parses_stream()
-    test_orchestration_with_fake_codec()
-    test_honest_failure_when_unfinished()
+    test_default_voice_falls_back_to_a_real_style()
+    test_synthesize_calls_api_and_returns_float32()
+    test_synthesize_stream_frames_pcm()
     print(f"\n{'ALL OK' if not check.failed else str(check.failed) + ' FAILED'}")
     raise SystemExit(1 if check.failed else 0)
 

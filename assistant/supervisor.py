@@ -211,9 +211,8 @@ def services_for(mode: str, topo: dict, cfg: dict | None = None) -> list[dict]:
             eng = tts_engine(cfg)
             if eng == "orpheus_gguf":          # only Orpheus needs the tts_lm llama-server
                 add("tts_lm", "host", ["./serve_tts_lm.sh"])
-            # qwen3 is SCAFFOLDED: serve_tts.sh starts the engine (which reports what it
-            # still needs); its token-server wiring (reuse tts_lm, or its own) is pending
-            # the model card's serving format, so we don't presume tts_lm for it yet.
+            # qwen3 needs no tts_lm: the qwen-tts package loads the LM+codec in-process
+            # (like neutts/chatterbox), so serve_tts.sh (qwen3_env) is the whole service.
             add("tts", "box", ["./serve_tts.sh", eng], r"tts_server\.py")
             add("cascade", "box", ["./serve_cascade.sh"], r"cascade_server\.py")
             add("config", "box", ["./serve_config.sh"], r"config_server\.py")

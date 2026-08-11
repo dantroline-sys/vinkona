@@ -458,10 +458,10 @@ DEFAULTS: dict = {
         # starts): "orpheus_gguf" (Orpheus on llama.cpp + SNAC), "neutts"
         # (cloned voice), "chatterbox" (~0.5B, cloned voice + emotion knob — the
         # low-footprint choice for machines that can't hold the Orpheus 3B backbone
-        # at real time, e.g. a 16 GB M2 mini), or "qwen3" (Qwen3-TTS: discrete
-        # multi-codebook LM + 12Hz codec, natural-language voice control, ~97ms
-        # TTFA — SCAFFOLDED, needs the model card's prompt+codec spec to finish;
-        # see tts_qwen3.py).  A legacy "orpheus" value is treated as orpheus_gguf.
+        # at real time, e.g. a 16 GB M2 mini), or "qwen3" (Qwen3-TTS via the
+        # official qwen-tts package — 1.7B LM + 12.5Hz/16-codebook codec, natural-
+        # language voice control; own venv qwen3_env, not yet live-tested — see
+        # tts_qwen3.py).  A legacy "orpheus" value is treated as orpheus_gguf.
         "engine": "orpheus_gguf",
         "default_voice": "tara",
         # Trim the silent head/tail Orpheus bakes into each sentence and replace it
@@ -492,25 +492,26 @@ DEFAULTS: dict = {
             "snac_repo": "onnx-community/snac_24khz-ONNX",
             "snac_file": "onnx/decoder_model.onnx",
         },
-        # Qwen3-TTS (the "qwen3" engine).  Same shape as orpheus_gguf — a
-        # token-streaming server (tts_lm tier, or its own) + a codec decode — so it
-        # reuses that seam.  SCAFFOLDED: the prompt format and the 12Hz codec decode
-        # still need the model card (see tts_qwen3.py's "STILL NEEDED"); until then
-        # selecting it reports exactly what's missing rather than failing silently.
+        # Qwen3-TTS (the "qwen3" engine): the official `qwen-tts` package (LM +
+        # 12.5 Hz / 16-codebook codec together), loaded in its own venv (qwen3_env:
+        # torch + qwen-tts; `pip install qwen-tts`).  Natural-language voice control
+        # — each voice NAME maps to a style DESCRIPTION passed as `instruct`.  Not
+        # yet live-tested on the box; see tts_qwen3.py.
         "qwen3": {
-            "lm_url": None,                  # null → tts_lm.url (the codec-token server)
-            "codec_path": None,              # local 12Hz detokenizer artifact (null → codec_repo)
-            "codec_repo": "Qwen/Qwen3-TTS-Tokenizer-12Hz",   # placeholder — confirm from the card
-            "codec_file": None,
-            "sample_rate": 24000,            # confirm from the card
-            "temperature": 0.7,
-            "top_p": 0.9,
-            "max_tokens": 3500,
-            # Qwen3's natural-language voice control: a voice NAME → a style
-            # DESCRIPTION the model reads.  The cascade keeps calling voices by
-            # name; each resolves here (an unknown name is used as a literal style).
+            # Natural-language voice design needs the -VoiceDesign checkpoint (NOT -Base).
+            "model_repo": "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
+            "language": "English",           # spoken language for synthesis
+            "dtype": "bfloat16",             # bfloat16 | float16 | float32
+            "attn_implementation": None,     # e.g. "flash_attention_2" | "sdpa"; null = package default
+            "chunk_ms": 200,                 # streaming chunk size (synth-then-chunk; see module)
+            # Generation kwargs forwarded to HF generate (temperature/top_p/max_new_tokens);
+            # empty → the checkpoint's generate_config.json defaults.
+            "gen_kwargs": {},
+            # voice NAME → natural-language style DESCRIPTION (the `instruct`).  The
+            # cascade keeps calling voices by name; an unknown name is used as a
+            # literal style, so ad-hoc descriptions work too.
             "voices": {
-                "vinkona": "A warm, articulate assistant with a calm, friendly, unhurried tone.",
+                "vinkona": "A warm, articulate voice, calm and friendly, unhurried.",
             },
         },
         "neutts": {

@@ -63,18 +63,14 @@ def build_engine(engine: str, cfg: dict, device: str):
     if engine == "qwen3":
         from tts_qwen3 import Qwen3TTSEngine
         q = tts["qwen3"]
-        lm_url = q.get("lm_url") or (cfg.get("tts_lm") or {}).get("url") \
-            or "http://127.0.0.1:11439"
-        return Qwen3TTSEngine(lm_url=lm_url,
+        return Qwen3TTSEngine(model_repo=q["model_repo"], device=device,
+                              dtype=q.get("dtype", "bfloat16"),
+                              attn_implementation=q.get("attn_implementation"),
+                              language=q.get("language", "English"),
                               default_voice=tts["default_voice"],
                               voices=q.get("voices") or {},
-                              codec_path=q.get("codec_path"),
-                              codec_repo=q["codec_repo"],
-                              codec_file=q.get("codec_file"),
-                              sample_rate=int(q.get("sample_rate", 24000)),
-                              temperature=q["temperature"],
-                              top_p=q["top_p"],
-                              max_tokens=q["max_tokens"])
+                              chunk_ms=int(q.get("chunk_ms", 200)),
+                              gen_kwargs=q.get("gen_kwargs") or {})
     if engine == "orpheus_gguf":
         from tts_orpheus_gguf import OrpheusGGUFEngine
         og = tts["orpheus_gguf"]
