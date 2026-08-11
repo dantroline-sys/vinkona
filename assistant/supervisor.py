@@ -130,6 +130,22 @@ def tts_engine(cfg: dict) -> str:
     return eng if eng in ("neutts", "chatterbox", "qwen3") else "orpheus_gguf"
 
 
+# TTS engines that load a torch model IN-PROCESS on the GPU.  These must run
+# where CUDA actually works — the host — not inside the distrobox container: the
+# box shares $HOME (so the venv is visible) but NOT the host's NVIDIA driver
+# libraries, so torch there silently falls back to CPU (~1 min/sentence, cascade
+# times out → silence).  The llama.cpp LMs already run on the host for the same
+# reason.  orpheus_gguf needs no in-process GPU (SNAC vocodes on CPU; its backbone
+# is the host tts_lm llama-server), so it stays in the box like the other
+# assistant services.  Box networking is shared with the host, so the cascade
+# reaches the TTS service at 127.0.0.1 either way.
+_TORCH_TTS_ENGINES = ("qwen3", "neutts", "chatterbox")
+
+
+def tts_where(eng: str) -> str:
+    return "host" if eng in _TORCH_TTS_ENGINES else "box"
+
+
 def lm_block(cfg: dict, tier: str) -> dict:
     """The tier's config block; big_lm2 inherits big_lm (llm_server's rule)."""
     block = dict(cfg.get(tier) or {})
@@ -213,7 +229,9 @@ def services_for(mode: str, topo: dict, cfg: dict | None = None) -> list[dict]:
                 add("tts_lm", "host", ["./serve_tts_lm.sh"])
             # qwen3 needs no tts_lm: the qwen-tts package loads the LM+codec in-process
             # (like neutts/chatterbox), so serve_tts.sh (qwen3_env) is the whole service.
-            add("tts", "box", ["./serve_tts.sh", eng], r"tts_server\.py")
+            # Torch engines run on the host (GPU); orpheus_gguf stays in the box — see
+            # tts_where().
+            add("tts", tts_where(eng), ["./serve_tts.sh", eng], r"tts_server\.py")
             add("cascade", "box", ["./serve_cascade.sh"], r"cascade_server\.py")
             add("config", "box", ["./serve_config.sh"], r"config_server\.py")
             add("research", "box", ["./serve_research.sh"], r"research_worker\.py")
