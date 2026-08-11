@@ -526,8 +526,9 @@ DEFAULTS: dict = {
             # "custom" (a preset speaker from get_supported_speakers(), if the checkpoint
             # has any).  A mode that can't be set up falls back to "design".
             "mode": "design",
-            "ref_audio": "voices/vinkona.wav",   # clone mode: the reference clip
-            "ref_text": None,                    # clone mode: its transcript (optional)
+            "ref_audio": "voices/tara.wav",      # clone mode: the reference clip
+            "ref_text": None,                    # clone mode: its transcript (only used
+                                                 # when x_vector_only=False; else ignored)
             "x_vector_only": True,               # clone mode: clone timbre only (steadier)
             "speaker": None,                     # custom mode: a get_supported_speakers() name
             # Fixed RNG seed so a sampled voice is reproducible per call.  null → don't
