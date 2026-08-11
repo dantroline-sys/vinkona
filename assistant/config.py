@@ -500,6 +500,12 @@ DEFAULTS: dict = {
         "qwen3": {
             # Natural-language voice design needs the -VoiceDesign checkpoint (NOT -Base).
             "model_repo": "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
+            # Torch device: "auto" (cuda>mps>cpu) or an explicit "cuda:0" / "cpu".
+            # Set this to force the GPU if "auto" lands on CPU — serve_tts.sh masks
+            # to one card via CUDA_VISIBLE_DEVICES, so "cuda:0" is that masked card.
+            # This is a real-time voice engine: on CPU a sentence takes ~a minute and
+            # the cascade's 60 s TTS timeout drops it (silence). Keep it on the GPU.
+            "device": "auto",
             "language": "English",           # spoken language for synthesis
             "dtype": "bfloat16",             # bfloat16 | float16 | float32
             "attn_implementation": None,     # e.g. "flash_attention_2" | "sdpa"; null = package default

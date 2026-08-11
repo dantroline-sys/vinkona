@@ -63,7 +63,9 @@ def build_engine(engine: str, cfg: dict, device: str):
     if engine == "qwen3":
         from tts_qwen3 import Qwen3TTSEngine
         q = tts["qwen3"]
-        return Qwen3TTSEngine(model_repo=q["model_repo"], device=device,
+        # config tts.qwen3.device wins over the CLI --device default ("auto"), so a
+        # box can pin the GPU without editing serve_tts.sh.
+        return Qwen3TTSEngine(model_repo=q["model_repo"], device=q.get("device") or device,
                               dtype=q.get("dtype", "bfloat16"),
                               attn_implementation=q.get("attn_implementation"),
                               language=q.get("language", "English"),

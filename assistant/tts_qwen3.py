@@ -33,6 +33,7 @@ torch / qwen-tts) — it needs a live smoke test on the box after
 `pip install qwen-tts` in qwen3_env.
 """
 
+import os
 import time
 import typing as tp
 
@@ -90,6 +91,18 @@ class Qwen3TTSEngine:
         self._chunk_ms = int(chunk_ms)
 
         dev = _resolve_device(device, torch)
+        # This is a live voice engine — CPU means ~a minute per sentence, so the
+        # cascade's 60 s TTS timeout drops it and you get SILENCE, not slow speech.
+        # Never let that happen quietly: if we asked for auto/cuda and still landed
+        # on CPU, say so loudly (with what CUDA_VISIBLE_DEVICES the process sees) so
+        # a masked-away GPU is obvious in the log instead of a mysterious no-audio.
+        if str(dev).startswith("cpu") and not str(device).startswith("cpu"):
+            _log(f"WARNING: no CUDA visible — loading on CPU (expect ~1 min/sentence, "
+                 f"the cascade will time out → silence). "
+                 f"CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES', '(unset)')!r}, "
+                 f"cuda.is_available={torch.cuda.is_available()}. "
+                 f"Set tts.qwen3.device to a real GPU (e.g. 'cuda:0') or fix "
+                 f"CUDA_VISIBLE_DEVICES in serve_tts.sh.")
         td = getattr(torch, dtype, None) or torch.float32
         kw = {"device_map": dev, "dtype": td}
         if attn_implementation:
