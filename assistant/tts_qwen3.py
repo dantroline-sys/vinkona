@@ -46,16 +46,32 @@ def _log(msg: str) -> None:
     print(f"[{time.strftime('%H:%M:%S')}] [tts-qwen3] {msg}", flush=True)
 
 
-def _resolve_device(device: str, torch) -> str:
+def _resolve_device(device: str, torch, tries: int = 6, wait: float = 2.0) -> str:
     """--device 'auto' → the best available device_map string; an explicit value
-    (e.g. 'cuda:0', 'cpu') passes through unchanged."""
+    (e.g. 'cuda:0', 'cpu') passes through unchanged.
+
+    On 'auto', RETRY the CUDA probe before conceding to CPU.  torch.cuda.is_available()
+    can transiently return False when the target GPU is saturated by another
+    process's kernels at the instant we check — seen on the shared 4090 when the
+    fast LM's first-token burst overlaps TTS startup.  For this live engine CPU
+    means ~1 min/sentence and cascade timeouts (silence), so a few seconds of
+    re-probing is cheap insurance.  Only retry when torch was built with CUDA — a
+    CPU-only build is instantly and permanently unavailable, so don't stall it."""
     if device and device != "auto":
         return device
-    if torch.cuda.is_available():
-        return "cuda"
     mps = getattr(getattr(torch, "backends", None), "mps", None)
-    if mps is not None and mps.is_available():
-        return "mps"
+    cuda_built = bool(getattr(getattr(torch, "version", None), "cuda", None))
+    attempts = tries if cuda_built else 1
+    for i in range(attempts):
+        if torch.cuda.is_available():
+            return "cuda"
+        if mps is not None and mps.is_available():
+            return "mps"
+        if i < attempts - 1:
+            if i == 0:
+                _log(f"CUDA not ready (GPU busy?) — re-probing for up to "
+                     f"{int(tries * wait)}s before falling back to CPU ...")
+            time.sleep(wait)
     return "cpu"
 
 
