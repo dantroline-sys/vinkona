@@ -11,6 +11,15 @@
     display:flex; align-items:center; justify-content:space-between; gap:16px; }
   header h1 { margin:0; font-size:18px; }
   header .sub { color:#8b93a1; font-size:13px; margin-top:4px; }
+  #nowDoing { display:flex; align-items:center; gap:8px; font-size:12px; color:#c7cbd3;
+    background:#20242c; border:1px solid #333844; border-radius:14px; padding:5px 11px;
+    white-space:nowrap; max-width:340px; overflow:hidden; text-overflow:ellipsis; }
+  #nowDoing .dot { width:8px; height:8px; border-radius:50%; background:#5a6472; flex:none; }
+  #nowDoing.busy .dot { background:#ffb454; }              /* in a chat — not interruptible */
+  #nowDoing.working .dot { background:#7aa7ff; animation:vkpulse 2s infinite; }
+  #nowDoing.idle .dot { background:#3f8f5f; }
+  @keyframes vkpulse { 0%{box-shadow:0 0 0 0 rgba(122,167,255,.5);}
+    70%{box-shadow:0 0 0 6px rgba(122,167,255,0);} 100%{box-shadow:0 0 0 0 rgba(122,167,255,0);} }
   #idleControl { text-align:right; font-size:12px; white-space:nowrap; }
   #idleBtn { background:#2a2e37; border:1px solid #3a3f4b; color:#e6e8ec; border-radius:8px;
     padding:8px 14px; font-size:13px; cursor:pointer; }
@@ -218,6 +227,9 @@
     <div class="sub">Personas &amp; tunables apply on the next call. Ports/models &amp; ASR need a service restart.
       <a id="chatLink" href="#" target="_blank" style="color:#7aa7ff; margin-left:8px;">Open text chat ↗</a>
       <span id="vinurLink" style="margin-left:8px;"></span></div>
+  </div>
+  <div id="nowDoing" class="idle" title="What Vinkona is doing right now">
+    <span class="dot"></span><span id="nowDoingText">…</span>
   </div>
   <div id="idleControl" title="Pause Vinkona's background research/idle tasks to free the LMs (e.g. for the knowledge host)">
     <button id="idleBtn" onclick="toggleIdle()">Pause idle work</button>
@@ -2360,6 +2372,26 @@ function injectTabHelp(){
 
 loadPersonas(); loadHelp().then(loadConfig); setChatLink();
 refreshIdle(); setInterval(refreshIdle, 15000);
+
+// Live "what is she doing" pill — polls the aggregated status (session heartbeat +
+// worker task) so you can see her reflecting/reading/distilling, being interrupted to
+// talk, or resting.  Cheap read; refreshes a touch faster than the idle badge.
+async function refreshActivity() {
+  try {
+    const s = await (await fetch('/api/activity')).json();
+    const el = document.getElementById('nowDoing'), txt = document.getElementById('nowDoingText');
+    if (!el || !txt) return;
+    txt.textContent = s.headline || '—';
+    let cls = (s.doing === 'chatting') ? 'busy'
+            : (s.doing === 'idle' || s.doing === 'paused') ? 'idle' : 'working';
+    if (s.worker && s.worker.doing === 'standing_down') cls = 'busy';   // interruption in progress
+    el.className = cls;
+    el.title = (s.worker && s.worker.doing && s.worker.doing !== 'idle' && s.doing !== 'chatting')
+      ? `${s.headline}${s.interruptible ? ' — will step aside when you talk to her' : ''}`
+      : 'What Vinkona is doing right now';
+  } catch(e) {}
+}
+refreshActivity(); setInterval(refreshActivity, 5000);
 
 // ── Vinur (knowledge host) connection: header badge + Services-tab panel ────
 function paintVinur(state, word, col, detail, url) {

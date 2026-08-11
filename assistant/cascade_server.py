@@ -207,6 +207,13 @@ class CascadeServer:
         # One conversation at a time: the web text chat is only available while no
         # audio session is running, and vice versa.
         self.active_kind = None
+        # A NEW connection supersedes whatever's lingering (almost always a ghost — a
+        # backgrounded phone or a closed tab whose websocket never cleanly closed): we
+        # close the old socket and take over rather than refuse.  _active_ws is that
+        # socket; _active_token is an ownership tag so the superseded session's cleanup
+        # clears the busy flag only if it still owns it, never a newer session's.
+        self._active_ws = None
+        self._active_token = 0
         # Degraded-mode notices (e.g. TLS fell back to plain ws://) — shown in
         # the web UI via /api/status and the trace feed.
         self.startup_warnings: list = []
@@ -253,7 +260,8 @@ class CascadeServer:
             # Atomic replace: the idle worker treats an unreadable/torn file as "idle",
             # so a partial write could let big-LM work start mid-conversation.
             tmp = self._activity_path.with_suffix(".json.tmp")
-            tmp.write_text(json.dumps({"open": bool(open), "ts": time.time()}))
+            tmp.write_text(json.dumps({"open": bool(open), "ts": time.time(),
+                                       "kind": self.active_kind if open else None}))
             os.replace(tmp, self._activity_path)
         except Exception:
             pass
@@ -442,17 +450,27 @@ class CascadeServer:
         if self.ws_token and not await self._authenticate(ws):
             return ws
         kind = "text" if request.query.get("mode") == "text" else "audio"
-        # Mutual exclusion: one conversation at a time.  Refuse (rather than
-        # silently queue) a second connection so the text-chat page can show busy.
-        # The check-and-set below has no await between, so it's race-free in asyncio.
+        # A new connection SUPERSEDES whatever's lingering rather than refusing.  A second
+        # connection is almost always a ghost — a backgrounded phone or a closed tab whose
+        # websocket never cleanly closed — and the user wants to talk NOW, not be told the
+        # box is "busy" with a session that isn't really there.  So: tell the client we're
+        # warming up, stand the idle worker down, close the old socket, and take over.
+        # (This deployment is one user; the last connection wins.)
         if self.active_kind is not None:
-            _log(f"refusing {kind} connection — {self.active_kind} session active")
-            await ws.send_bytes(b"\x02" + json.dumps(
-                {"role": "system",
-                 "text": f"Busy: a {self.active_kind} session is in progress."}).encode("utf8"))
-            await ws.close()
-            return ws
+            _log(f"new {kind} connection supersedes a lingering {self.active_kind} session")
+            try:
+                await ws.send_bytes(b"\x02" + json.dumps(
+                    {"role": "system",
+                     "text": "Warming up — one moment while she wraps up what she was doing…"}
+                    ).encode("utf8"))
+            except Exception:
+                pass
+            await self._supersede_active()
+        token = self._active_token + 1
+        self._active_token = token
         self.active_kind = kind
+        self._active_ws = ws
+        self.mark_activity(open=True)            # tell the idle worker to stand down at once
         _log(f"accepted {kind} connection")
         try:
             async with self.lock:
@@ -461,9 +479,32 @@ class CascadeServer:
                     self.memory.reload(cfg)     # pick up UI/reflection edits + tuned knobs
                 await _Session(self, ws, request, cfg, personas, default).run()
         finally:
-            self.active_kind = None
+            # Clear the busy flag only if THIS connection still owns it — a session that
+            # was superseded (or wedged past the warm-up wait) must never wipe the newer
+            # one's flag.
+            if self._active_token == token:
+                self.active_kind = None
+                self._active_ws = None
         _log("done with connection")
         return ws
+
+    async def _supersede_active(self, timeout_s: float = 3.0):
+        """Stand the current session and the idle worker down so a new chat can take over.
+        Closes the old websocket (its receive loop then exits and releases the busy flag)
+        and marks the box in-use so the idle worker yields the shared model.  Bounded: we
+        proceed even if the old session is wedged — the ownership token keeps its late
+        cleanup from clobbering the newcomer."""
+        self.mark_activity(open=True)            # idle worker sees 'open' → stands down
+        old = self._active_ws
+        if old is not None:
+            try:
+                if not old.closed:
+                    await old.close(code=4409, message=b"superseded by a new session")
+            except Exception:
+                pass
+        deadline = time.monotonic() + max(0.0, timeout_s)
+        while self.active_kind is not None and time.monotonic() < deadline:
+            await asyncio.sleep(0.05)            # let the old session release cleanly
 
 
 class _Session:

@@ -1516,10 +1516,31 @@ FEATURE_RECIPES: dict = {
         "title": "Deep knowledge library",
         "enable": {
             "summary": "For how-to and factual questions she can consult your curated knowledge "
-                       "library, for well-grounded answers.",
+                       "library, and weave what it finds straight into her reply.",
             "requires": [{"path": "knowledge_host.url", "label": "the knowledge library address"}],
+            "changes": [{"path": "knowledge_host.live", "value": True,
+                         "label": "use the library to shape live replies (not just background thinking)"}],
         },
-        "disable": {"summary": "She'll answer from her own memory instead of the library."},
+        "disable": {
+            "summary": "She'll answer from her own memory instead of the library.",
+            "changes": [{"path": "knowledge_host.live", "value": False,
+                         "label": "stop consulting the library mid-reply"}],
+        },
+    },
+    "local_kb.enabled": {
+        "title": "Built-in knowledge packs",
+        "enable": {
+            "summary": "She'll consult the knowledge packs stored on this machine for how-to and "
+                       "factual questions, and weave what they say straight into her reply — no "
+                       "separate knowledge server needed.",
+            "changes": [{"path": "local_kb.live", "value": True,
+                         "label": "use the packs to shape live replies (not just background thinking)"}],
+        },
+        "disable": {
+            "summary": "She'll answer from her own memory instead of the built-in packs.",
+            "changes": [{"path": "local_kb.live", "value": False,
+                         "label": "stop consulting the packs mid-reply"}],
+        },
     },
     "calendar_sync.enabled": {
         "title": "Mirroring your calendar",

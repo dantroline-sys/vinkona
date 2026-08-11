@@ -63,6 +63,7 @@ CFGMOD = _load_mod("config")
 PEOPLE = _load_mod("people")           # for the Self tab (Vinkona's self-authored identity)
 IDLECTL = _load_mod("idle_control")    # idle pause/resume + quiet-hours math
 HELPMOD = _load_mod("confighelp")      # /api/help — extracted config.py comments + help.json
+WACT = _load_mod("worker_activity")    # /api/activity — what she's doing (worker + session)
 UI_PATH = Path(__file__).parent / "config_ui.html"
 LOGS_DIR = Path(__file__).parent / "logs"            # written by vinkona.sh (shared filesystem)
 
@@ -521,6 +522,51 @@ class MemoryAdmin:
         d["quiet_hours"] = quiet
         return d
 
+    def activity_status(self, cfg: dict) -> dict:
+        """One place every UI reads to show what Vinkona is doing right now: the live
+        session (from the cascade's activity.json heartbeat) takes precedence, else the
+        idle worker's current task (worker_state 'activity' row), else 'idle'.  Also
+        carries the idle-work override so the panel can show 'paused' honestly.
+
+        Cross-process by design — the cascade writes the heartbeat, the worker writes the
+        activity row, and this (config) server only reads both; a missing file/row just
+        reads as 'not in a chat' / 'idle', never an error."""
+        now = time.time()
+        open_stale = float((cfg.get("research", {}).get("idle", {}) or {}).get("open_stale_s", 1800))
+        # Live session? — read the cascade's heartbeat file.
+        session = {"active": False, "kind": None}
+        try:
+            ap = CFGMOD.activity_path(cfg)
+            txt = ap.read_text() if ap.exists() else None
+            session = WACT.read_session(txt, now, open_stale)
+        except Exception:
+            pass
+        # Worker's current task — the worker_state 'activity' row.
+        worker = None
+        try:
+            if Path(self.path).exists():
+                with self._conn() as c:
+                    row = c.execute("SELECT value FROM worker_state WHERE key='activity'").fetchone()
+                    if row:
+                        worker = WACT.read_activity(row[0], now)
+        except Exception:
+            pass
+        idle = self.idle_status(cfg)
+        # Resolve a single headline the UIs can show verbatim.
+        if session.get("active"):
+            headline = ("In a voice conversation" if session.get("kind") == "audio"
+                        else "In a text conversation")
+            doing, interruptible = "chatting", False
+        elif idle.get("suppressed"):
+            headline, doing, interruptible = "Resting — background work is paused", "paused", True
+        elif worker and worker.get("doing") and worker.get("doing") != "idle":
+            headline = worker.get("label") or "Working on something"
+            doing, interruptible = worker.get("doing"), bool(worker.get("interruptible", True))
+        else:
+            headline, doing, interruptible = "Idle — waiting quietly", "idle", True
+        return {"headline": headline, "doing": doing, "interruptible": interruptible,
+                "session": session, "worker": worker, "idle": idle}
+
     def set_idle_override(self, override: str) -> dict:
         """Set the manual pause/resume switch the worker polls: 'paused' | 'active' | 'auto'."""
         override = (override or "auto").strip().lower()
@@ -859,6 +905,12 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/idle":
             try:
                 return self._json(200, MemoryAdmin(self._cfg()).idle_status(self._cfg()))
+            except Exception as e:
+                return self._json(500, {"error": str(e)})
+        if path == "/api/activity":
+            try:
+                cfg = self._cfg()
+                return self._json(200, MemoryAdmin(cfg).activity_status(cfg))
             except Exception as e:
                 return self._json(500, {"error": str(e)})
         if path == "/api/research_defaults":

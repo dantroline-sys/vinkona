@@ -1126,6 +1126,7 @@ async def main():
         return bool(idle_tasks.get(name, True))
     activity_file = Path(cfg.get("config_server", {}).get("trace_path",
                          "config/trace.jsonl")).with_name("activity.json")
+    _wact = _load("worker_activity")
 
     def is_idle() -> bool:
         """Idle = no cascade session open AND quiet for idle_after seconds.  The cascade
@@ -1144,6 +1145,36 @@ async def main():
             return age >= idle_after
         except Exception:
             return False
+
+    def _read_activity_file():
+        try:
+            return activity_file.read_text() if activity_file.exists() else None
+        except Exception:
+            return None
+
+    def should_yield() -> bool:
+        """A live chat just opened → stand down big-LM idle work at the next safe point.
+        Checkpoint-clean: idle_cycle's sub-steps are independently gated/cooldown'd, so
+        bailing between them loses nothing and the next cycle resumes naturally."""
+        return _wact.should_yield(_read_activity_file(), time.time(), open_stale)
+
+    _last_act = {"key": None}
+
+    def set_activity(doing: str, detail: str = "", interruptible: bool = True) -> None:
+        """Publish 'what she's doing right now' so every UI can show it (worker_state
+        'activity' row).  Only writes on a CHANGE, so the record's `since` marks when the
+        task actually started (and 'idle since …' doesn't reset every poll).  Best-effort
+        — status must never break the work it describes."""
+        key = (doing, detail, interruptible)
+        if key == _last_act["key"]:
+            return
+        _last_act["key"] = key
+        try:
+            memory.set_state("activity", json.dumps(
+                _wact.activity_record(doing, time.time(), detail=detail,
+                                      interruptible=interruptible)))
+        except Exception:
+            pass
 
     # Idle-work suppression: the header button (worker_state 'idle_override') plus
     # scheduled quiet hours (config research.idle.quiet_hours).  When suppressed we
@@ -1183,7 +1214,19 @@ async def main():
         reflect on the next window of past interactions — capturing self/relational +
         user memories and queueing research, re-evaluated against current tools, and work
         a few learning-plan questions.  (Mail/file crawling is a separate scheduled task —
-        see crawl_cycle.)  force=True (startup) treats the moment as idle so it begins now."""
+        see crawl_cycle.)  force=True (startup) treats the moment as idle so it begins now.
+
+        Cooperatively pre-emptible: between sub-steps we check should_yield() and bail if a
+        chat has started, marking the stand-down in the activity status.  Each sub-step is
+        independently cooldown'd/checkpointed, so bailing between them loses no work — the
+        next idle cycle resumes where the cooldowns allow."""
+        def _stand_down() -> bool:
+            if not force and should_yield():
+                _log("standing down from idle work — a chat started")
+                set_activity("standing_down", interruptible=False)
+                return True
+            return False
+        set_activity("reflect")
         # One-off: if memory.embed_task_prefix was toggled, bring the stored vectors in
         # line before anything queries them (cheap no-op once consistent).
         try:
@@ -1222,8 +1265,11 @@ async def main():
         # mind-graph (people/places/things + grounded relations).  A dreaming activity, so it runs
         # here on every idle cycle — off unless memory.mind_graph.enabled and the big LM is up.
         # Drains oldest-first, checkpointed, never re-distilling; a no-op once caught up.
+        if _stand_down():
+            return
         _mgc = cfg.get("memory", {}).get("mind_graph", {})
         if _mgc.get("enabled") and big.get("url"):
+            set_activity("mind_graph")
             try:
                 st = await memory.distill_mind_graph(big["url"], big["model"])
                 if st and st.get("failed"):
@@ -1258,7 +1304,10 @@ async def main():
                         pass
                 finally:
                     memory.set_state("calendar_synced_at", str(time.time()))
+        if _stand_down():
+            return
         if _task_on("consolidate") and idle_cfg.get("consolidate", True):
+            set_activity("consolidate")
             cstats = await memory.consolidate(
                 big["url"], big["model"], idle_cfg.get("consolidate_max_clusters", 3),
                 idle_cfg.get("consolidate_sim", 0.82),
@@ -1381,7 +1430,10 @@ async def main():
         if not (force or args.idle_once or is_idle()):
             return                               # user came back mid-cycle
         # Reflect on the next window of past turns (queues new research topics).
+        if _stand_down():
+            return
         if _task_on("reflect"):
+            set_activity("reflect")
             rows, span = memory.next_review_window(review_window)
             if rows:
                 n, topics, ncorr = await memory.idle_reflect(
@@ -1767,6 +1819,7 @@ async def main():
             # server sets.  Honoured regardless of idle gating — the user asked for it.
             req = memory.get_state("reconcile_request")
             if req and req != memory.get_state("reconcile_handled"):
+                set_activity("reconcile", interruptible=False)
                 try:
                     await run_big(reconcile())
                 except Exception as e:
@@ -1777,6 +1830,7 @@ async def main():
             # (repairs anything removed from the folder).  Honoured regardless of idle gating.
             ereq = memory.get_state("export_request")
             if ereq and ereq != memory.get_state("export_handled"):
+                set_activity("export", interruptible=False)
                 try:
                     do_export(full=True)
                 except Exception as e:
@@ -1790,6 +1844,7 @@ async def main():
             if mreq and mreq != memory.get_state("mind_graph_handled"):
                 mgc = cfg.get("memory", {}).get("mind_graph", {})
                 if mgc.get("enabled") and big.get("url"):
+                    set_activity("mind_graph", interruptible=False)
                     try:
                         st = await run_big(memory.distill_mind_graph(big["url"], big["model"]))
                         if st and st.get("failed"):
@@ -1808,16 +1863,19 @@ async def main():
                 memory.set_state("mind_graph_handled", mreq)
                 continue
             if _task_on("garden") and garden_interval and time.time() - last_garden >= garden_interval:
+                set_activity("garden")
                 garden()
                 last_garden = time.time()
             suppressed = idle_suppressed()          # manual pause or scheduled quiet hours
             if (not suppressed and _task_on("ingest") and ingest_interval
                     and time.time() - last_ingest >= ingest_interval):
+                set_activity("ingest")
                 await run_big(ingest_all(session))
                 last_ingest = time.time()
             # News crawl: append fresh headlines to the queryable archive.  No big LM, so it runs
             # on its own cadence regardless of idle (like garden/ingest).
             if _task_on("rss") and rss_interval and time.time() - last_rss >= rss_interval:
+                set_activity("rss")
                 try:
                     await rss_crawl()
                 except Exception as e:
@@ -1825,6 +1883,7 @@ async def main():
                 last_rss = time.time()
             # Research export: sync new hoard out to the knowledge-host hand-off folder (no big LM).
             if _task_on("export") and export_interval and time.time() - last_export >= export_interval:
+                set_activity("export")
                 try:
                     do_export(full=False)
                 except Exception as e:
@@ -1834,6 +1893,7 @@ async def main():
             # never competes with a live session's briefings.  'suppressed' (manual
             # pause / quiet hours) counts as not-idle so the LMs stay free.
             if idle_on and (suppressed or not is_idle()):
+                set_activity("idle")           # a chat is open (or paused) — no idle work now
                 if args.once:
                     break
                 await asyncio.sleep(poll)
@@ -1843,6 +1903,7 @@ async def main():
             # than research is processed (so it's lower priority), but it always happens.
             if (_task_on("crawl") and ingest_cfg.get("enabled") and ingest_cfg.get("crawls")
                     and crawl_interval and time.time() - last_crawl >= crawl_interval):
+                set_activity("crawl")
                 try:
                     await run_big(crawl_cycle())
                 except Exception as e:
@@ -1852,6 +1913,7 @@ async def main():
             # Daily news narrative: condense the day's headlines (big LM → memory), idle-gated.
             if (_task_on("news_digest") and digest_interval
                     and time.time() - last_digest >= digest_interval):
+                set_activity("news_digest")
                 try:
                     await run_big(news_digest())
                 except Exception as e:
@@ -1863,16 +1925,19 @@ async def main():
                 # Queue empty: run an idle learning cycle (on its pause cadence), else wait.
                 if idle_on and is_idle() and time.time() - last_idle >= idle_pause:
                     try:
-                        await run_big(idle_cycle())
+                        await run_big(idle_cycle())   # sets its own fine-grained activity
                     except Exception as e:
                         _log(f"idle cycle failed (continuing): {e}")
                     last_idle = time.time()
+                    set_activity("idle")              # cycle done — quiet again
                     continue
+                set_activity("idle")
                 if args.once:
                     break
                 await asyncio.sleep(poll)
                 continue
             topic = task["topic"]
+            set_activity("research", detail=topic)
             if memory.researched_recently(topic, cooldown):
                 _log(f"skip '{topic}' — researched recently")
                 memory.mark_research(task["id"], "skipped")

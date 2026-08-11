@@ -165,6 +165,9 @@ function connect() {
       try {
         const b = JSON.parse(new TextDecoder().decode(bytes.subarray(1)));
         if (b.role === 'system' && /busy/i.test(b.text)) busy = true;
+        // A new connection now supersedes a lingering one instead of being refused;
+        // the server sends this while it stands the old session/idle work down.
+        if (b.role === 'system' && /warming up/i.test(b.text)) setStatus('warming up…', '');
         addMessage(b.role, b.text);
       } catch (e) {}
     } else if (kind === 0x03) {                // PCM audio frame (when speak is on)
