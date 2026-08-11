@@ -60,6 +60,21 @@ def build_engine(engine: str, cfg: dict, device: str):
         # ref_wav null = the built-in voice; a clip clones the persona voice.
         eng.register_voice(tts["default_voice"], cb.get("ref_wav"))
         return eng
+    if engine == "qwen3":
+        from tts_qwen3 import Qwen3TTSEngine
+        q = tts["qwen3"]
+        lm_url = q.get("lm_url") or (cfg.get("tts_lm") or {}).get("url") \
+            or "http://127.0.0.1:11439"
+        return Qwen3TTSEngine(lm_url=lm_url,
+                              default_voice=tts["default_voice"],
+                              voices=q.get("voices") or {},
+                              codec_path=q.get("codec_path"),
+                              codec_repo=q["codec_repo"],
+                              codec_file=q.get("codec_file"),
+                              sample_rate=int(q.get("sample_rate", 24000)),
+                              temperature=q["temperature"],
+                              top_p=q["top_p"],
+                              max_tokens=q["max_tokens"])
     if engine == "orpheus_gguf":
         from tts_orpheus_gguf import OrpheusGGUFEngine
         og = tts["orpheus_gguf"]
@@ -175,7 +190,9 @@ def main():
     import importlib.util
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="config/config.json")
-    ap.add_argument("--engine", choices=["neutts", "orpheus", "orpheus_gguf", "chatterbox"], default=None,
+    ap.add_argument("--engine",
+                    choices=["neutts", "orpheus", "orpheus_gguf", "chatterbox", "qwen3"],
+                    default=None,
                     help="override config tts.engine (also selects which venv's deps to load)")
     ap.add_argument("--device", default="auto",
                     help="auto (cuda > mps > cpu), or an explicit torch device")

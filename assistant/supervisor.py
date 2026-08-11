@@ -127,7 +127,7 @@ def load_config() -> dict:
 def tts_engine(cfg: dict) -> str:
     # Legacy "orpheus" (the retired vLLM engine) maps to orpheus_gguf.
     eng = (cfg.get("tts") or {}).get("engine") or "orpheus_gguf"
-    return eng if eng in ("neutts", "chatterbox") else "orpheus_gguf"
+    return eng if eng in ("neutts", "chatterbox", "qwen3") else "orpheus_gguf"
 
 
 def lm_block(cfg: dict, tier: str) -> dict:
@@ -211,6 +211,9 @@ def services_for(mode: str, topo: dict, cfg: dict | None = None) -> list[dict]:
             eng = tts_engine(cfg)
             if eng == "orpheus_gguf":          # only Orpheus needs the tts_lm llama-server
                 add("tts_lm", "host", ["./serve_tts_lm.sh"])
+            # qwen3 is SCAFFOLDED: serve_tts.sh starts the engine (which reports what it
+            # still needs); its token-server wiring (reuse tts_lm, or its own) is pending
+            # the model card's serving format, so we don't presume tts_lm for it yet.
             add("tts", "box", ["./serve_tts.sh", eng], r"tts_server\.py")
             add("cascade", "box", ["./serve_cascade.sh"], r"cascade_server\.py")
             add("config", "box", ["./serve_config.sh"], r"config_server\.py")
