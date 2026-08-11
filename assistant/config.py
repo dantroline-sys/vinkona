@@ -454,6 +454,15 @@ DEFAULTS: dict = {
         "host": "127.0.0.1",
         "port": 11436,
         "url": "http://127.0.0.1:11436",
+        # Which CUDA GPU the TTS engine host (tts_server.py) runs on — a PCI-order
+        # index, exactly like the LM tiers' "gpu" (see top of this file: on the dev
+        # box 0 = 3090, 1 = 4090).  serve_tts.sh turns this into
+        # CUDA_DEVICE_ORDER=PCI_BUS_ID + CUDA_VISIBLE_DEVICES.  Only the torch
+        # engines (qwen3 / neutts / chatterbox) load on a GPU — orpheus_gguf vocodes
+        # on CPU, so this is a no-op there.  Set null to NOT mask (let torch see
+        # every card and place the model itself).  An externally-set
+        # CUDA_VISIBLE_DEVICES always wins over this.
+        "gpu": 1,
         # Which TTS engine tts_server.py loads (and which services vinkona.sh
         # starts): "orpheus_gguf" (Orpheus on llama.cpp + SNAC), "neutts"
         # (cloned voice), "chatterbox" (~0.5B, cloned voice + emotion knob — the

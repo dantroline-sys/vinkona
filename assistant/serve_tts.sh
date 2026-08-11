@@ -14,14 +14,30 @@ source "$SCRIPT_DIR/env.sh"          # in-tree caches/tmp/PATH — see env.sh
 ENGINE="${1:-orpheus_gguf}"
 CONFIG="$SCRIPT_DIR/config/config.json"
 
-# Stable GPU ordering so every process agrees on device indices.
-# The live response path is fast LM + embed + TTS together on the 4090; the big LM
-# runs alone on the 3090.  On this box the 4090 is CUDA index 1 (verify with
-# CUDA_DEVICE_ORDER=PCI_BUS_ID nvidia-smi).  Override with
-# CUDA_VISIBLE_DEVICES=N ./serve_tts.sh ...
+# Stable GPU ordering so every process agrees on device indices (matches the LM
+# tiers — see llm_server.py).  WHICH card TTS uses is configurable, never
+# hard-coded: config tts.gpu is a PCI-order index (on the dev box 0 = 3090,
+# 1 = 4090).  Precedence: an externally-set CUDA_VISIBLE_DEVICES wins (e.g.
+# CUDA_VISIBLE_DEVICES=0 ./serve_tts.sh ...); else config tts.gpu; a null tts.gpu
+# means "don't mask" (torch sees every card).  Only the torch engines
+# (qwen3/neutts/chatterbox) load on a GPU — orpheus_gguf vocodes on CPU.
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
-: "${CUDA_VISIBLE_DEVICES:=1}"
-export CUDA_VISIBLE_DEVICES
+if [ -z "${CUDA_VISIBLE_DEVICES:-}" ]; then
+    # Read tts.gpu through config.py so DEFAULTS apply (config.json holds only
+    # overrides).  System python3 is fine — config.py is stdlib-only and 3.9-clean.
+    _tts_gpu="$(python3 - "$SCRIPT_DIR" "$CONFIG" <<'PY' 2>/dev/null
+import importlib.util, sys
+root, cfgp = sys.argv[1], sys.argv[2]
+spec = importlib.util.spec_from_file_location("config", root + "/config.py")
+mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+gpu = (mod.load_config(cfgp).get("tts") or {}).get("gpu")
+print("" if gpu is None else gpu)
+PY
+)"
+    if [ -n "$_tts_gpu" ]; then
+        export CUDA_VISIBLE_DEVICES="$_tts_gpu"
+    fi
+fi
 
 # Self-provision: if the chosen engine isn't installed yet, install it now
 # (install.sh is idempotent).  THIS is what makes "switch TTS engine" in the config
