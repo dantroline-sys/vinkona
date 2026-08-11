@@ -519,8 +519,13 @@ DEFAULTS: dict = {
             "dtype": "bfloat16",             # bfloat16 | float16 | float32
             "attn_implementation": None,     # e.g. "flash_attention_2" | "sdpa"; null = package default
             "chunk_ms": 200,                 # streaming chunk size (synth-then-chunk; see module)
-            # Generation kwargs forwarded to HF generate (temperature/top_p/max_new_tokens);
-            # empty → the checkpoint's generate_config.json defaults.
+            # Fixed RNG seed so VoiceDesign builds the SAME voice every call (it designs
+            # a voice from `instruct` per call, so without this the timbre drifts between
+            # sentences).  null → don't seed (voice varies).  Change it to reroll the voice.
+            "seed": 20240811,
+            # Generation kwargs forwarded to generate_voice_design (do_sample/temperature/
+            # top_k/top_p/repetition_penalty); empty → the package/checkpoint defaults.
+            # Lower temperature = steadier voice; do_sample=false = deterministic (flatter).
             "gen_kwargs": {},
             # voice NAME → natural-language style DESCRIPTION (the `instruct`).  The
             # cascade keeps calling voices by name; an unknown name is used as a

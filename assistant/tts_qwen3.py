@@ -91,10 +91,17 @@ class Qwen3TTSEngine:
         chunk_ms: int = 200,
         sample_rate: int = DEFAULT_SAMPLE_RATE,
         gen_kwargs: tp.Optional[dict] = None,
+        seed: tp.Optional[int] = None,
     ):
         import torch                                  # lazy: only this engine's venv has it
         from qwen_tts import Qwen3TTSModel
 
+        self._torch = torch
+        # VoiceDesign *designs a voice afresh from `instruct` on every call*, so with
+        # sampling on the timbre drifts sentence-to-sentence.  A fixed RNG seed makes
+        # that design reproducible → one stable voice, while keeping sampling's
+        # naturalness.  null = don't seed (let it vary).
+        self._seed = seed
         self.language = language
         # name → natural-language style description (the `instruct`)
         self._styles = dict(voices or {})
@@ -161,6 +168,10 @@ class Qwen3TTSEngine:
     def synthesize(self, text: str, voice: tp.Optional[str] = None) -> np.ndarray:
         """One utterance → float32 PCM.  BLOCKING — worker thread."""
         instruct = self.resolve_style(voice)
+        if self._seed is not None:
+            # Seed right before generation so the voice VoiceDesign builds from the
+            # instruct is the same every call (stable persona voice across turns).
+            self._torch.manual_seed(int(self._seed))
         wavs, sr = self._model.generate_voice_design(
             text=text, language=self.language, instruct=instruct, **self._gen_kwargs)
         self.sample_rate = int(sr)
