@@ -137,10 +137,24 @@ class Qwen3TTSEngine:
         return list(self._styles.keys()) or [self.default_voice]
 
     def resolve_style(self, voice: tp.Optional[str]) -> str:
-        """A voice name → its style description; an unknown name is used as a
-        literal description, so ad-hoc styles ('a brisk newsreader') work too."""
+        """A voice NAME → its style description (the `instruct`).
+
+        - a configured name → its description;
+        - a MULTI-WORD string → used as an ad-hoc natural-language style, so
+          "a brisk newsreader" still works;
+        - any other BARE name (e.g. an Orpheus voice like "tara" arriving from a
+          persona/config that predates qwen3) → the default style.
+
+        That last case is load-bearing: a bare name is NOT a valid voice-design
+        instruct — VoiceDesign would invent a DIFFERENT random voice for it every
+        sentence (the "five different people" bug).  Falling back to the default
+        style keeps the persona voice stable across turns."""
         voice = voice or self.default_voice
-        return self._styles.get(voice, voice)
+        if voice in self._styles:
+            return self._styles[voice]
+        if " " in voice.strip():                     # a description, not a name
+            return voice
+        return self._styles.get(self.default_voice) or voice
 
     # ── engine contract ───────────────────────────────────────────────────────
 

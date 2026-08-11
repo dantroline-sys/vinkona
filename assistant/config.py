@@ -526,7 +526,11 @@ DEFAULTS: dict = {
             # cascade keeps calling voices by name; an unknown name is used as a
             # literal style, so ad-hoc descriptions work too.
             "voices": {
-                "vinkona": "A warm, articulate voice, calm and friendly, unhurried.",
+                # Describe the voice in NATURAL LANGUAGE — VoiceDesign designs a voice
+                # from this text.  BE SPECIFIC ABOUT GENDER (and age/accent/pace): an
+                # underspecified description drifts between male/female across sentences.
+                "vinkona": "A warm, articulate woman's voice — calm, friendly and "
+                           "unhurried, with a natural conversational tone.",
             },
         },
         "neutts": {

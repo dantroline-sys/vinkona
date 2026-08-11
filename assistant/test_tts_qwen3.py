@@ -78,8 +78,10 @@ def test_contract_and_voice_style():
     check("voices are the configured names", set(eng.voices) == {"vinkona", "narrator"})
     check("a known voice resolves to its description",
           eng.resolve_style("narrator").startswith("A slow storyteller"))
-    check("an unknown voice is used as a literal style",
+    check("a multi-word unknown voice is an ad-hoc literal style",
           eng.resolve_style("A brisk newsreader.") == "A brisk newsreader.")
+    check("a bare unknown name (e.g. Orpheus 'tara') falls back to the default style",
+          eng.resolve_style("tara") == "A warm, calm assistant.")
     check("no voice → the default's description",
           eng.resolve_style(None) == "A warm, calm assistant.")
 
