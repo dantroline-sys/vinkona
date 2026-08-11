@@ -97,11 +97,19 @@ class Qwen3TTSEngine:
         ref_text: tp.Optional[str] = None,
         x_vector_only: bool = True,
         speaker: tp.Optional[str] = None,
+        stream_chunk_chars: int = 0,
     ):
         import torch                                  # lazy: only this engine's venv has it
         from qwen_tts import Qwen3TTSModel
 
         self._torch = torch
+        # This package has no streaming audio output, so synthesize_stream normally
+        # generates the WHOLE utterance before any audio plays (long time-to-first-
+        # audio).  With stream_chunk_chars > 0, split the text into ~that-many-char
+        # clause units and generate+emit each in turn, so first audio arrives after a
+        # short clause.  Trade-off: per-unit generation overhead + possible prosody
+        # seams; only sane with a FIXED voice (clone/custom).  0 = whole utterance.
+        self._stream_chunk_chars = int(stream_chunk_chars or 0)
         # VoiceDesign *designs a voice afresh from `instruct` on every call*, so with
         # sampling on the timbre drifts sentence-to-sentence.  A fixed RNG seed makes
         # that design reproducible → one stable voice, while keeping sampling's
@@ -245,17 +253,47 @@ class Qwen3TTSEngine:
         pcm = np.asarray(pcm, dtype=np.float32).reshape(-1)
         return np.ascontiguousarray(pcm)
 
+    def _split_units(self, text: str) -> tp.List[str]:
+        """Break text into ≈stream_chunk_chars clause units for lower time-to-first-
+        audio: prefer clause punctuation, then merge small pieces up to the budget,
+        and hard-split any over-long piece at a word boundary."""
+        import re
+        budget = self._stream_chunk_chars
+        pieces = [p for p in re.split(r"(?<=[,;:.!?—–])\s+", text.strip()) if p]
+        units: tp.List[str] = []
+        cur = ""
+        for p in pieces:
+            cand = f"{cur} {p}".strip() if cur else p
+            if len(cand) <= budget or not cur:
+                cur = cand
+            else:
+                units.append(cur); cur = p
+            while len(cur) > int(budget * 1.6):          # a single over-long piece
+                cut = cur.rfind(" ", 0, budget)
+                if cut <= 0:
+                    break
+                units.append(cur[:cut]); cur = cur[cut + 1:]
+        if cur:
+            units.append(cur)
+        return units or [text]
+
     def synthesize_stream(self, text: str, voice: tp.Optional[str] = None):
         """Yield 16-bit PCM byte chunks — same framing as the other engines.
 
-        Synthesize-then-chunk: the package has no public token-level streaming
-        generator yet, and the cascade calls this per sentence, so latency is
-        per-sentence.  Replace the body with the real streaming API when available."""
-        pcm = self.synthesize(text, voice)
-        if not len(pcm):
-            _log(f"no audio for {len(text)} chars")
-            return
-        i16 = (np.clip(pcm, -1.0, 1.0) * 32767.0).astype("<i2")
+        The package has no token-level streaming generator, so each unit is
+        generated whole then chunked.  With stream_chunk_chars > 0 the utterance is
+        split into clause units first, so first audio arrives after a short clause
+        instead of the whole sentence (see __init__)."""
+        units = self._split_units(text) if self._stream_chunk_chars else [text]
         step = max(1, int(self.sample_rate * self._chunk_ms / 1000))
-        for i in range(0, len(i16), step):
-            yield i16[i:i + step].tobytes()
+        emitted = False
+        for unit in units:
+            pcm = self.synthesize(unit, voice)
+            if not len(pcm):
+                continue
+            emitted = True
+            i16 = (np.clip(pcm, -1.0, 1.0) * 32767.0).astype("<i2")
+            for i in range(0, len(i16), step):
+                yield i16[i:i + step].tobytes()
+        if not emitted:
+            _log(f"no audio for {len(text)} chars")

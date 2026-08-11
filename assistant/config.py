@@ -518,7 +518,13 @@ DEFAULTS: dict = {
             "language": "English",           # spoken language for synthesis
             "dtype": "bfloat16",             # bfloat16 | float16 | float32
             "attn_implementation": None,     # e.g. "flash_attention_2" | "sdpa"; null = package default
-            "chunk_ms": 200,                 # streaming chunk size (synth-then-chunk; see module)
+            "chunk_ms": 200,                 # PCM chunk size streamed to the client
+            # LATENCY lever: the package can't stream audio, so 0 generates the WHOLE
+            # sentence before any plays.  Set >0 (e.g. 70) to split each sentence into
+            # ~that-many-char clause units and play each as it finishes — shorter time-
+            # to-first-audio, at the cost of some per-unit overhead and prosody seams.
+            # Only worth it with a fixed voice (mode=clone/custom).
+            "stream_chunk_chars": 0,
             # Voice MODE: "design" (natural-language `instruct` — expressive but the
             # timbre still drifts between sentences even seeded, since it re-designs the
             # voice each call), "clone" (clone a FIXED reference clip — consistent voice,

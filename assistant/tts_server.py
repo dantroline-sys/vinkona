@@ -78,7 +78,8 @@ def build_engine(engine: str, cfg: dict, device: str):
                               ref_audio=q.get("ref_audio"),
                               ref_text=q.get("ref_text"),
                               x_vector_only=bool(q.get("x_vector_only", True)),
-                              speaker=q.get("speaker"))
+                              speaker=q.get("speaker"),
+                              stream_chunk_chars=int(q.get("stream_chunk_chars", 0)))
     if engine == "orpheus_gguf":
         from tts_orpheus_gguf import OrpheusGGUFEngine
         og = tts["orpheus_gguf"]
