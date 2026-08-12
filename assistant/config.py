@@ -368,11 +368,24 @@ DEFAULTS: dict = {
             "enabled": True,
             "loop_sim": 0.8,            # word-overlap of the last two replies that counts as
                                         # "looping" (0 disables the loop trigger; the tool stays)
-            "timeout_s": 25.0,          # give up and apologise after this long
+            # Deadlines are STALL-based, not wall-clock: while the big LM is streaming it
+            # is making progress and is never cut off — a hard question that deserves 40s
+            # of thought gets it.  We give up only when output STOPS (stall_timeout_s) or
+            # the absolute backstop trips (timeout_s).
+            "timeout_s": 120.0,         # absolute backstop even while output flows
+            "stall_timeout_s": 30.0,    # give up after this long with NO output at all
             "progress_after_s": 3.0,    # first progress line after this, then every interval
             "stall": "Hold on — let me think about that properly for a second.",
+            # Long-form questions (why/how/compare/…) announce the deeper think, which sets
+            # the expectation and buys the time a considered answer needs.
+            "deep_stall": "That's a good question — let me think deeply about this one "
+                          "for a moment.",
             "progress": ["Still with you — thinking…", "Almost there…"],
             "timed_out": "Sorry, that took too long. Want to try again?",
+            # Answer budgets — SHARED with the thinking tokens, so too small a number is
+            # spent on reasoning and the conclusion gets truncated mid-sentence.
+            "answer_tokens": 900,       # normal considered answer
+            "longform_tokens": 1600,    # an explanation that has earned the room
             "deliver_via_fast": True,   # rephrase the answer in the fast LM's voice (vs verbatim)
             "history_turns": 12,        # how many recent turns of context the big LM gets
             # Cold-start: on an exclusive-swap box the big LM may not be resident, so the

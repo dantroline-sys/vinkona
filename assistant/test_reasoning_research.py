@@ -12,6 +12,7 @@ import asyncio
 import importlib.util
 import json
 import sys
+import time
 import types
 from pathlib import Path
 
@@ -637,7 +638,7 @@ async def test_deliberate_flow():
     # Happy path: announce → think → deliver, with barge-in held throughout.
     spoken.clear(); seen = {}
     b = mk({"deliver_via_fast": False})
-    async def quick(prompt):
+    async def quick(prompt, max_tokens=None):
         seen["during"] = getattr(b.state, "deliberating", None)
         return "Nitrogen boils at about minus 196 Celsius."
     b._big_lm_consider = quick
@@ -651,7 +652,7 @@ async def test_deliberate_flow():
     # Verbal progress bar: a long think speaks a 'still thinking' line before answering.
     spoken.clear()
     b = mk({"deliver_via_fast": False, "progress_after_s": 0.05})
-    async def slow(prompt):
+    async def slow(prompt, max_tokens=None):
         await asyncio.sleep(0.18)
         return "It's ready now."
     b._big_lm_consider = slow
@@ -662,7 +663,7 @@ async def test_deliberate_flow():
     # Timeout: give up, apologise, and release barge-in.
     spoken.clear()
     b = mk({"deliver_via_fast": False, "timeout_s": 0.08, "timed_out": "Sorry, that took too long."})
-    async def hang(prompt):
+    async def hang(prompt, max_tokens=None):
         await asyncio.sleep(5)
         return "never"
     b._big_lm_consider = hang
@@ -674,10 +675,10 @@ async def test_deliberate_flow():
     # Delivery via the fast LM: the big LM's answer is rephrased in-voice, not verbatim.
     spoken.clear()
     b = mk({"deliver_via_fast": True})
-    async def raw(prompt): return "RAW ANSWER 42."
+    async def raw(prompt, max_tokens=None): return "RAW ANSWER 42."
     b._big_lm_consider = raw
     captured = {}
-    async def fake_tts(messages, tools=None):
+    async def fake_tts(messages, tools=None, max_tokens=None):
         captured["messages"] = messages
         return "It's forty-two.", []
     b._stream_to_tts = fake_tts
@@ -685,6 +686,115 @@ async def test_deliberate_flow():
     check("delivery routes the answer through the fast LM's voice", out == "It's forty-two.")
     check("the raw answer is handed to the fast LM to phrase",
           any("RAW ANSWER 42" in (m.get("content") or "") for m in captured["messages"]))
+
+
+async def test_longform_deliberation_is_not_cut_off():
+    """A question that wants a real explanation must not be guillotined — not by the
+    deadline while the model is still producing, and not by a token cap on the way out.
+    (Regression: 'why are rocuronium and suxamethonium incompatible…' timed out on one
+    turn and was truncated mid-sentence on the next.)"""
+    spoken: list = []
+    async def say(s): spoken.append(s)
+
+    def mk(over=None):
+        b = bridge.LLMBridge(server_state=types.SimpleNamespace(),
+                             fast_lm_url="http://f", big_lm_url="http://b",
+                             deliberate={**(over or {})})
+        b.speak_sink = say
+        return b
+
+    b = mk()
+    # ── which questions earn the long form ────────────────────────────────────
+    check("an explanatory 'why … incompatible' question is long-form",
+          b._is_longform("why are rocuronium and suxamethonium kind of incompatible "
+                         "although they do get used together?"))
+    check("'explain how X works' is long-form", b._is_longform("explain how sugammadex works"))
+    check("'difference between' is long-form",
+          b._is_longform("what's the difference between the two?"))
+    check("a long qualified question is long-form even without a keyword",
+          b._is_longform("I was reading about the anaesthetic agents used in rapid sequence "
+                         "induction and wondered about the ones my hospital keeps stocked"))
+    check("a short factual question is NOT long-form",
+          not b._is_longform("what time is it?"))
+    check("long-form gets a bigger answer budget than normal",
+          b._answer_budget(True) > b._answer_budget(False) > 512)
+
+    # ── the stall deadline: streaming output is never guillotined ─────────────
+    spoken.clear()
+    b = mk({"deliver_via_fast": False, "progress_after_s": 0.02,
+            "stall_timeout_s": 0.5, "timeout_s": 10.0})
+    async def slow_but_alive(prompt, max_tokens=None):
+        for _ in range(12):                      # 0.36s of steady "streaming"
+            await asyncio.sleep(0.03)
+            b._think_alive = time.monotonic()    # what _big_lm_consider does per chunk
+        return "The full considered answer, finished properly."
+    b._big_lm_consider = slow_but_alive
+    out = await b._deliberate("why does that happen, mechanistically?")
+    check("a slow but STREAMING think is allowed to finish (no false timeout)",
+          "finished properly" in out)
+    check("progress lines cycle instead of running out (long think keeps company)",
+          sum(1 for s in spoken if "thinking" in s.lower() or "Almost" in s) >= 3)
+
+    # a genuinely WEDGED model (no output at all) still gives up
+    spoken.clear()
+    b = mk({"deliver_via_fast": False, "progress_after_s": 0.02,
+            "stall_timeout_s": 0.15, "timeout_s": 10.0,
+            "timed_out": "Sorry, that took too long."})
+    async def wedged(prompt, max_tokens=None):
+        await asyncio.sleep(5)
+        return "never"
+    b._big_lm_consider = wedged
+    out = await b._deliberate("why is that?")
+    check("a wedged think (no output at all) still gives up on the stall deadline",
+          "too long" in out.lower())
+
+    # ── the deep-thought stall line buys the time ─────────────────────────────
+    spoken.clear()
+    b = mk({"deliver_via_fast": False})
+    async def quick(prompt, max_tokens=None): return "Because of X, which leads to Y."
+    b._big_lm_consider = quick
+    await b._deliberate("why are those two drugs incompatible?")
+    check("a long-form question announces a DEEPER think up front",
+          bool(spoken) and "deeply" in spoken[0].lower())
+    spoken.clear()
+    await b._deliberate("what time is it?")
+    check("a short question keeps the brief stall line",
+          bool(spoken) and "deeply" not in spoken[0].lower())
+
+    # ── delivery must carry the whole answer, not 200 tokens of it ────────────
+    long_answer = ("Suxamethonium is a depolarizing blocker, while rocuronium is a "
+                   "non-depolarizing one that competes for the same receptors. " * 6).strip()
+    seen = {}
+    b = mk({"deliver_via_fast": True})
+    async def big(prompt, max_tokens=None):
+        seen["budget"] = max_tokens
+        return long_answer
+    b._big_lm_consider = big
+    async def fake_tts(messages, tools=None, max_tokens=None):
+        seen["tts_budget"] = max_tokens
+        seen["system"] = messages[0].get("content") or ""
+        return "A properly finished rephrasing of the whole thing.", []
+    b._stream_to_tts = fake_tts
+    out = await b._deliberate("why are rocuronium and suxamethonium incompatible?")
+    check("the big LM gets the long-form token budget",
+          seen["budget"] == b._answer_budget(True))
+    check("the delivery pass is sized to the answer, not the 200-token default",
+          seen["tts_budget"] > b.FAST_MAX_TOKENS)
+    check("the rephrase is spoken when it completes", "properly finished" in out)
+    check("long-form delivery tells the voice to KEEP the substance (not 3 sentences)",
+          "Keep ALL of the substance" in seen["system"]
+          and "three short sentences" not in seen["system"])
+
+    # a TRUNCATED rephrase is discarded in favour of the complete considered answer
+    async def truncating_tts(messages, tools=None, max_tokens=None):
+        return "So while they can be used together, it's generally avoided due to these opposing", []
+    b._stream_to_tts = truncating_tts
+    out = await b._deliberate("why are rocuronium and suxamethonium incompatible?")
+    check("a rephrase cut off mid-sentence is dropped for the complete answer",
+          "opposing" not in out and "depolarizing" in out)
+    check("truncation is detected by a missing sentence ending",
+          b._looks_truncated("due to these opposing") and
+          not b._looks_truncated("due to these opposing effects."))
 
 
 async def test_identity_injection_and_tools():
@@ -1079,6 +1189,7 @@ async def main():
     test_deliberate_triggers()
     await test_deliberate_tool_offered()
     await test_deliberate_flow()
+    await test_longform_deliberation_is_not_cut_off()
     await test_affect_shift()
     test_voice_examples()
     print(f"\n{PASS} passed, {FAIL} failed")

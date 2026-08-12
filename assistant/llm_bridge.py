@@ -598,11 +598,21 @@ _DELIBERATE_DEFAULTS = {
     "loop_sim": 0.8,           # ≥ this token-overlap between the last two replies ⇒ the
                                # fast LM is looping → take the next turn to the big LM
                                # (set 0 to disable the loop-detector trigger)
-    "timeout_s": 25.0,         # give up after this long and apologise
+    # Deadlines are STALL-based, not wall-clock: a model that is still streaming is making
+    # progress and is never guillotined — that killed good answers to hard questions.
+    "timeout_s": 120.0,        # absolute backstop, even while output flows
+    "stall_timeout_s": 30.0,   # give up only after this long with NO output at all
     "progress_after_s": 3.0,   # first "still thinking" line after this long, then each interval
     "stall": "Hold on — let me think about that properly for a second.",
+    # A long-form question (why/how/compare/…) sets the expectation up front, which buys
+    # the seconds a considered answer actually needs.
+    "deep_stall": "That's a good question — let me think deeply about this one for a moment.",
     "progress": ["Still with you — thinking…", "Almost there…"],
     "timed_out": "Sorry, that took too long. Want to try again?",
+    # Token budgets for the considered answer.  These are shared with the THINKING tokens,
+    # so a tight budget spends itself on reasoning and truncates the conclusion mid-sentence.
+    "answer_tokens": 900,      # normal considered answer
+    "longform_tokens": 1600,   # an explanation that has earned the room
     "deliver_via_fast": True,  # rephrase the big LM's answer in the fast LM's own voice
     "history_turns": 12,       # recent turns of raw context handed to the big LM
     # Cold-start: on an exclusive-swap box the big LM may not be resident, so the first
@@ -918,6 +928,9 @@ class LLMBridge:
         # Set by _stream_chat when the big LM refused the connection (not resident on an
         # exclusive-swap box): deliberation uses it to wait for the swap-in instead of bailing.
         self._big_cold = False
+        # Last time the deliberating big LM emitted anything — the stall-based deadline
+        # measures SILENCE, so a slow-but-streaming think is never cut off.
+        self._think_alive: float = 0.0
         # Short briefing produced by the big LM after each turn.
         self._big_lm_briefing: str = ""
         # Background task handle so we can await/cancel it cleanly.
@@ -1511,7 +1524,8 @@ class LLMBridge:
         await self.speak_sink(text)
 
     async def _stream_to_tts(self, messages: list[dict],
-                             tools: tp.Optional[list] = None) -> tuple[str, list]:
+                             tools: tp.Optional[list] = None,
+                             max_tokens: tp.Optional[int] = None) -> tuple[str, list]:
         """Cascade mode: stream the LM and hand each complete sentence to speak_sink.
 
         Returns (spoken_text, tool_calls).  When `tools` is provided and the model
@@ -1524,7 +1538,8 @@ class LLMBridge:
         t0 = time.monotonic()
         first = True
         async for chunk in self._stream_chat(
-            self.fast_url, self.fast_model, messages, self.FAST_MAX_TOKENS,
+            self.fast_url, self.fast_model, messages,
+            int(max_tokens or self.FAST_MAX_TOKENS),
             tools=tools, tool_calls_out=tool_calls, asides_out=self._turn_asides,
         ):
             if first:
@@ -2161,10 +2176,16 @@ class LLMBridge:
         it works), then deliver the answer in the fast LM's voice.  Returns the spoken
         reply (or an apology on timeout).  Accepts a few seconds of latency by design."""
         cfg = self.deliberate_cfg
+        longform = self._is_longform(question)
         self._set_deliberating(True)
         t0 = time.monotonic()
         try:
-            await self.speak_sink(cfg.get("stall") or _DELIBERATE_DEFAULTS["stall"])
+            # A long-form question gets a stall line that BUYS the time it needs — saying
+            # "I have to think deeply about this" sets the expectation, so a 30s answer
+            # reads as considered rather than broken.
+            stall = ((cfg.get("deep_stall") or _DELIBERATE_DEFAULTS["deep_stall"]) if longform
+                     else (cfg.get("stall") or _DELIBERATE_DEFAULTS["stall"]))
+            await self.speak_sink(stall)
             n = int(cfg.get("history_turns", 12))
             recent = [m for m in self.history[-(n * 2):] if m["role"] in ("user", "assistant")]
             convo = "\n".join(f"{m['role'].upper()}: {m['content']}" for m in recent)
@@ -2176,17 +2197,21 @@ class LLMBridge:
             prompt = (
                 "You are the deliberate, knowledgeable reasoning core behind a voice "
                 "assistant. The user asked something where getting the facts and reasoning "
-                "right matters. Think it through and give the best, accurate answer. Be "
-                "substantive but concise — it will be spoken aloud, so at most a few "
-                "sentences: no preamble, no lists, no markdown.\n\n"
-                f"{self._identity_detail()}{self._user_profile()}"
+                "right matters. Think it through and give the best, accurate answer. "
+                + ("This one needs a real explanation: give the full reasoning, in "
+                   "connected spoken prose — no preamble, no lists, no markdown, and "
+                   "finish your final sentence.\n\n" if longform else
+                   "Be substantive but concise — it will be spoken aloud, so at most a "
+                   "few sentences: no preamble, no lists, no markdown.\n\n")
+                + f"{self._identity_detail()}{self._user_profile()}"
                 + (f"{notes}\n\n" if notes else "")
                 + (f"What you've recalled that may bear on this:\n{recall}\n\n" if recall else "")
                 + f"Conversation so far:\n{convo}\n\nAnswer this well: {question}\n\nAnswer:")
-            task = asyncio.create_task(self._big_lm_consider(prompt))
+            budget = self._answer_budget(longform)
+            task = asyncio.create_task(self._big_lm_consider(prompt, budget))
             answer = await self._await_with_progress(task)
             if not answer and self._big_cold:      # big LM wasn't resident — wait for the swap-in
-                answer = await self._await_cold(prompt)
+                answer = await self._await_cold(prompt, budget)
         finally:
             self._set_deliberating(False)
         elapsed = round(time.monotonic() - t0, 2)
@@ -2197,8 +2222,44 @@ class LLMBridge:
             self._trace("deliberate_done", ok=False, elapsed_s=elapsed, cold=cold)
             await self.speak_sink(line)
             return line
-        self._trace("deliberate_done", ok=True, elapsed_s=elapsed, bytes=len(answer))
-        return await self._deliver_consideration(answer)
+        self._trace("deliberate_done", ok=True, elapsed_s=elapsed, bytes=len(answer),
+                    longform=longform)
+        return await self._deliver_consideration(answer, longform=longform)
+
+    # A question that WANTS a real explanation: an explanatory/comparative ask, several
+    # named things to relate, or simply a long question.  Such a turn gets a bigger token
+    # budget, a "this needs real thought" stall line, and delivery that keeps the
+    # substance instead of compressing it to three sentences.
+    _LONGFORM_RE = re.compile(
+        r"\b(why|how come|how does|how do|explain|compare|contrast|difference between|"
+        r"differ|relate[sd]? to|interact|incompatible|compatible|trade[- ]?offs?|"
+        r"pros and cons|walk me through|talk me through|reason(ing)? (behind|for)|"
+        r"what happens (if|when)|implications?|mechanism)\b", re.I)
+
+    def _is_longform(self, question: str) -> bool:
+        q = (question or "").strip()
+        if not q:
+            return False
+        if self._LONGFORM_RE.search(q):
+            return True
+        return len(q.split()) >= 20            # a long, qualified question wants a real answer
+
+    def _answer_budget(self, longform: bool) -> int:
+        """Token budget for the considered answer — shared with the thinking tokens, so it
+        must leave room for BOTH the reasoning and a finished conclusion."""
+        cfg = self.deliberate_cfg
+        return int(cfg.get("longform_tokens", 1600) if longform
+                   else cfg.get("answer_tokens", 900))
+
+    @staticmethod
+    def _looks_truncated(text: str) -> bool:
+        """True when a reply stops mid-thought — no terminal punctuation at the end.  A
+        spoken answer that dies on '…due to these opposing' is worse than a shorter
+        complete one, so callers fall back to the full text they already hold."""
+        t = (text or "").strip()
+        if not t:
+            return True
+        return t[-1] not in ".!?…\"')]}"
 
     def _identity_detail(self) -> str:
         """The full self+user identity profile for the big LM (the reasoning/continuity
@@ -2224,29 +2285,45 @@ class LLMBridge:
             return ""
         return f"{p}\n\n" if p else ""
 
-    async def _big_lm_consider(self, prompt: str) -> str:
-        """One synchronous big-LM call with thinking ON — the actual 'deeper thought'."""
+    async def _big_lm_consider(self, prompt: str, max_tokens: tp.Optional[int] = None) -> str:
+        """One synchronous big-LM call with thinking ON — the actual 'deeper thought'.
+
+        `max_tokens` covers the THINKING TOKENS TOO (reasoning_budget is unbounded here),
+        so a tight budget silently eats the answer: the model reasons for 400 tokens and
+        the conclusion gets guillotined mid-sentence.  Budget generously — a long-form
+        question deserves a long-form answer (see _answer_budget)."""
         self._big_cold = False                     # _stream_chat sets it if the tier isn't resident
         messages = [
             {"role": "system",
              "content": "You are a careful, knowledgeable reasoning assistant."},
             {"role": "user", "content": prompt},
         ]
+        cap = int(max_tokens or self.deliberate_cfg.get("answer_tokens", 900))
         parts: list[str] = []
         async for chunk in self._stream_chat(self.big_url, self.big_model, messages,
-                                             max_tokens=512, think=True):
+                                             max_tokens=cap, think=True):
             parts.append(chunk)
+            self._think_alive = time.monotonic()   # liveness for the stall-based deadline
         return "".join(parts).strip()
 
     async def _await_with_progress(self, task: "asyncio.Task") -> tp.Optional[str]:
         """Await the deliberation, speaking a progress line every `progress_after_s` while
-        it runs (a verbal progress bar), and giving up after `timeout_s`.  Returns the
-        result, or None on timeout/failure (caller apologises)."""
+        it runs (a verbal progress bar).  Returns the result, or None on give-up.
+
+        The deadline is a STALL deadline, not a wall clock: we give up only when the model
+        has produced NOTHING for `stall_timeout_s` (it's wedged / the endpoint died), or
+        when the absolute `timeout_s` backstop trips.  A model that is thinking hard and
+        streaming tokens is making progress and must never be guillotined for taking its
+        time on a question that deserves it — that killed genuinely good answers.  Progress
+        lines CYCLE rather than running out, so a long think doesn't fall into silence."""
         cfg = self.deliberate_cfg
         interval = max(0.05, float(cfg.get("progress_after_s", 3.0)))
-        deadline = max(interval, float(cfg.get("timeout_s", 25.0)))
+        hard_cap = max(interval, float(cfg.get("timeout_s", 120.0)))
+        stall_cap = max(interval, float(cfg.get("stall_timeout_s", 30.0)))
         lines = list(cfg.get("progress") or [])
-        waited, i = 0.0, 0
+        t0 = time.monotonic()
+        self._think_alive = t0
+        i = 0
         while True:
             done, _ = await asyncio.wait({task}, timeout=interval)
             if task in done:
@@ -2255,8 +2332,11 @@ class LLMBridge:
                 except Exception as exc:
                     _log("warning", f"deliberation failed: {exc}")
                     return None
-            waited += interval
-            if waited >= deadline:
+            now = time.monotonic()
+            silent_for = now - (self._think_alive or t0)
+            if silent_for >= stall_cap or (now - t0) >= hard_cap:
+                _log("warning", f"deliberation gave up after {now - t0:.1f}s "
+                                f"(silent {silent_for:.1f}s)")
                 task.cancel()
                 try:
                     await task
@@ -2266,11 +2346,12 @@ class LLMBridge:
                 except Exception:
                     pass
                 return None
-            if i < len(lines):
-                await self.speak_sink(lines[i])
+            if lines:                               # cycle, so a long think keeps company
+                await self.speak_sink(lines[i % len(lines)])
                 i += 1
 
-    async def _await_cold(self, prompt: str) -> tp.Optional[str]:
+    async def _await_cold(self, prompt: str,
+                          max_tokens: tp.Optional[int] = None) -> tp.Optional[str]:
         """The big LM wasn't resident when deliberation started (a swap-in was requested).
         Wait for it within `cold_timeout_s`, retrying the considered answer and speaking
         progress lines, so a hard question after a quiet stretch is answered IN this turn
@@ -2287,7 +2368,7 @@ class LLMBridge:
         while time.monotonic() - t0 < budget:
             await asyncio.sleep(poll)
             try:
-                answer = await self._big_lm_consider(prompt)   # resets _big_cold; re-sets it if still cold
+                answer = await self._big_lm_consider(prompt, max_tokens)   # resets _big_cold; re-sets it if still cold
             except Exception as exc:
                 _log("warning", f"cold deliberation retry failed: {exc}")
                 answer = ""
@@ -2300,25 +2381,44 @@ class LLMBridge:
                 await self.speak_sink(lines[i]); i += 1
         return None
 
-    async def _deliver_consideration(self, answer: str) -> str:
+    async def _deliver_consideration(self, answer: str, *, longform: bool = False) -> str:
         """Speak the big LM's conclusion.  By default the fast LM rephrases it in its own
         voice (consistent persona, and it can't re-loop because the substance is fixed);
-        falls back to speaking it verbatim if that pass produces nothing."""
+        falls back to speaking it verbatim if that pass produces nothing.
+
+        The rephrase is the OTHER place a good long answer used to die: it ran on the
+        fast LM's standard 200-token cap under a 'one to three short sentences'
+        instruction, which guillotined a considered explanation mid-sentence.  For a
+        long-form answer the instruction keeps the substance and the budget is sized to
+        the text; if the rephrase still comes back truncated we speak the big LM's own
+        (complete) answer instead of a half-finished paraphrase."""
         if self.deliberate_cfg.get("deliver_via_fast", True) and self.speak_sink is not None:
             system = self.system_prompt
             if self.inject_time:
                 system += "\n\n" + self._time_context()
             system += ("\n\nYou just thought this through carefully. Say the following "
-                       "conclusion to the user in your own natural speaking voice, in one "
-                       "to three short sentences. Don't add new facts, and don't mention "
-                       "thinking, planning, or where it came from — just say it.")
+                       "conclusion to the user in your own natural speaking voice. "
+                       + ("Keep ALL of the substance and the reasoning — do not summarise "
+                          "or drop steps; just say it as connected speech, and finish your "
+                          "last sentence. " if longform else
+                          "in one to three short sentences. ")
+                       + "Don't add new facts, and don't mention thinking, planning, or "
+                         "where it came from — just say it.")
             messages = [{"role": "system", "content": system}] + \
                        self.history[-(self.FAST_CONTEXT_TURNS * 2):] + \
                        [{"role": "user", "content": f"Say this to me naturally:\n{answer}"}]
+            # Size the budget to the text it must carry (~1 token per 3 chars + headroom),
+            # never below the normal cap.
+            budget = max(self.FAST_MAX_TOKENS, len(answer) // 3 + 150) if longform \
+                else self.FAST_MAX_TOKENS
             try:
-                text, _ = await self._stream_to_tts(messages, tools=None)
-                if text.strip():
-                    return text.strip()
+                text, _ = await self._stream_to_tts(messages, tools=None, max_tokens=budget)
+                text = text.strip()
+                if text and not (longform and self._looks_truncated(text)):
+                    return text
+                if text:
+                    _log("warning", "deliberation rephrase came back truncated — "
+                                    "speaking the considered answer verbatim instead")
             except Exception as exc:
                 _log("warning", f"deliberation delivery via fast LM failed: {exc}")
         # Fallback: speak the considered answer directly, sentence by sentence.
