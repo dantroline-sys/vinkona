@@ -268,6 +268,38 @@ class MindGraph:
         total["backlog"] = self.backlog()
         return total
 
+    async def catch_up_all(self, extract_fn: tp.Callable, *,
+                           should_yield: tp.Optional[tp.Callable] = None,
+                           now: tp.Optional[float] = None) -> dict:
+        """Drain the ENTIRE backlog — the forced 'Redistil everything' lane.  Successive
+        catch_up passes until nothing is left, the LM fails, or `should_yield()` asks us
+        to stand down for the user.  The per-pass caps still bound each dreaming pass (and
+        each LM call); this only removes the ONE-PASS CEILING that made a full rebuild stop
+        after batch_turns×max_batches turns and leave the rest to trickle at dream cadence.
+
+        Returns catch_up's totals plus ``done``: True only when the backlog reached zero.
+        A caller that sees done=False (a yield or a failure) should leave its request
+        PENDING — the checkpoint means the next attempt resumes exactly where this one
+        stopped, re-folding nothing."""
+        total = {"turns": 0, "nodes": 0, "edges": 0, "refused": 0, "batches": 0,
+                 "done": False}
+        while True:
+            st = await self.catch_up(extract_fn, now=now)
+            for k in ("turns", "nodes", "edges", "refused", "batches"):
+                total[k] += int(st.get(k, 0))
+            total["backlog"] = int(st.get("backlog") or 0)
+            if st.get("failed"):
+                total["failed"] = True
+                return total
+            if not total["backlog"]:
+                total["done"] = True
+                return total
+            if not st.get("turns"):                    # backlog but no progress — never spin
+                total["failed"] = True
+                return total
+            if should_yield and should_yield():        # the user needs the box — stand down
+                return total
+
     def _fold(self, data: dict, turns: list[dict], now: float) -> dict:
         """Deterministic fold of one extraction into the store.  The LM output is untrusted: every
         edge must ground to a real quote in a real user turn, or it is refused."""

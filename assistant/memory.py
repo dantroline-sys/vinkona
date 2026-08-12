@@ -1596,6 +1596,22 @@ class MemoryStore:
 
         return await mg.catch_up(_extract)
 
+    async def distill_mind_graph_all(self, big_url: str, big_model: str, *,
+                                     should_yield=None) -> dict:
+        """The forced full drain behind 'Redistil everything': loop the dreaming pass until
+        the WHOLE backlog is folded — not one capped pass, which is what made a rebuild
+        'max out' at batch_turns×max_batches turns.  Cooperative (`should_yield` stands it
+        down for the user) and checkpointed (a resumed drain re-folds nothing).  Returns
+        totals + done=True only when the backlog hit zero."""
+        if not self._mg_cfg.get("enabled") or not big_url:
+            return {}
+        mg = self._ensure_mind_graph()
+
+        async def _extract(prompt: str):
+            return await self._chat_json(big_url, big_model, prompt)
+
+        return await mg.catch_up_all(_extract, should_yield=should_yield)
+
     def mind_context(self, text: str) -> str:
         """A grounded 'what I already know about this' block from the durable graph, for the recall
         path.  Empty unless enabled AND something matches, so it's inert when off/cold."""

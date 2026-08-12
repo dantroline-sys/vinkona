@@ -342,6 +342,44 @@ def test_catch_up_stops_on_failure():
     check("catch_up preserves the full backlog on failure", st["backlog"] == 4)
 
 
+def test_catch_up_all_drains_past_the_one_pass_ceiling():
+    """The 'Redistil everything' bug: a forced rebuild ran ONE capped catch_up
+    (batch_turns×max_batches turns — 1000 on the live box) and stopped.  catch_up_all
+    must drain the WHOLE backlog, stand down cooperatively, and resume from the
+    checkpoint without re-folding."""
+    db = fresh_db()
+    for i in range(10):
+        add_turn(db, "user", f"Backlog message {i} for the rebuild.")
+    # one pass folds at most 2×2 = 4 turns — the old ceiling
+    g = mg.MindGraph(db, {"distill_batch_turns": 2, "distill_max_batches": 2})
+    st = asyncio.run(g.catch_up_all(stub({})))
+    check("catch_up_all drains PAST the per-pass ceiling (all 10, not 4)",
+          st["turns"] == 10 and st["backlog"] == 0 and st.get("done") is True)
+    # cooperative stand-down: yield after the first pass, resume later
+    db2 = fresh_db()
+    for i in range(10):
+        add_turn(db2, "user", f"Second backlog message {i}.")
+    g2 = mg.MindGraph(db2, {"distill_batch_turns": 2, "distill_max_batches": 2})
+    calls = {"n": 0}
+    def yield_after_first():
+        calls["n"] += 1
+        return calls["n"] >= 1                          # user comes back immediately
+    st1 = asyncio.run(g2.catch_up_all(stub({}), should_yield=yield_after_first))
+    check("catch_up_all stands down for the user (done=False, backlog preserved)",
+          st1.get("done") is False and st1["turns"] == 4 and st1["backlog"] == 6)
+    st2 = asyncio.run(g2.catch_up_all(stub({})))
+    check("a resumed drain finishes from the checkpoint, re-folding nothing",
+          st2.get("done") is True and st2["turns"] == 6 and st2["backlog"] == 0)
+    # failure: stop, flag, preserve — never spin
+    db3 = fresh_db()
+    for i in range(3):
+        add_turn(db3, "user", f"Third backlog message {i}.")
+    g3 = mg.MindGraph(db3, {"distill_batch_turns": 1, "distill_max_batches": 1})
+    st3 = asyncio.run(g3.catch_up_all(stub(None)))
+    check("catch_up_all stops on failure with the backlog intact",
+          st3.get("failed") is True and st3.get("done") is False and st3["backlog"] == 3)
+
+
 def main():
     test_anchor_and_schema()
     test_prompt_carries_a_grounded_worked_example()
@@ -350,6 +388,7 @@ def main():
     test_corroboration_updates_the_fact()
     test_failed_extraction_does_not_advance()
     test_catch_up_stops_on_failure()
+    test_catch_up_all_drains_past_the_one_pass_ceiling()
     test_grounded_fold()
     test_grounding_refuses_invention()
     test_identity_firewall()

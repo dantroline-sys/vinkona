@@ -1844,23 +1844,39 @@ async def main():
             if mreq and mreq != memory.get_state("mind_graph_handled"):
                 mgc = cfg.get("memory", {}).get("mind_graph", {})
                 if mgc.get("enabled") and big.get("url"):
+                    if should_yield():
+                        continue           # user is active — the forced drain resumes next cycle
                     set_activity("mind_graph", interruptible=False)
                     try:
-                        st = await run_big(memory.distill_mind_graph(big["url"], big["model"]))
+                        # Drain the WHOLE backlog (catch_up_all), not one capped pass — a
+                        # 'Redistil everything' used to stop at batch_turns×max_batches turns
+                        # and leave the rest to trickle at dream cadence.  Cooperative: it
+                        # stands down between passes if the user comes back, and the request
+                        # stays PENDING so the checkpoint resumes it next idle cycle.
+                        st = await run_big(memory.distill_mind_graph_all(
+                            big["url"], big["model"], should_yield=should_yield))
                         if st and st.get("failed"):
                             _log("mind-graph (forced): the big LM returned nothing usable — is it "
                                  "serving and does it support JSON output? backlog left intact to retry")
+                        elif st and not st.get("done"):
+                            _log(f"mind-graph (forced): stood down for the user after "
+                                 f"+{st.get('nodes',0)} node(s)/+{st.get('edges',0)} edge(s) — "
+                                 f"{st.get('backlog',0)} still to distil, resuming next idle")
                         elif st:
-                            _log(f"mind-graph (forced): +{st.get('nodes',0)} node(s)/+{st.get('edges',0)} "
-                                 f"edge(s), {st.get('refused',0)} refused, {st.get('backlog',0)} still to distil")
+                            _log(f"mind-graph (forced): rebuilt to the end — +{st.get('nodes',0)} "
+                                 f"node(s)/+{st.get('edges',0)} edge(s), {st.get('refused',0)} "
+                                 f"refused, {st.get('turns',0)} turn(s) folded")
                         if st:
                             trace.write(kind="mind_graph", forced=True, **st,
                                         store_size=len(memory.entries))
+                        if not st or st.get("done") or st.get("failed"):
+                            memory.set_state("mind_graph_handled", mreq)
                     except Exception as e:
                         _log(f"manual mind-graph distill failed (continuing): {e}")
+                        memory.set_state("mind_graph_handled", mreq)
                 else:
                     _log("mind-graph distill requested but it's off or big_lm has no url — skipping")
-                memory.set_state("mind_graph_handled", mreq)
+                    memory.set_state("mind_graph_handled", mreq)
                 continue
             if _task_on("garden") and garden_interval and time.time() - last_garden >= garden_interval:
                 set_activity("garden")
