@@ -13,6 +13,15 @@ Contract (Vinkona ⟶ tool host):
 
 Everything degrades gracefully: if tools are disabled or the host is unreachable,
 catalogue() returns [] and the conversation proceeds tool-free.
+
+READS ARE NEVER GATED BY THE HOST'S BACKGROUND WORK.  The knowledge host in
+particular (vinur) serves kb_search / kb_ask / kb_reason from a threaded server over
+WAL sqlite, runs its heavy verbs (distill, derive, citations, …) in separate
+processes, and its query-time embedding falls back to BM25 on a short timeout — so a
+host that is busy distilling still answers reads promptly.  Treat any tool failure as
+TRANSIENT: nothing here should conclude "the host is busy, stop asking" — a failed
+catalogue fetch is retried on the next turn (only success is cached), and a failed
+call simply returns ok=False for that one call.
 """
 
 import typing as tp
@@ -36,7 +45,10 @@ class ToolHost:
         return {"Authorization": f"Bearer {self._auth}"} if self._auth else {}
 
     async def catalogue(self) -> list:
-        """OpenAI-style tools array for /v1/chat/completions, or [] if unavailable."""
+        """OpenAI-style tools array for /v1/chat/completions, or [] if unavailable.
+        The fetch runs on its own SHORT timeout (never the full call timeout): a slow or
+        busy host must not hold a chat turn hostage at session start — this turn goes
+        tool-free and the next one retries (only a successful catalogue is cached)."""
         if not self.active:
             return []
         if self._catalog is not None:
@@ -45,7 +57,8 @@ class ToolHost:
         try:
             async with aiohttp.ClientSession() as s:
                 async with s.get(f"{self.url}/tools", headers=self._headers(),
-                                 timeout=aiohttp.ClientTimeout(total=self.timeout)) as r:
+                                 timeout=aiohttp.ClientTimeout(
+                                     total=min(float(self.timeout), 5.0))) as r:
                     if r.status != 200:
                         return []
                     data = await r.json()
