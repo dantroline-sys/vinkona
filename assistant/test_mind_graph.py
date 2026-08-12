@@ -380,6 +380,63 @@ def test_catch_up_all_drains_past_the_one_pass_ceiling():
           st3.get("failed") is True and st3.get("done") is False and st3["backlog"] == 3)
 
 
+def test_poison_turn_cannot_wedge_the_backlog():
+    """The real 'stuck at 1000' bug: checkpoint-on-failure is right for a TRANSIENT outage
+    but deadlocks on a DETERMINISTIC one — a turn whose text blows the context window fails
+    identically every pass, so the same batch is retried forever and the backlog freezes at
+    exactly the same number.  A failed batch must bisect, and a lone unextractable turn must
+    be quarantined — but only when the model is provably answering."""
+    db = fresh_db()
+    for i in range(3):
+        add_turn(db, "user", f"Ordinary message {i}.")
+    add_turn(db, "user", "POISON " + ("x" * 500))          # the one that blows the prompt
+    for i in range(3):
+        add_turn(db, "user", f"Later message {i}.")
+    g = mg.MindGraph(db, {"distill_batch_turns": 8, "distill_max_batches": 4})
+
+    def extractor(healthy=True):
+        """Fails on any prompt containing the poison turn; otherwise succeeds."""
+        def fn(prompt):
+            if not healthy:
+                return None                                # the whole model is down
+            return None if "POISON" in prompt else {}
+        return fn
+
+    # a batch containing the poison turn bisects, folds the good turns, quarantines the one
+    st = asyncio.run(g.catch_up(extractor()))
+    check("the backlog drains despite an unextractable turn", g.backlog() == 0)
+    check("exactly one turn was quarantined", st.get("skipped") == 1)
+    check("the good turns around it were still folded", st["turns"] >= 6)
+    sk = g.skipped_turns()
+    check("the quarantined turn is recorded for audit (id + size)",
+          len(sk) == 1 and sk[0]["chars"] > 500)
+    check("stats surfaces the skip count", g.stats()["skipped"] == 1)
+
+    # a genuine outage must NOT skip anything — the backlog is preserved for a retry
+    db2 = fresh_db()
+    for i in range(4):
+        add_turn(db2, "user", f"Message {i} during an outage.")
+    g2 = mg.MindGraph(db2, {"distill_batch_turns": 4, "distill_max_batches": 2})
+    st2 = asyncio.run(g2.catch_up(extractor(healthy=False)))
+    check("a full outage preserves the whole backlog (nothing skipped)",
+          st2.get("failed") is True and g2.backlog() == 4 and st2.get("skipped", 0) == 0)
+    check("nothing was quarantined during the outage", g2.skipped_turns() == [])
+    # …and once it recovers, those same turns fold normally
+    st3 = asyncio.run(g2.catch_up(extractor()))
+    check("after recovery the preserved backlog folds normally",
+          g2.backlog() == 0 and st3["turns"] == 4)
+
+    # an over-long turn is CLIPPED in the prompt, so most 'poison' never happens at all
+    g3 = mg.MindGraph(fresh_db(), {"max_turn_chars": 50})
+    long_prompt = g3.build_prompt([{"id": 1, "text": "y" * 5000}])
+    check("a huge turn is clipped in the extraction prompt (body bounded, not the template)",
+          ("y" * 51) not in long_prompt and ("y" * 50) in long_prompt)
+    check("clipping is visible, not silent", "truncated" in long_prompt)
+    g4 = mg.MindGraph(fresh_db(), {"max_turn_chars": 0})
+    check("clipping can be disabled (0 = no cap)",
+          len(g4.build_prompt([{"id": 1, "text": "y" * 5000}])) > 5000)
+
+
 def main():
     test_anchor_and_schema()
     test_prompt_carries_a_grounded_worked_example()
@@ -389,6 +446,7 @@ def main():
     test_failed_extraction_does_not_advance()
     test_catch_up_stops_on_failure()
     test_catch_up_all_drains_past_the_one_pass_ceiling()
+    test_poison_turn_cannot_wedge_the_backlog()
     test_grounded_fold()
     test_grounding_refuses_invention()
     test_identity_firewall()

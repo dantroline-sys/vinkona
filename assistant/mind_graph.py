@@ -66,6 +66,10 @@ DEFAULTS: dict = {
     "max_context_edges": 12,      # …and relations among them
     "min_quote_len": 6,           # a grounding quote must be at least this long to count
     "context_max_chars": 700,     # hard cap on a rendered recall block
+    # One pasted wall of text must not be able to blow the extraction prompt past the big
+    # LM's context window — that failure is DETERMINISTIC, so without a bound the same
+    # batch fails on every pass and the backlog wedges forever (0 = no clipping).
+    "max_turn_chars": 4000,
 }
 
 _WS = re.compile(r"\s+")
@@ -184,7 +188,7 @@ class MindGraph:
         from; strict about modality so hypotheticals / questions never become asserted facts; and
         carries ONE worked example so the output shape is copied, not guessed — the difference
         between Qwen (infers it) and most other models (need to see it)."""
-        body = "\n".join(f"[{t['id']}] {t['text']}" for t in turns)
+        body = "\n".join(f"[{t['id']}] {self._clip(t['text'])}" for t in turns)
         return (
             "You extract a small knowledge graph of the USER's world from their own words.\n"
             "Read the user's turns and extract ONLY facts the user actually ASSERTS about their "
@@ -215,6 +219,50 @@ class MindGraph:
             "NOW YOUR TURN — same output shape, only for what is asserted below.\n"
             f"User turns:\n{body}\nOutput:")
 
+    def _clip(self, text: str) -> str:
+        """Bound one turn's text in the extraction prompt (see `max_turn_chars`)."""
+        n = int(self.c.get("max_turn_chars", 4000) or 0)
+        t = text or ""
+        return t if n <= 0 or len(t) <= n else t[:n] + " …[long message truncated]"
+
+    @staticmethod
+    async def _await(value):
+        return await value if hasattr(value, "__await__") else value
+
+    def _note_skip(self, turn: dict) -> None:
+        """Record a quarantined turn in kg_state — the module keeps no logger, and a silent
+        skip is worse than none: this is what makes 'why is turn 1043 not in the graph?'
+        answerable, and it surfaces in stats() so the UI can show it."""
+        try:
+            row = self.db.execute("SELECT v FROM kg_state WHERE k='distill_skipped'").fetchone()
+            skipped = json.loads(row[0]) if row and row[0] else []
+        except (ValueError, TypeError):
+            skipped = []
+        skipped.append({"id": turn.get("id"), "chars": len(turn.get("text") or ""),
+                        "at": time.time()})
+        self.db.execute(
+            "INSERT INTO kg_state(k,v) VALUES('distill_skipped',?) "
+            "ON CONFLICT(k) DO UPDATE SET v=excluded.v",
+            (json.dumps(skipped[-200:]),))
+
+    def skipped_turns(self) -> list:
+        """Turns extraction could not handle (see _note_skip) — newest last."""
+        try:
+            row = self.db.execute("SELECT v FROM kg_state WHERE k='distill_skipped'").fetchone()
+            return json.loads(row[0]) if row and row[0] else []
+        except (ValueError, TypeError):
+            return []
+
+    async def _extractor_alive(self, extract_fn: tp.Callable) -> bool:
+        """Is the extractor answering AT ALL?  Asked with a minimal prompt of the same shape
+        after a single turn fails, to tell 'the big LM is down' (preserve the backlog and
+        retry later) from 'THIS turn poisons the prompt' (skip it, or it wedges forever)."""
+        probe = [{"id": 0, "text": "I live in Reykjavik and I work as a doctor."}]
+        try:
+            return await self._await(extract_fn(self.build_prompt(probe))) is not None
+        except Exception:
+            return False
+
     async def distill(self, extract_fn: tp.Callable, *, now: tp.Optional[float] = None) -> dict:
         """Fold new user turns into the graph.  `extract_fn(prompt)` performs the LM call and
         returns the parsed JSON dict (or None on a FAILED call) — injected so this is deterministic
@@ -224,20 +272,52 @@ class MindGraph:
         dict — even an empty one, meaning the LM genuinely found nothing to assert).  If the call
         FAILS (None: big LM down / non-JSON / timeout) the checkpoint is LEFT WHERE IT IS, so a
         spell of big-LM trouble can never silently 'process' turns to nothing and strand them
-        beyond reach — the backlog stays and the next pass retries them."""
+        beyond reach — the backlog stays and the next pass retries them.
+
+        That safety deadlocks, though, if a failure is DETERMINISTIC rather than transient —
+        one pasted wall of text that blows the context window fails identically on every
+        pass, and the backlog freezes at exactly the same number forever.  So a failed batch
+        BISECTS (halve, retry each half) and a lone turn that still fails is quarantined —
+        but only once `_extractor_alive` confirms the model is answering, so an outage never
+        skips anything."""
         now = time.time() if now is None else now
         turns = self._new_user_turns(int(self.c["distill_batch_turns"]))
         if not turns:
             return {"turns": 0, "nodes": 0, "edges": 0, "refused": 0}
-        data = extract_fn(self.build_prompt(turns))
-        if hasattr(data, "__await__"):
-            data = await data
-        if data is None:                                  # the LM call FAILED — do not advance
-            return {"turns": len(turns), "nodes": 0, "edges": 0, "refused": 0, "failed": True}
+        return await self._distill_turns(extract_fn, turns, now)
+
+    async def _distill_turns(self, extract_fn: tp.Callable, turns: list, now: float) -> dict:
+        """Fold exactly these turns, bisecting on failure.  Each successful (sub)batch
+        advances the checkpoint past its own turns, so partial progress always sticks."""
+        blank = {"turns": 0, "nodes": 0, "edges": 0, "refused": 0, "skipped": 0}
+        try:
+            data = await self._await(extract_fn(self.build_prompt(turns)))
+        except Exception:
+            data = None
+        if data is None:
+            if len(turns) > 1:                            # a poison turn is in here somewhere
+                mid = len(turns) // 2
+                left = await self._distill_turns(extract_fn, turns[:mid], now)
+                if left.get("failed"):
+                    return left                           # never step over unprocessed turns
+                right = await self._distill_turns(extract_fn, turns[mid:], now)
+                out = {k: int(left.get(k, 0)) + int(right.get(k, 0)) for k in blank}
+                if right.get("failed"):
+                    out["failed"] = True
+                return out
+            # ONE turn, still failing.  Is the model up?
+            if not await self._extractor_alive(extract_fn):
+                return {**blank, "turns": len(turns), "failed": True}
+            t = turns[0]
+            self._note_skip(t)                            # auditable: which turn, and why
+            self._set_last_id(t["id"])                    # step over it, or it wedges forever
+            self.db.commit()
+            return {**blank, "turns": 1, "skipped": 1}
         stats = self._fold(data, turns, now)
         self._set_last_id(max(t["id"] for t in turns))    # only on a successful extraction
         self.db.commit()
         stats["turns"] = len(turns)
+        stats.setdefault("skipped", 0)
         return stats
 
     async def catch_up(self, extract_fn: tp.Callable, *, max_batches: tp.Optional[int] = None,
@@ -254,16 +334,18 @@ class MindGraph:
         a cold backlog from turning one dreaming pass into an unbounded LM run; the leftover simply
         drains over the following passes, which `backlog()` makes visible."""
         cap = int(self.c["distill_max_batches"] if max_batches is None else max_batches)
-        total = {"turns": 0, "nodes": 0, "edges": 0, "refused": 0, "batches": 0}
+        total = {"turns": 0, "nodes": 0, "edges": 0, "refused": 0, "skipped": 0, "batches": 0}
         for _ in range(max(1, cap)):
             st = await self.distill(extract_fn, now=now)
+            # A partially-failed batch still folded (and checkpointed) its good half, so keep
+            # those counts before stopping — the progress is real and already committed.
+            for k in ("turns", "nodes", "edges", "refused", "skipped"):
+                total[k] += int(st.get(k, 0))
             if st.get("failed"):                       # LM call failed — stop; backlog is preserved
                 total["failed"] = True
                 break
             if not st.get("turns"):
                 break                                  # caught up — nothing new to fold
-            for k in ("turns", "nodes", "edges", "refused"):
-                total[k] += int(st.get(k, 0))
             total["batches"] += 1
         total["backlog"] = self.backlog()
         return total
@@ -281,11 +363,11 @@ class MindGraph:
         A caller that sees done=False (a yield or a failure) should leave its request
         PENDING — the checkpoint means the next attempt resumes exactly where this one
         stopped, re-folding nothing."""
-        total = {"turns": 0, "nodes": 0, "edges": 0, "refused": 0, "batches": 0,
-                 "done": False}
+        total = {"turns": 0, "nodes": 0, "edges": 0, "refused": 0, "skipped": 0,
+                 "batches": 0, "done": False}
         while True:
             st = await self.catch_up(extract_fn, now=now)
-            for k in ("turns", "nodes", "edges", "refused", "batches"):
+            for k in ("turns", "nodes", "edges", "refused", "skipped", "batches"):
                 total[k] += int(st.get(k, 0))
             total["backlog"] = int(st.get("backlog") or 0)
             if st.get("failed"):
@@ -503,4 +585,4 @@ class MindGraph:
         n = self.db.execute("SELECT COUNT(*) FROM kg_nodes WHERE status='active'").fetchone()[0]
         e = self.db.execute("SELECT COUNT(*) FROM kg_edges WHERE status='active' AND valid_to IS NULL").fetchone()[0]
         return {"nodes": int(n), "edges": int(e), "last_id": self._last_id(),
-                "backlog": self.backlog()}
+                "backlog": self.backlog(), "skipped": len(self.skipped_turns())}
