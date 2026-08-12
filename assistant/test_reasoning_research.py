@@ -170,8 +170,11 @@ def test_stream_payload_fields():
     # The streaming payload should carry the no-think fields by default.  We can't
     # easily run the async generator without a full SSE stub, so assert the schema
     # constant and the bridge default instead.
-    sig = bridge.LLMBridge._stream_chat.__defaults__
-    check("_stream_chat defaults think=False", sig[-1] is False)
+    import inspect
+    sig = inspect.signature(bridge.LLMBridge._stream_chat)
+    check("_stream_chat defaults think=False", sig.parameters["think"].default is False)
+    check("_stream_chat takes a heartbeat hook (liveness for the stall deadline)",
+          sig.parameters["heartbeat"].default is None)
     tool = bridge.QUEUE_RESEARCH_TOOL
     check("queue_research tool schema names the function", tool["function"]["name"] == "queue_research")
     check("queue_research requires a topic", tool["function"]["parameters"]["required"] == ["topic"])
@@ -797,6 +800,97 @@ async def test_longform_deliberation_is_not_cut_off():
           not b._looks_truncated("due to these opposing effects."))
 
 
+async def test_deliberation_is_knowledge_grounded_and_honest_on_failure():
+    """Regression trio from the metaraminol turn:
+    (1) a model THINKING silently (thinking tokens are stripped, never yielded) must not
+        read as a stall — that killed a live think mid-reasoning;
+    (2) the give-up line must name the stage that actually stalled;
+    (3) deliberation must consult the knowledge host — it was knowledge-blind, so the
+        escalated tier reasoned from impressions and produced fluent, subtly-wrong
+        specifics on exactly the questions it was escalated for."""
+    spoken: list = []
+    async def say(s): spoken.append(s)
+
+    def mk(over=None, guidance=None):
+        b = bridge.LLMBridge(server_state=types.SimpleNamespace(),
+                             fast_lm_url="http://f", big_lm_url="http://b",
+                             deliberate={**(over or {})})
+        b.speak_sink = say
+        if guidance is not None:
+            b.guidance_hook = guidance
+        return b
+
+    # ── (1) a SILENT think (only stripped reasoning tokens) is still alive ────
+    spoken.clear()
+    b = mk({"deliver_via_fast": False, "progress_after_s": 0.02,
+            "stall_timeout_s": 0.25, "timeout_s": 10.0, "knowledge_timeout_s": 0})
+    async def silent_thinker(prompt, max_tokens=None):
+        # what _stream_chat's heartbeat does while <think> tokens stream and are stripped
+        for _ in range(14):
+            await asyncio.sleep(0.03)
+            b._mark_think_alive()
+        return "Because metaraminol is indirect-acting and those stores are depleted."
+    b._big_lm_consider = silent_thinker
+    out = await b._deliberate("why might that not work out?")
+    check("a silent think (thinking tokens only, nothing spoken yet) is NOT killed",
+          "indirect-acting" in out)
+
+    # ── (2) the give-up line names the stage ─────────────────────────────────
+    spoken.clear()
+    b = mk({"deliver_via_fast": False, "progress_after_s": 0.02,
+            "stall_timeout_s": 0.15, "timeout_s": 5.0, "knowledge_timeout_s": 0})
+    async def thought_then_died(prompt, max_tokens=None):
+        b._mark_think_alive()                    # it DID think…
+        await asyncio.sleep(5)                   # …then never concluded
+        return "never"
+    b._big_lm_consider = thought_then_died
+    out = await b._deliberate("why is that?")
+    check("a think that never concludes says it's still chewing (not a blank apology)",
+          "chewing" in out.lower())
+    spoken.clear()
+    b = mk({"deliver_via_fast": False, "progress_after_s": 0.02,
+            "stall_timeout_s": 0.15, "timeout_s": 5.0, "knowledge_timeout_s": 0})
+    async def never_spoke(prompt, max_tokens=None):
+        await asyncio.sleep(5)                   # not a single delta
+        return "never"
+    b._big_lm_consider = never_spoke
+    out = await b._deliberate("why is that?")
+    check("a tier that produced nothing at all gets the generic line",
+          "chewing" not in out.lower() and "couldn't get an answer" in out.lower())
+
+    # ── (3) deliberation consults the knowledge host, FULL fetch not live ────
+    seen = {}
+    async def guidance(text, live=True):
+        seen["text"], seen["live"] = text, live
+        return "Metaraminol is INDIRECT-acting: it displaces stored noradrenaline."
+    b = mk({"deliver_via_fast": False}, guidance=guidance)
+    captured = {}
+    async def capture(prompt, max_tokens=None):
+        captured["prompt"] = prompt
+        return "Considered answer."
+    b._big_lm_consider = capture
+    await b._deliberate("why might metaraminol not work in an elderly septic patient?")
+    check("deliberation queries the knowledge host with the question it's thinking about",
+          "metaraminol" in (seen.get("text") or "").lower())
+    check("it takes the FULL fetch (live=False), not the one-line live budget",
+          seen.get("live") is False)
+    check("the KB material reaches the reasoning prompt",
+          "displaces stored noradrenaline" in captured["prompt"])
+    check("the prompt tells it to PREFER the KB over its own impressions",
+          "GROUND YOUR ANSWER IN THIS" in captured["prompt"])
+
+    # fail-open: a knowledge pull that hangs must not cost the answer
+    async def hanging_guidance(text, live=True):
+        await asyncio.sleep(5)
+        return "never"
+    b = mk({"deliver_via_fast": False, "knowledge_timeout_s": 0.1},
+           guidance=hanging_guidance)
+    b._big_lm_consider = capture
+    out = await b._deliberate("why might that be?")
+    check("a hanging knowledge pull fails open (the answer still arrives)",
+          out == "Considered answer.")
+
+
 async def test_identity_injection_and_tools():
     # The privileged identity block is injected into the fast prompt, and the
     # self-determination tools are offered when their callbacks are present.
@@ -1190,6 +1284,7 @@ async def main():
     await test_deliberate_tool_offered()
     await test_deliberate_flow()
     await test_longform_deliberation_is_not_cut_off()
+    await test_deliberation_is_knowledge_grounded_and_honest_on_failure()
     await test_affect_shift()
     test_voice_examples()
     print(f"\n{PASS} passed, {FAIL} failed")

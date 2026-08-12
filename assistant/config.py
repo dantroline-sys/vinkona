@@ -381,7 +381,16 @@ DEFAULTS: dict = {
             "deep_stall": "That's a good question — let me think deeply about this one "
                           "for a moment.",
             "progress": ["Still with you — thinking…", "Almost there…"],
-            "timed_out": "Sorry, that took too long. Want to try again?",
+            # Give-up lines are per-STAGE, so she says what actually stalled rather than a
+            # blanket apology (never loaded / thought but never concluded / said nothing).
+            "timed_out": "Sorry — I couldn't get an answer together on that one. Try me again?",
+            "timed_out_thinking": ("Sorry — I'm still chewing on that one and it's taking "
+                                   "much longer than it should. Ask me again and I'll have "
+                                   "another go."),
+            # Deliberation pulls the knowledge host for the question it's thinking about
+            # (the FULL fetch, not the fast path's one-line live budget) so the escalated
+            # tier reasons from the KB instead of its own impressions.  0 disables.
+            "knowledge_timeout_s": 8.0,
             # Answer budgets — SHARED with the thinking tokens, so too small a number is
             # spent on reasoning and the conclusion gets truncated mid-sentence.
             "answer_tokens": 900,       # normal considered answer

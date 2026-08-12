@@ -608,7 +608,13 @@ _DELIBERATE_DEFAULTS = {
     # the seconds a considered answer actually needs.
     "deep_stall": "That's a good question — let me think deeply about this one for a moment.",
     "progress": ["Still with you — thinking…", "Almost there…"],
-    "timed_out": "Sorry, that took too long. Want to try again?",
+    # Give-up lines, per STAGE — a blanket apology tells the user nothing about whether to
+    # retry, rephrase, or go check a service.
+    "timed_out": "Sorry — I couldn't get an answer together on that one. Try me again?",
+    "timed_out_thinking": ("Sorry — I'm still chewing on that one and it's taking much "
+                           "longer than it should. Ask me again and I'll have another go."),
+    # How long to spend pulling the knowledge base for a deliberated question (0 = skip).
+    "knowledge_timeout_s": 8.0,
     # Token budgets for the considered answer.  These are shared with the THINKING tokens,
     # so a tight budget spends itself on reasoning and truncates the conclusion mid-sentence.
     "answer_tokens": 900,      # normal considered answer
@@ -931,6 +937,10 @@ class LLMBridge:
         # Last time the deliberating big LM emitted anything — the stall-based deadline
         # measures SILENCE, so a slow-but-streaming think is never cut off.
         self._think_alive: float = 0.0
+        # Did the deliberating tier produce ANYTHING this turn (incl. stripped thinking
+        # tokens)?  Distinguishes "thought hard but never concluded" from "said nothing
+        # at all", so the give-up line can name the stage honestly.
+        self._think_saw_output = False
         # Short briefing produced by the big LM after each turn.
         self._big_lm_briefing: str = ""
         # Background task handle so we can await/cancel it cleanly.
@@ -2178,6 +2188,7 @@ class LLMBridge:
         cfg = self.deliberate_cfg
         longform = self._is_longform(question)
         self._set_deliberating(True)
+        self._think_saw_output = False
         t0 = time.monotonic()
         try:
             # A long-form question gets a stall line that BUYS the time it needs — saying
@@ -2194,6 +2205,13 @@ class LLMBridge:
             # described 20 turns ago), and the recalled memories carry durable facts.
             notes = (self._last_working_notes or "").strip()
             recall = (self._last_recall or "").strip()
+            # Deliberation used to be KNOWLEDGE-BLIND: it got memory recall but never the
+            # knowledge host, so the escalated tier reasoned from parametric knowledge
+            # alone and produced confident, plausible, subtly-wrong specifics on exactly
+            # the questions it was escalated for.  Pull the KB now — not the fast path's
+            # one-line live budget but a full (live=False) fetch, which this path can
+            # afford because it is already allowed to take seconds.
+            kb = await self._deliberation_knowledge(question)
             prompt = (
                 "You are the deliberate, knowledgeable reasoning core behind a voice "
                 "assistant. The user asked something where getting the facts and reasoning "
@@ -2206,6 +2224,9 @@ class LLMBridge:
                 + f"{self._identity_detail()}{self._user_profile()}"
                 + (f"{notes}\n\n" if notes else "")
                 + (f"What you've recalled that may bear on this:\n{recall}\n\n" if recall else "")
+                + (f"From your own knowledge base — GROUND YOUR ANSWER IN THIS where it "
+                   f"applies, in preference to your general impressions:\n{kb}\n\n"
+                   if kb else "")
                 + f"Conversation so far:\n{convo}\n\nAnswer this well: {question}\n\nAnswer:")
             budget = self._answer_budget(longform)
             task = asyncio.create_task(self._big_lm_consider(prompt, budget))
@@ -2216,10 +2237,20 @@ class LLMBridge:
             self._set_deliberating(False)
         elapsed = round(time.monotonic() - t0, 2)
         if not answer:
-            cold = self._big_cold                 # never loaded vs. genuinely slow — say the honest thing
-            line = (cfg.get("cold_failed") if cold else cfg.get("timed_out")) \
-                or _DELIBERATE_DEFAULTS["timed_out"]
-            self._trace("deliberate_done", ok=False, elapsed_s=elapsed, cold=cold)
+            # Say WHICH stage stalled, not a blanket apology: never loaded / thought but
+            # never concluded / nothing at all.  A vague "that took too long" tells the
+            # user nothing about whether to retry, rephrase, or check a service.
+            cold = self._big_cold
+            if cold:
+                line = cfg.get("cold_failed") or _DELIBERATE_DEFAULTS["cold_failed"]
+                stage = "cold"
+            elif self._think_saw_output:
+                line = cfg.get("timed_out_thinking") or _DELIBERATE_DEFAULTS["timed_out_thinking"]
+                stage = "thinking"
+            else:
+                line = cfg.get("timed_out") or _DELIBERATE_DEFAULTS["timed_out"]
+                stage = "silent"
+            self._trace("deliberate_done", ok=False, elapsed_s=elapsed, cold=cold, stage=stage)
             await self.speak_sink(line)
             return line
         self._trace("deliberate_done", ok=True, elapsed_s=elapsed, bytes=len(answer),
@@ -2300,11 +2331,47 @@ class LLMBridge:
         ]
         cap = int(max_tokens or self.deliberate_cfg.get("answer_tokens", 900))
         parts: list[str] = []
+        # The heartbeat fires on EVERY delta — crucially including the thinking tokens,
+        # which are stripped and never yielded.  Without it a model that thinks silently
+        # for 30s (exactly what a hard question causes) reads as a stall and gets killed.
         async for chunk in self._stream_chat(self.big_url, self.big_model, messages,
-                                             max_tokens=cap, think=True):
+                                             max_tokens=cap, think=True,
+                                             heartbeat=self._mark_think_alive):
             parts.append(chunk)
-            self._think_alive = time.monotonic()   # liveness for the stall-based deadline
+            self._mark_think_alive()
         return "".join(parts).strip()
+
+    def _mark_think_alive(self) -> None:
+        """Stamp the deliberation liveness clock (see _await_with_progress)."""
+        self._think_alive = time.monotonic()
+        self._think_saw_output = True
+
+    async def _deliberation_knowledge(self, question: str) -> str:
+        """A knowledge-host pull for the question being deliberated — the FULL fetch
+        (live=False: several grounded items, not the fast path's single directive line),
+        because this path already spends seconds and a wrong-but-fluent answer costs more
+        than the wait.  Fail-open: any error or timeout returns '' and deliberation
+        proceeds as before."""
+        if not self.guidance_hook:
+            return ""
+        budget = float(self.deliberate_cfg.get("knowledge_timeout_s", 8.0))
+        if budget <= 0:
+            return ""
+        try:
+            g = await asyncio.wait_for(self.guidance_hook(question, live=False),
+                                       timeout=budget)
+        except asyncio.TimeoutError:
+            self._trace("deliberate_knowledge_timeout", budget_s=budget)
+            _log("info", f"deliberation knowledge pull exceeded {budget:.1f}s — "
+                         "thinking without it")
+            return ""
+        except Exception as exc:
+            _log("warning", f"deliberation knowledge pull failed: {exc}")
+            return ""
+        g = (g or "").strip()
+        if g:
+            self._trace("deliberate_knowledge", chars=len(g))
+        return g
 
     async def _await_with_progress(self, task: "asyncio.Task") -> tp.Optional[str]:
         """Await the deliberation, speaking a progress line every `progress_after_s` while
@@ -2675,6 +2742,7 @@ class LLMBridge:
         tool_calls_out: tp.Optional[list] = None,
         asides_out: tp.Optional[list] = None,
         think: bool = False,
+        heartbeat: tp.Optional[tp.Callable[[], None]] = None,
     ) -> tp.AsyncGenerator[str, None]:
         """
         Async generator yielding text chunks from an OpenAI-compatible
@@ -2746,6 +2814,12 @@ class LLMBridge:
                         continue
                     choices = obj.get("choices") or [{}]
                     delta = choices[0].get("delta") or {}
+                    # ANY delta means the model is alive and working — including thinking
+                    # tokens, which are stripped below and never yielded.  Callers that
+                    # police a stall deadline must see THIS, not just spoken text, or a
+                    # long silent think looks exactly like a wedged endpoint.
+                    if heartbeat is not None:
+                        heartbeat()
                     if delta.get("reasoning_content"):
                         saw_reasoning = True            # routed to a separate field; never spoken
                     for tc in (delta.get("tool_calls") or []):
