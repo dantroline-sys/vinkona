@@ -2406,7 +2406,9 @@ class LLMBridge:
                                              max_tokens=cap, think=True,
                                              heartbeat=self._mark_think_alive,
                                              think_budget=int(
-                                                 self.deliberate_cfg.get("think_budget", -1))):
+                                                 self.deliberate_cfg.get("think_budget", -1)),
+                                             stall_timeout_s=float(
+                                                 self.deliberate_cfg.get("stall_timeout_s", 75.0))):
             parts.append(chunk)
             self._mark_think_alive()
         return "".join(parts).strip()
@@ -2820,6 +2822,7 @@ class LLMBridge:
         think: bool = False,
         heartbeat: tp.Optional[tp.Callable[[], None]] = None,
         think_budget: int = -1,
+        stall_timeout_s: float = 75.0,
     ) -> tp.AsyncGenerator[str, None]:
         """
         Async generator yielding text chunks from an OpenAI-compatible
@@ -2865,8 +2868,15 @@ class LLMBridge:
         if big_hold:
             lm_lease.acquire(lm_lease.BIG, ttl=self.lease_ttl)
             _lease_next = time.monotonic() + self.lease_ttl / 3
+        # NO total cap: a hard total=60 here silently guillotined every reply that thought
+        # or streamed past a minute, defeating the deliberation budgets (stall 75s / total
+        # 180s) that are policed OUTSIDE via the heartbeat stamps.  Liveness on the wire is
+        # the READ GAP — every delta counts, thinking included — so sock_read is the guard;
+        # max_tokens bounds a runaway stream, and callers own any absolute deadline.
+        tmo = aiohttp.ClientTimeout(total=None, sock_connect=10,
+                                    sock_read=max(1.0, float(stall_timeout_s)))
         try:
-            async with self._session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=60)) as resp:
+            async with self._session.post(url, json=payload, timeout=tmo) as resp:
                 if resp.status != 200:
                     body = await resp.text()
                     _log("error", f"LM {resp.status} from {url}: {body[:200]}")
@@ -2944,8 +2954,18 @@ class LLMBridge:
             self._trace("lm_error", model=model, status=0, detail=f"unreachable: {exc}")
             return
         except asyncio.TimeoutError:
-            _log("error", f"LM request timed out ({base_url})")
-            self._trace("lm_error", model=model, status=0, detail="request timed out")
+            _log("error", f"LM stream stalled >{stall_timeout_s:.0f}s with no data ({base_url})")
+            self._trace("lm_error", model=model, status=0,
+                        detail=f"stream stalled >{stall_timeout_s:.0f}s")
+            return
+        except aiohttp.ClientError as exc:
+            # llama-server crashed/restarted mid-reply (ServerDisconnectedError,
+            # ClientPayloadError, …).  This used to propagate to run()'s catch-all —
+            # no trace, no fallback, an unanswered turn in history.  End the stream
+            # cleanly instead: whatever was already yielded stands, and the caller's
+            # empty/short-reply handling takes over.
+            _log("error", f"LM stream broke mid-reply ({base_url}): {exc}")
+            self._trace("lm_error", model=model, status=0, detail=f"stream broke: {exc}")
             return
         finally:
             if big_hold:

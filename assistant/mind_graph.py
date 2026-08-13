@@ -318,7 +318,21 @@ class MindGraph:
             data = await self._await(extract_fn(self.build_prompt(turns)))
         except Exception:
             data = None
-        if data is None:
+        stats = None
+        if data is not None:
+            try:
+                stats = self._fold(data, turns, now)
+            except Exception:
+                # A fold crash is a code bug surfacing on this batch's content (the
+                # superseded-edge INSERT was one).  Roll back the half-applied fold and
+                # degrade EXACTLY like a failed extraction — bisect isolates the turn,
+                # quarantine steps over it — so the checkpoint can never wedge on a
+                # deterministic crash again.
+                try:
+                    self.db.rollback()
+                except Exception:
+                    pass
+        if stats is None:
             if len(turns) > 1:                            # a poison turn is in here somewhere
                 mid = len(turns) // 2
                 left = await self._distill_turns(extract_fn, turns[:mid], now)
@@ -337,7 +351,6 @@ class MindGraph:
             self._set_last_id(t["id"])                    # step over it, or it wedges forever
             self.db.commit()
             return {**blank, "turns": 1, "skipped": 1}
-        stats = self._fold(data, turns, now)
         self._set_last_id(max(t["id"] for t in turns))    # only on a successful extraction
         self.db.commit()
         stats["turns"] = len(turns)
@@ -508,8 +521,8 @@ class MindGraph:
         existing (different) value: the old edge is closed (valid_to set), not deleted.  `fact` is
         the clean paraphrase surfaced at recall; on corroboration the latest non-empty one wins."""
         eid = _edge_key(src, rel, dst)
-        row = self.db.execute("SELECT mentions FROM kg_edges WHERE id=? AND status='active'", (eid,)).fetchone()
-        if row:                                        # same fact again → corroborate
+        row = self.db.execute("SELECT mentions, status FROM kg_edges WHERE id=?", (eid,)).fetchone()
+        if row and row[1] == "active":                 # same fact again → corroborate
             self.db.execute("UPDATE kg_edges SET mentions=mentions+1, last_ts=?, valid_to=NULL, "
                             "source_turn=?, quote=?, fact=COALESCE(NULLIF(?,''), fact) WHERE id=?",
                             (now, turn_id, quote, fact, eid))
@@ -518,6 +531,18 @@ class MindGraph:
             self.db.execute("UPDATE kg_edges SET valid_to=?, status='superseded' "
                             "WHERE src=? AND rel=? AND status='active' AND valid_to IS NULL",
                             (now, src, rel))
+        if row:
+            # The triple exists but its row is superseded (the value came BACK: Bristol →
+            # London → Bristol) or retracted.  INSERTing here was a primary-key crash that
+            # escaped the fold and froze the checkpoint — the "stuck at N" wedge.  Fresh
+            # grounded evidence RESURRECTS the row instead, exactly as _resolve_node does
+            # for nodes: a new validity interval opens, the audit trail stays.
+            self.db.execute(
+                "UPDATE kg_edges SET status='active', mentions=mentions+1, last_ts=?, "
+                "valid_from=?, valid_to=NULL, source_turn=?, quote=?, "
+                "fact=COALESCE(NULLIF(?,''), fact) WHERE id=?",
+                (now, now, turn_id, quote, fact, eid))
+            return True
         self.db.execute(
             "INSERT INTO kg_edges(id,src,dst,rel,mentions,first_ts,last_ts,valid_from,valid_to,"
             "source_turn,quote,fact,status) VALUES (?,?,?,?,1,?,?,?,NULL,?,?,?,'active')",

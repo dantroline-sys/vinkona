@@ -1806,6 +1806,7 @@ async def main():
             except Exception as e:                       # a startup hiccup must never kill the worker
                 _log(f"startup idle cycle failed (continuing): {e}")
             last_idle = time.time()
+        mg_backoff = float(poll)   # forced mind-graph drain retry delay; doubles per failure
         while True:
             # Remote tiers: keep the model NAME reconciled with the serving box.
             # Memoized with a TTL + down-server backoff, so this is almost always
@@ -1845,7 +1846,13 @@ async def main():
                 mgc = cfg.get("memory", {}).get("mind_graph", {})
                 if mgc.get("enabled") and big.get("url"):
                     if should_yield():
-                        continue           # user is active — the forced drain resumes next cycle
+                        # User is active — stand down and WAIT.  A bare continue here
+                        # was a zero-sleep spin (100% CPU of get_state + activity-file
+                        # reads) for as long as the chat stayed open, and the activity
+                        # pill kept saying "mind_graph" from a previous cycle.
+                        set_activity("idle")
+                        await asyncio.sleep(poll)
+                        continue
                     set_activity("mind_graph", interruptible=False)
                     try:
                         # Drain the WHOLE backlog (catch_up_all), not one capped pass — a
@@ -1858,8 +1865,17 @@ async def main():
                         if st and st.get("failed"):
                             _log("mind-graph (forced): the big LM returned nothing usable — is it "
                                  "serving and does it support JSON output? backlog left intact; "
-                                 "the request stays pending and retries next idle cycle")
-                        elif st and not st.get("done"):
+                                 f"the request stays pending, retrying in {int(mg_backoff)}s")
+                            # BACKOFF before the pending request retries: with the LM down,
+                            # a bare continue re-ran the failed drain (probe calls + a trace
+                            # line) every iteration with no sleep — hammering the box and
+                            # growing trace.jsonl without bound until the LM returned.
+                            set_activity("idle")
+                            await asyncio.sleep(mg_backoff)
+                            mg_backoff = min(300.0, mg_backoff * 2)
+                            continue
+                        mg_backoff = float(poll)         # progress (done or stand-down) resets it
+                        if st and not st.get("done"):
                             _log(f"mind-graph (forced): stood down for the user after "
                                  f"+{st.get('nodes',0)} node(s)/+{st.get('edges',0)} edge(s) — "
                                  f"{st.get('backlog',0)} still to distil, resuming next idle")

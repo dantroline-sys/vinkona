@@ -437,6 +437,86 @@ def test_poison_turn_cannot_wedge_the_backlog():
           len(g4.build_prompt([{"id": 1, "text": "y" * 5000}])) > 5000)
 
 
+def test_value_coming_back_resurrects_not_crashes():
+    """The SECOND stuck-at-N wedge (stock-take 2026-08-13): a card-one value that comes
+    BACK (Bristol → London → Bristol) hit an INSERT on its old primary key — the row
+    still existed as status='superseded' — and the IntegrityError escaped the fold,
+    freezing the checkpoint on that batch forever.  Fresh grounded evidence must
+    resurrect the old row, exactly as _resolve_node already does for nodes."""
+    db = fresh_db()
+    add_turn(db, "user", "I live in Bristol.")
+    g = mg.MindGraph(db)
+    distill(g, {"nodes": [{"type": "place", "label": "Bristol"}],
+                "edges": [{"src": "user", "dst": "Bristol", "rel": "lives_in",
+                           "quote": "live in Bristol"}]}, now=1000.0)
+    add_turn(db, "user", "I moved to London.")
+    distill(g, {"nodes": [{"type": "place", "label": "London"}],
+                "edges": [{"src": "user", "dst": "London", "rel": "lives_in",
+                           "quote": "moved to London"}]}, now=2000.0)
+    add_turn(db, "user", "I moved back to Bristol.")
+    st = distill(g, {"nodes": [{"type": "place", "label": "Bristol"}],
+                     "edges": [{"src": "user", "dst": "Bristol", "rel": "lives_in",
+                                "quote": "moved back to Bristol"}]}, now=3000.0)
+    check("the come-back batch folds instead of crashing (nothing skipped)",
+          st.get("skipped") == 0 and st.get("edges", 0) >= 1 and not st.get("failed"))
+    active = g.db.execute(
+        "SELECT dst, valid_from FROM kg_edges WHERE src=? AND rel='lives_in' "
+        "AND status='active' AND valid_to IS NULL", (mg.USER_ID,)).fetchall()
+    check("the returned value is the ONE active edge, with a fresh validity interval",
+          [r[0] for r in active] == ["place:bristol"] and active[0][1] == 3000.0)
+    check("the interim value is superseded, not deleted (history kept)",
+          g.db.execute("SELECT COUNT(*) FROM kg_edges WHERE dst='place:london' "
+                       "AND status='superseded'").fetchone()[0] == 1)
+    check("the checkpoint advanced past the whole transcript", g._last_id() == 3)
+    m = g.db.execute("SELECT mentions FROM kg_edges WHERE dst='place:bristol' "
+                     "AND rel='lives_in'").fetchone()[0]
+    check("resurrection corroborates the original row (same triple, not a twin)", m == 2)
+
+
+def test_retracted_edge_resurrects_on_fresh_evidence():
+    """Mirrors node semantics: a retracted node already comes back on re-mention
+    (_resolve_node), so a retracted edge re-asserted with fresh grounded evidence
+    comes back too — and must never crash the fold."""
+    db = fresh_db()
+    add_turn(db, "user", "Sam plays the violin.")
+    g = mg.MindGraph(db)
+    distill(g, {"nodes": [{"type": "person", "label": "Sam"}],
+                "edges": [{"src": "Sam", "dst": "violin", "rel": "plays",
+                           "quote": "plays the violin"}]}, now=1000.0)
+    eid = g.db.execute("SELECT id FROM kg_edges WHERE rel='plays'").fetchone()[0]
+    check("retract flips the edge off", g.retract_edge(eid)
+          and g.db.execute("SELECT status FROM kg_edges WHERE id=?", (eid,)).fetchone()[0]
+          == "retracted")
+    add_turn(db, "user", "Sam plays the violin every Sunday.")
+    st = distill(g, {"nodes": [{"type": "person", "label": "Sam"}],
+                     "edges": [{"src": "Sam", "dst": "violin", "rel": "plays",
+                                "quote": "plays the violin every Sunday"}]}, now=2000.0)
+    check("re-asserting a retracted edge folds cleanly", not st.get("failed")
+          and st.get("skipped") == 0)
+    check("…and the edge is active again",
+          g.db.execute("SELECT status FROM kg_edges WHERE id=?", (eid,)).fetchone()[0]
+          == "active")
+
+
+def test_fold_crash_cannot_wedge_the_backlog():
+    """Belt-and-braces for the whole defect class: ANY exception escaping _fold used to
+    freeze the checkpoint (only extract_fn was wrapped).  A fold crash now degrades like
+    a failed extraction — bisect, then quarantine — so the backlog always advances."""
+    db = fresh_db()
+    add_turn(db, "user", "turn one")
+    add_turn(db, "user", "turn two")
+    g = mg.MindGraph(db)
+
+    def boom(data, turns, now):
+        raise RuntimeError("deliberate fold bug")
+    g._fold = boom
+    st = distill(g, {"nodes": [], "edges": []})
+    check("a fold crash quarantines the turns instead of raising",
+          st.get("skipped") == 2 and not st.get("failed"))
+    check("the checkpoint stepped past both turns", g._last_id() == 2)
+    check("the quarantine is auditable in stats", g.stats()["skipped"] == 2)
+
+
 def test_batch_char_budget():
     """The 'stuck at 1020' bug, one level up from the poison turn: per-TURN clipping
     bounded each turn at 4000 chars, but a batch of 40 long-form turns still stacked to
@@ -491,6 +571,9 @@ def main():
     test_catch_up_stops_on_failure()
     test_catch_up_all_drains_past_the_one_pass_ceiling()
     test_poison_turn_cannot_wedge_the_backlog()
+    test_value_coming_back_resurrects_not_crashes()
+    test_retracted_edge_resurrects_on_fresh_evidence()
+    test_fold_crash_cannot_wedge_the_backlog()
     test_batch_char_budget()
     test_grounded_fold()
     test_grounding_refuses_invention()
