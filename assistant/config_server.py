@@ -45,6 +45,15 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 
+def _qint(raw, default):
+    """A query-string int: garbage (?n=abc) falls back to the default instead of
+    raising out of do_GET and dropping the connection with a traceback."""
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return default
+
+
 def _load_mod(name: str):
     spec = importlib.util.spec_from_file_location(name, str(Path(__file__).parent / f"{name}.py"))
     mod = importlib.util.module_from_spec(spec)
@@ -838,6 +847,18 @@ class Handler(BaseHTTPRequestHandler):
         restarts.  A browser on a malicious page must not be able to reach it, so: require the
         Host header to name loopback (a rebinding attack carries the attacker's hostname), and
         reject any cross-origin request.  Answers 403 and returns False when it looks remote."""
+        # The PEER must be loopback — headers alone are the attacker's to choose.
+        # The old check validated only Host/Origin (and allow-listed the bind address
+        # itself), so a LAN bind left every admin endpoint — config writes including
+        # llama-server extra_args, memory edit/delete, restarts — open to anyone who
+        # sent `Host: localhost`.  A deliberately LAN-bound panel now fails CLOSED
+        # with instructions rather than open in silence.
+        peer = (self.client_address or ("",))[0]
+        if not (peer.startswith("127.") or peer in ("::1", "::ffff:127.0.0.1")):
+            self._json(403, {"error": "forbidden — the config panel is localhost-only "
+                             "and unauthenticated; reach it through an SSH tunnel "
+                             "(ssh -L 8998:127.0.0.1:8998 <box>) instead of a LAN bind"})
+            return False
         ok = {"127.0.0.1", "localhost", "::1", "[::1]",
               str(self.server.server_address[0])}          # also the actual bind address
         host = (self.headers.get("Host") or "").strip().lower()
@@ -945,7 +966,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/logs":
             q = self._query()
             name = (q.get("service", [""])[0]).replace("/", "").replace("..", "")
-            n = int(q.get("n", ["200"])[0])
+            n = _qint(q.get("n", ["200"])[0], 200)
             log = LOGS_DIR / f"{name}.log"
             if not name or not log.exists():
                 return self._json(404, {"error": "no such service log"})
@@ -1049,7 +1070,7 @@ class Handler(BaseHTTPRequestHandler):
     def _get_trace(self):
         cfg = self._cfg()
         cs = cfg["config_server"]
-        n = int(self._query().get("n", ["200"])[0])
+        n = _qint(self._query().get("n", ["200"])[0], 200)
         path = Path(cs.get("trace_path", "config/trace.jsonl"))
         events = []
         if path.exists():
@@ -1176,7 +1197,7 @@ class Handler(BaseHTTPRequestHandler):
         cfg = self._cfg()
         cs = cfg["config_server"]
         q = self._query()
-        turns = int(q.get("turns", ["1"])[0])
+        turns = _qint(q.get("turns", ["1"])[0], 1)
         path = Path(cs.get("trace_path", "config/trace.jsonl"))
         events = []
         if path.exists():

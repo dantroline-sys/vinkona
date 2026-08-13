@@ -117,7 +117,11 @@ function addMessage(role, text) {
 
 async function loadPersonas() {
   try {
-    const d = await (await fetch('/api/personas')).json();
+    // Send the saved token: from a non-loopback browser these routes are gated on
+    // the same token the WS handshake uses (loopback passes without it).
+    const t = localStorage.getItem('vinkona_token') || '';
+    const d = await (await fetch('/api/personas',
+      t ? { headers: { 'Authorization': 'Bearer ' + t } } : {})).json();
     const sel = document.getElementById('persona');
     sel.innerHTML = '';
     for (const p of (d.personas || [])) {

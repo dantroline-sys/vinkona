@@ -285,6 +285,8 @@ class CascadeServer:
         return cfg, personas, default
 
     async def handle_personas(self, _req):
+        if not self._http_authed(_req):
+            return web.json_response({"error": "unauthorized"}, status=401)
         _cfg, personas, default = self.reload(resolve=False)
         items = [{"name": n, "description": p.get("description", ""),
                   "default": n == default} for n, p in personas.items()]
@@ -292,6 +294,8 @@ class CascadeServer:
 
     async def handle_status(self, _req):
         """Is a conversation in progress?  The text-chat page polls this to gate itself."""
+        if not self._http_authed(_req):
+            return web.json_response({"error": "unauthorized"}, status=401)
         return web.json_response({"active": self.active_kind is not None,
                                   "kind": self.active_kind,
                                   "warnings": self.startup_warnings})
@@ -301,10 +305,31 @@ class CascadeServer:
         return web.Response(text=(Path(__file__).parent / "chat_ui.html").read_text(),
                             content_type="text/html")
 
+    def _http_authed(self, request) -> bool:
+        """Plain-HTTP twin of the WS token gate (same token).  Loopback peers pass —
+        the local clients predate the header — but the cascade binds 0.0.0.0 by
+        default, so any other peer must present the token: an open GET on the
+        notification route both READS and (non-peek) CONSUMES the user's reminders,
+        and status/personas leak session state.  No token configured ⇒ open, matching
+        the WS gate's behaviour."""
+        if not self.ws_token:
+            return True
+        peer = request.remote or ""
+        if peer in ("127.0.0.1", "::1", "::ffff:127.0.0.1"):
+            return True
+        auth = request.headers.get("Authorization", "")
+        tok = auth[7:] if auth.startswith("Bearer ") else request.query.get("token", "")
+        try:
+            return bool(tok) and self._wsauth.verify(tok, self.ws_token)
+        except Exception:
+            return False
+
     # ── Notifications: the client polls this; the scheduler below fills the queue ──
     async def handle_notifications(self, request):
         """Return notifications whose time has come.  ?peek=1 leaves them unread (for a
         bell badge); a normal GET hands them over and marks them delivered."""
+        if not self._http_authed(request):
+            return web.json_response({"error": "unauthorized"}, status=401)
         if not self.memory:
             return web.json_response({"notifications": []})
         peek = request.query.get("peek") in ("1", "true", "yes")
