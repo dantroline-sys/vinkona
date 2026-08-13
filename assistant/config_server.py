@@ -12,6 +12,9 @@ Endpoints
   GET/POST /api/personas     config/personas.json (whole document)
   GET  /api/models?tier=…    list GGUFs in models_dir + this tier's llama.cpp settings
   GET  /api/trace?n=…        recent fast/big-LM activity (the live feed)
+  GET  /api/debug?turns=…    the same feed rendered as a COPY-PASTABLE turn transcript
+                             (text/plain markdown) — what each tier was given, every
+                             tool call and result, escalation timings, what stalled
   GET  /api/memory           list memory entries (SQLite)
   POST /api/memory           upsert one entry (recomputes its embedding)
   POST /api/memory/delete    delete one entry by id
@@ -919,6 +922,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"endpoints": eps})
         if path == "/api/trace":
             return self._get_trace()
+        if path == "/api/debug":
+            return self._get_debug()
         if path == "/api/working_graph":
             return self._get_working_graph()
         if path == "/api/services":
@@ -1054,6 +1059,136 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception:
                     continue
         self._json(200, {"events": events})
+
+    # Events that make up ONE turn's story, in the order they fire.  Anything else in the
+    # feed (scheduler ticks, idle passes) is noise for a turn-level diagnosis.
+    _TURN_KINDS = ("turn", "guidance", "live_guidance_timeout", "kb_call", "tool_call",
+                   "tool_result", "tool_superseded", "deliberate", "deliberate_warm",
+                   "deliberate_knowledge", "deliberate_knowledge_timeout", "deliberate_done",
+                   "fast_reply", "briefing", "lm_error", "lm_swap_requested",
+                   "calendar_resolve", "write_outcome", "confirm", "roleplay_mode")
+
+    @staticmethod
+    def _fmt_block(label: str, text: str, limit: int = 4000) -> str:
+        t = (text or "").strip()
+        if not t:
+            return ""
+        if len(t) > limit:
+            t = t[:limit] + f"\n… [{len(text) - limit} more chars]"
+        return f"\n**{label}:**\n```\n{t}\n```\n"
+
+    def _render_debug(self, events: list, turns: int) -> str:
+        """Render the trace as a copy-pastable markdown transcript of the LM to-and-fro:
+        for each turn, what the user said, what the fast LM was actually given (system
+        blocks, recall, knowledge, tools offered), every tool call and its result, any
+        escalation to the big LM (with its timings and outcome), and what was finally
+        said.  This is what you paste when a turn behaves oddly — it shows WHICH tier
+        stalled, what it had in hand, and how long each leg took."""
+        # split into turns: a 'turn' event starts one
+        groups, cur = [], []
+        for e in events:
+            if e.get("kind") not in self._TURN_KINDS:
+                continue
+            if e.get("kind") == "turn" and cur:
+                groups.append(cur); cur = []
+            cur.append(e)
+        if cur:
+            groups.append(cur)
+        groups = groups[-max(1, turns):]
+
+        out = ["# Vinkona turn trace",
+               f"_{len(groups)} turn(s); newest last. Times are seconds from the turn's first event._"]
+        for gi, g in enumerate(groups, 1):
+            t0 = g[0].get("ts") or 0
+            head = next((e for e in g if e.get("kind") == "turn"), {})
+            out.append(f"\n---\n\n## Turn {gi}"
+                       + (f" — session {head.get('session')}" if head.get("session") else ""))
+            if head.get("user"):
+                out.append(f"\n**User:** {head['user']}")
+            if head.get("tools_offered"):
+                out.append(f"\n**Tools offered to the fast LM:** "
+                           f"{', '.join(head['tools_offered'])}")
+            for e in g:
+                dt = (e.get("ts") or t0) - t0
+                kind = e.get("kind")
+                stamp = f"`+{dt:5.1f}s` **{kind}**"
+                if kind == "turn":
+                    out.append(f"\n{stamp} — fast LM `{e.get('model','?')}`, "
+                               f"{e.get('history_turns', '?')} turns of history")
+                    out.append(self._fmt_block("System prompt (verbatim)", e.get("system")))
+                    out.append(self._fmt_block("Recalled memories", e.get("recalled")))
+                    out.append(self._fmt_block("Planner briefing in play", e.get("briefing")))
+                elif kind == "guidance":
+                    out.append(f"\n{stamp} — knowledge-host guidance"
+                               + (f" (query: {e.get('query')})" if e.get("query") else ""))
+                    out.append(self._fmt_block("Guidance text", e.get("text") or e.get("block")))
+                elif kind == "kb_call":
+                    out.append(f"\n{stamp} — `{e.get('tool','kb')}` "
+                               f"live={e.get('live')} conf={e.get('confidence')} "
+                               f"abstain={e.get('abstain')}")
+                    out.append(self._fmt_block("Query", e.get("query")))
+                    out.append(self._fmt_block("Result", e.get("result")))
+                elif kind == "tool_call":
+                    out.append(f"\n{stamp} — call `{e.get('name')}`")
+                    out.append(self._fmt_block("Arguments", json.dumps(e.get("arguments") or {},
+                                                                       ensure_ascii=False)))
+                elif kind == "tool_result":
+                    out.append(f"\n{stamp} — result of `{e.get('name')}`"
+                               + (" **(ERROR)**" if e.get("errored") else ""))
+                    out.append(self._fmt_block("Returned", e.get("result")))
+                elif kind == "deliberate":
+                    out.append(f"\n{stamp} — ESCALATED to the big LM "
+                               f"(trigger: {e.get('trigger')})")
+                elif kind == "deliberate_knowledge":
+                    out.append(f"\n{stamp} — pulled {e.get('chars')} chars of KB for the think")
+                elif kind == "deliberate_knowledge_timeout":
+                    out.append(f"\n{stamp} — ⚠ KB pull TIMED OUT "
+                               f"(budget {e.get('budget_s')}s) — thought without it")
+                elif kind == "deliberate_done":
+                    ok = e.get("ok")
+                    out.append(f"\n{stamp} — big LM {'answered' if ok else '**GAVE UP**'} "
+                               f"after {e.get('elapsed_s')}s"
+                               + (f", stage=`{e.get('stage')}`" if e.get("stage") else "")
+                               + (f", longform={e.get('longform')}" if "longform" in e else ""))
+                elif kind == "fast_reply":
+                    out.append(f"\n{stamp} — spoken reply "
+                               f"(first token {e.get('first_token_ms', 0):.0f} ms)")
+                    out.append(self._fmt_block("Said", e.get("text")))
+                elif kind == "briefing":
+                    out.append(f"\n{stamp} — background briefing for the NEXT turn "
+                               f"({e.get('elapsed_s')}s)")
+                    out.append(self._fmt_block("Briefing", e.get("text")))
+                elif kind in ("lm_error", "lm_swap_requested"):
+                    out.append(f"\n{stamp} — ⚠ {json.dumps({k: v for k, v in e.items() if k not in ('ts','kind','session','persona')}, ensure_ascii=False)[:400]}")
+                else:
+                    extra = {k: v for k, v in e.items()
+                             if k not in ("ts", "kind", "session", "persona")}
+                    out.append(f"\n{stamp} — {json.dumps(extra, ensure_ascii=False)[:400]}")
+        return "\n".join(x for x in out if x)
+
+    def _get_debug(self):
+        """GET /api/debug?turns=N[&format=json] — the copy-pastable turn trace."""
+        cfg = self._cfg()
+        cs = cfg["config_server"]
+        q = self._query()
+        turns = int(q.get("turns", ["1"])[0])
+        path = Path(cs.get("trace_path", "config/trace.jsonl"))
+        events = []
+        if path.exists():
+            for line in path.read_text().splitlines():
+                try:
+                    events.append(json.loads(line))
+                except Exception:
+                    continue
+        text = self._render_debug(events, turns)
+        if (q.get("format") or [""])[0] == "json":
+            return self._json(200, {"text": text, "events": len(events)})
+        body = text.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def _get_working_graph(self):
         """The volatile conversational working-memory graph (VIN-WM-02).  The cascade

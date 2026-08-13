@@ -380,8 +380,13 @@
     <div class="bar">
       <label style="margin:0"><input type="checkbox" id="autoLive" checked style="width:auto"> auto-refresh (2s)</label>
       <button class="btn secondary" onclick="loadTrace()">Refresh now</button>
+      <label style="margin:0 0 0 12px" class="muted">turns
+        <input type="number" id="dbgTurns" value="1" min="1" max="20"
+               style="width:56px;margin-left:4px"></label>
+      <button class="btn secondary" onclick="copyDebug()">Copy debug trace</button>
       <span id="lstatus" class="muted"></span>
     </div>
+    <div id="dbgOut" class="muted" style="display:none;margin:8px 0"></div>
     <div id="trace"></div>
   </section>
 
@@ -1108,6 +1113,38 @@ function wgSvg(nodes, edges) {
     const lab = n.label.length > 22 ? n.label.slice(0, 21) + '…' : n.label;
     s += `<text x="${(q.x + r + 3).toFixed(1)}" y="${(q.y + 3).toFixed(1)}" opacity="${op}">${escHtml(lab)}</text>`; });
   return s + '</svg>';
+}
+// Copy the last N turns as a plain-text transcript of the fast/big-LM to-and-fro —
+// what each tier was handed, every tool call + result, escalation timings and what
+// stalled.  Paste it straight into a bug report.
+async function copyDebug() {
+  const out = document.getElementById('dbgOut');
+  const n = Math.max(1, parseInt(document.getElementById('dbgTurns').value || '1', 10));
+  out.style.display = 'block';
+  out.textContent = 'building…';
+  let text;
+  try { text = await (await fetch('/api/debug?turns=' + n)).text(); }
+  catch (e) { out.textContent = 'could not fetch the trace: ' + e; return; }
+  let copied = false;
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text); copied = true;
+    }
+  } catch (e) { copied = false; }
+  if (copied) {
+    out.textContent = 'Copied ' + text.length + ' chars to the clipboard.';
+    return;
+  }
+  // http:// on the LAN has no clipboard API — show it in a selectable box instead.
+  out.textContent = '';
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.cssText = 'width:100%;height:320px;font-family:monospace;font-size:12px';
+  const hint = document.createElement('div');
+  hint.className = 'muted';
+  hint.textContent = 'Clipboard unavailable over plain http — select all and copy:';
+  out.appendChild(hint); out.appendChild(ta);
+  ta.focus(); ta.select();
 }
 async function loadTrace() {
   let d;

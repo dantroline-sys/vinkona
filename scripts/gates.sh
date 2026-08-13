@@ -40,6 +40,7 @@ run "posture battery"   ""     "$PY" assistant/test_posture.py
 run "local-kb compile"  ""     "$PY" -W error::SyntaxWarning -m py_compile \
                                    assistant/local_kb.py assistant/test_local_kb.py
 run "local-kb battery"  ""     "$PY" assistant/test_local_kb.py
+run "debug trace"       ""     "$PY" assistant/test_debug_trace.py
 run "G-8 broker size"   ""     "$PY" - <<'EOF'
 import pathlib, sys
 n = sum(len(p.read_text().splitlines())

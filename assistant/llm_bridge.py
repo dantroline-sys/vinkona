@@ -2280,7 +2280,14 @@ class LLMBridge:
         r"\b(why|how come|how does|how do|explain|compare|contrast|difference between|"
         r"differ|relate[sd]? to|interact|incompatible|compatible|trade[- ]?offs?|"
         r"pros and cons|walk me through|talk me through|reason(ing)? (behind|for)|"
-        r"what happens (if|when)|implications?|mechanism)\b", re.I)
+        r"what happens (if|when)|implications?|mechanism|"
+        # decision/choice questions: short to ask, but they want the reasoning behind
+        # the recommendation, not a one-liner ("is a beta blocker a good choice?")
+        r"good (choice|idea|option)|best (for|choice|option|approach|drug|agent)|"
+        r"better than|or something else|which (one|drug|agent|option|approach)|"
+        r"what (should|would) (i|you|we)|safe to|contraindicat|"
+        r"good or bad|the reasons?\b|possible actions?|"
+        r"options?\b.*\?|what are my options)\b", re.I)
 
     def _is_longform(self, question: str) -> bool:
         q = (question or "").strip()
