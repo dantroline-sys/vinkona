@@ -944,13 +944,18 @@ async def test_identity_injection_and_tools():
     check("note_person tool is offered", "note_person" in captured.get("tools", []))
 
 
-async def test_note_person_sayback():
-    # note_person is a say-back: its ack is spoken directly, callback runs, no 2nd LM round.
+async def test_note_person_is_silent_and_never_ends_the_turn():
+    # Noting something about a person is bookkeeping done WHILE listening — it must not
+    # announce itself, and it must not stand in for the answer.  ("Not really, just
+    # thinking of what to do next with you. Do you have any suggestions?" → "Got it —
+    # I'll remember that about Dan." and silence was the bug.)
     scripted = [("", [{"id": "1", "name": "note_person",
-                       "arguments": '{"person":"the user","note":"has a dog named Rex"}'}])]
-    calls, noted, spoken = [], [], []
+                       "arguments": '{"person":"the user","note":"has a dog named Rex"}'}]),
+                ("Plenty — we could start with the working-memory inspector.", [])]
+    calls, seen, noted, spoken = [], [], [], []
     async def fake_stream(msgs, tools=None):
-        calls.append(tools); return scripted[len(calls) - 1]
+        calls.append(tools); seen.append([dict(m) for m in msgs])
+        return scripted[len(calls) - 1]
     async def say(s): spoken.append(s)
     b = bridge.LLMBridge(server_state=types.SimpleNamespace(), fast_lm_url="http://f",
                          big_lm_url=None, speak_sink=say, inject_time=False,
@@ -959,12 +964,25 @@ async def test_note_person_sayback():
                              "Got it — I'll remember that about you.")[1])
     b._stream_to_tts = fake_stream
     b._trace = lambda *a, **k: None
-    out = await b._run_turn([{"role": "system", "content": "x"}], [{"x": 1}])
-    check("note_person callback is invoked", bool(noted) and noted[0]["note"].startswith("has a dog"))
-    check("the ack is spoken to the user", any("remember that about you" in s for s in spoken))
-    check("the ack is the returned answer", "remember that about you" in out)
-    check("no 'let me check' filler for a say-back note", "Let me check." not in spoken)
-    check("no second LM round is needed", len(calls) == 1)
+    b._trace_tool_result = lambda *a, **k: None
+    out = await b._run_turn([{"role": "system", "content": "x"},
+                             {"role": "user", "content": "any suggestions?"}],
+                            [{"type": "function", "function": {"name": "note_person"}}])
+    check("note_person callback still runs", bool(noted) and noted[0]["note"].startswith("has a dog"))
+    check("the save is NEVER announced to the user",
+          not any("remember that" in s for s in spoken))
+    check("the turn goes on to answer what was actually asked",
+          "working-memory inspector" in out)
+    check("no 'let me check' filler for a background note", "Let me check." not in spoken)
+    check("the turn took a second round to answer", len(calls) == 2)
+    tool_msgs = [m for m in seen[1] if m.get("role") == "tool"]
+    check("the friendly ack never reaches the LM (a small model parrots it back)",
+          tool_msgs and "remember that about you" not in tool_msgs[0]["content"]
+          and "saved to memory" in tool_msgs[0]["content"]
+          and "do not mention it" in tool_msgs[0]["content"])
+    check("note_person is withdrawn after it fires, so it can't loop",
+          not any((t.get("function") or {}).get("name") == "note_person"
+                  for t in (calls[1] or [])))
 
 
 async def test_revise_self_confirm_flow():
@@ -1287,7 +1305,7 @@ async def main():
     await test_multi_host_routing()
     await test_self_knowledge_injection()
     await test_identity_injection_and_tools()
-    await test_note_person_sayback()
+    await test_note_person_is_silent_and_never_ends_the_turn()
     await test_revise_self_confirm_flow()
     await test_revise_self_surface_is_immediate()
     await test_identity_detail_to_big_lm()

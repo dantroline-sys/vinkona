@@ -536,7 +536,7 @@ REVISE_SELF_TOOL = {
 
 # Built-in (handled locally): record a lasting fact about a PERSON (the user, or someone
 # in their life, real or imagined) in the people/identity store — bio/psycho/social, not
-# events.  Spoken back directly (it's an ack), see the cascade's note_person callback.
+# events.  Runs SILENTLY (_SILENT_TOOLS) — see the cascade's note_person callback.
 NOTE_PERSON_TOOL = {
     "type": "function",
     "function": {
@@ -544,7 +544,9 @@ NOTE_PERSON_TOOL = {
         "description": (
             "Record a lasting fact about a person — the user, or someone in their life "
             "(real or imagined): who they are, what they're like, your relationship, their "
-            "role. For PEOPLE, not for events, tasks, or things to look up."),
+            "role. For PEOPLE, not for events, tasks, or things to look up. It saves in "
+            "the background and returns nothing to say: keep answering them as normal, "
+            "and do not tell them you are remembering it."),
         "parameters": {
             "type": "object",
             "properties": {
@@ -566,7 +568,16 @@ NOTE_PERSON_TOOL = {
 # to re-summarise — the small model tends to drop the ack (→ silence), and routing
 # them through the tool loop would also play the "let me check" filler for something
 # that needs no checking.  (revise_self is NOT here — a core edit is confirmed first.)
-_SAY_BACK_TOOLS = {"queue_research", "remind_me", "note_person"}
+# These ARE the answer to what was asked ("remind me…", "read up on…"), so a round
+# holding only these ends the turn.
+_SAY_BACK_TOOLS = {"queue_research", "remind_me"}
+
+# Side effects that happen WHILE listening, not answers to anything.  Noting a fact
+# about someone is bookkeeping: it runs, says nothing, and does not end the turn —
+# the user asked something and is still owed a reply.  (Saying "Got it — I'll
+# remember that about Dan." and stopping was both redundant and a swallowed
+# question: the ack announced routine bookkeeping and then stood in for the answer.)
+_SILENT_TOOLS = {"note_person"}
 
 # A "stop and think" tool the fast voice model can call when a question needs real-world
 # knowledge or careful reasoning it isn't sure of.  It fetches nothing: the bridge
@@ -1075,7 +1086,10 @@ class LLMBridge:
         if "note_person" in names:
             lines.append("When you learn something lasting about a PERSON — the user or "
                          "someone in their life — call note_person to remember it. For "
-                         "people and relationships, not events or things to look up.")
+                         "people and relationships, not events or things to look up. It "
+                         "saves quietly in the background: never say that you are "
+                         "remembering something, and always go on to answer what they "
+                         "actually said in the same turn.")
         if "deliberate" in names:
             lines.append("If the user asks something where the facts or reasoning really "
                          "matter and you are not confident — a knowledge question, a "
@@ -1592,11 +1606,13 @@ class LLMBridge:
         tool has run we guarantee a spoken answer — small models tend to call a tool and
         then go quiet, so we force a final, tools-withheld reply if nothing was said."""
         msgs = list(messages)
+        offer = list(tools or [])  # what's on the table THIS round (a silent tool is
+                                   # withdrawn once used, so it can't loop on itself)
         answer_parts: list[str] = []
         ran_tool = False
         answered = False           # did a terminal (no-tool) round actually speak an answer?
         for _round in range(self.tool_max_rounds):
-            text, tool_calls = await self._stream_to_tts(msgs, tools=tools or None)
+            text, tool_calls = await self._stream_to_tts(msgs, tools=offer or None)
             if text:
                 answer_parts.append(text)
             if not tool_calls:
@@ -1666,6 +1682,36 @@ class LLMBridge:
                             tools=[c["name"] for c in confirm_calls])
                 await self.speak_sink(question)
                 return question
+            # Silent side effects (note_person): run it, keep the transcript valid, say
+            # NOTHING about it, and carry on — remembering something about a person is
+            # not an answer to what was asked.
+            silent = [tc for tc in tool_calls if tc["name"] in _SILENT_TOOLS]
+            if silent:
+                for tc in silent:
+                    try:
+                        args = json.loads(tc["arguments"] or "{}")
+                    except Exception:
+                        args = {}
+                    self._trace("tool_call", name=tc["name"], arguments=args)
+                    line = str(await self._call_tool(tc["name"], args))
+                    self._trace_tool_result(tc["name"], line)
+                    # The friendly ack ("Got it — I'll remember that…") is exactly what a
+                    # small model parrots back as its reply, so it never reaches the LM:
+                    # it sees a marker instead.  A failure keeps its own words — those it
+                    # SHOULD be able to mention.
+                    done = line.strip().startswith("(")     # "(could not note that: …)"
+                    msgs.append({"role": "tool",
+                                 "tool_call_id": tc["id"] or f"call_{tc['name']}",
+                                 "content": (line if done else "(saved to memory)")
+                                 + " Background note — do not mention it; answer what "
+                                   "they actually said."})
+                # withdraw it for the rest of the turn: with the note already taken, a
+                # model that reaches for it again is looping, not remembering
+                offer = [t for t in offer
+                         if (t.get("function") or {}).get("name") not in _SILENT_TOOLS]
+                tool_calls = [tc for tc in tool_calls if tc["name"] not in _SILENT_TOOLS]
+                if not tool_calls:
+                    continue        # straight to the next round — now answer the message
             # Say-back built-ins (queue_research, remind_me): speak their finished line
             # directly so it's never dropped, and skip the filler/LM round-trip.  Any
             # other tools in the same round fall through to the normal read path.
