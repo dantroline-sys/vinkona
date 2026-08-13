@@ -51,13 +51,13 @@ except Exception:                       # importlib-loaded context without cwd o
     query_privacy = _safety.query_privacy
 
 try:                                    # durable chat-derived knowledge graph (mind_graph)
-    from mind_graph import MindGraph
+    from mind_graph import DEFAULTS as MG_DEFAULTS, MindGraph
 except Exception:
     import importlib.util as _ilm
     from pathlib import Path as _Pathm
     _specm = _ilm.spec_from_file_location("mind_graph", _Pathm(__file__).resolve().parent / "mind_graph.py")
     _mgmod = _ilm.module_from_spec(_specm); _specm.loader.exec_module(_mgmod)
-    MindGraph = _mgmod.MindGraph
+    MindGraph, MG_DEFAULTS = _mgmod.MindGraph, _mgmod.DEFAULTS
 
 try:                                    # privileged people/identity store
     from people import UNADAPTABLE_FACETS, PeopleStore
@@ -1590,11 +1590,7 @@ class MemoryStore:
         if not self._mg_cfg.get("enabled") or not big_url:
             return {}
         mg = self._ensure_mind_graph()
-
-        async def _extract(prompt: str):
-            return await self._chat_json(big_url, big_model, prompt)
-
-        return await mg.catch_up(_extract)
+        return await mg.catch_up(self._mg_extract_fn(big_url, big_model))
 
     async def distill_mind_graph_all(self, big_url: str, big_model: str, *,
                                      should_yield=None) -> dict:
@@ -1606,11 +1602,23 @@ class MemoryStore:
         if not self._mg_cfg.get("enabled") or not big_url:
             return {}
         mg = self._ensure_mind_graph()
+        return await mg.catch_up_all(self._mg_extract_fn(big_url, big_model),
+                                     should_yield=should_yield)
+
+    def _mg_extract_fn(self, big_url: str, big_model: str):
+        """The mind-graph extraction call: thinking OFF by default (the prompt carries a
+        worked example + JSON mode — unbounded chains of thought made a 40-turn batch
+        take minutes on a big model and time out on every pass, which is what froze the
+        backlog counter), and its own generous timeout (a dreaming pass is latency-
+        insensitive).  Both overridable: memory.mind_graph extract_think / extract_timeout_s."""
+        mgc = {**MG_DEFAULTS, **(self._mg_cfg or {})}
 
         async def _extract(prompt: str):
-            return await self._chat_json(big_url, big_model, prompt)
+            return await self._chat_json(big_url, big_model, prompt,
+                                         think=bool(mgc.get("extract_think")),
+                                         timeout_s=float(mgc.get("extract_timeout_s") or 600))
 
-        return await mg.catch_up_all(_extract, should_yield=should_yield)
+        return _extract
 
     def mind_context(self, text: str) -> str:
         """A grounded 'what I already know about this' block from the durable graph, for the recall
@@ -2625,12 +2633,14 @@ class MemoryStore:
         return n
 
     async def _chat_json(self, base_url: str, model: str, prompt: str,
-                         think: bool = True) -> dict | None:
+                         think: bool = True, timeout_s: float | None = None) -> dict | None:
         import aiohttp
         # Background work (reflection/research/ingest) wants the big LM's reasoning —
         # it's latency-insensitive and the extra thinking improves the JSON it returns.
         # `think` is sent two ways since llama.cpp accepts either spelling depending on
-        # the model's chat template; harmless when ignored.
+        # the model's chat template; harmless when ignored.  `timeout_s` overrides the
+        # reflect default for callers with a different latency shape (e.g. the mind-graph
+        # extraction lane).
         payload = {"model": model, "stream": False,
                    "response_format": {"type": "json_object"},
                    "temperature": 0.2,
@@ -2642,7 +2652,8 @@ class MemoryStore:
                 async with s.post(f"{base_url.rstrip('/')}/v1/chat/completions",
                                   json=payload,
                                   timeout=aiohttp.ClientTimeout(
-                                      total=getattr(self, "ctx", {}).get("reflect_timeout_s", 120))) as r:
+                                      total=timeout_s or getattr(self, "ctx", {})
+                                      .get("reflect_timeout_s", 120))) as r:
                     if r.status != 200:
                         return None
                     choices = (await r.json()).get("choices") or [{}]

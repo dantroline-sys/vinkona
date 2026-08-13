@@ -437,6 +437,50 @@ def test_poison_turn_cannot_wedge_the_backlog():
           len(g4.build_prompt([{"id": 1, "text": "y" * 5000}])) > 5000)
 
 
+def test_batch_char_budget():
+    """The 'stuck at 1020' bug, one level up from the poison turn: per-TURN clipping
+    bounded each turn at 4000 chars, but a batch of 40 long-form turns still stacked to
+    ~160k chars — an extraction call that times out on EVERY pass, so the backlog froze
+    (and moved exactly one half-bisect when a lucky sub-batch fit).  Batches are now
+    bounded by total chars too, so heavy stretches of transcript cost roughly the same
+    call as one-liners."""
+    db = fresh_db()
+    for i in range(10):
+        add_turn(db, "user", f"[{i}] " + ("long-form medicine talk " * 40))   # ~1k chars each
+    g = mg.MindGraph(db, {"distill_batch_turns": 8, "distill_batch_chars": 3000})
+    turns = g._new_user_turns(8)
+    check("a batch stops accumulating at the char budget (not 8 long turns)",
+          1 <= len(turns) <= 3)
+    prompts = []
+
+    def fn(prompt):
+        prompts.append(prompt)
+        return {}
+    st = asyncio.run(g.catch_up_all(fn))
+    check("the whole backlog still drains, in more + smaller batches",
+          st["done"] and g.backlog() == 0 and len(prompts) >= 4)
+    tmpl = len(g.build_prompt([]))                     # the fixed instruction template
+    check("every extraction prompt's BODY honoured the budget",
+          all(len(p) - tmpl < 3000 + 300 for p in prompts))
+
+    # one turn larger than the whole budget still goes through (clipped), alone
+    db2 = fresh_db()
+    add_turn(db2, "user", "z" * 9000)
+    add_turn(db2, "user", "short one")
+    g2 = mg.MindGraph(db2, {"distill_batch_turns": 8, "distill_batch_chars": 3000,
+                            "max_turn_chars": 4000})
+    t1 = g2._new_user_turns(8)
+    check("an over-budget turn is taken ALONE, never starved",
+          len(t1) == 1 and t1[0]["text"].startswith("z"))
+    asyncio.run(g2.distill(stub({})))
+    t2 = g2._new_user_turns(8)
+    check("…and the next batch resumes right after it",
+          len(t2) == 1 and t2[0]["text"] == "short one")
+    g3 = mg.MindGraph(fresh_db(), {"distill_batch_chars": 0})
+    check("0 disables the char budget (count-only batching preserved)",
+          g3.c["distill_batch_chars"] == 0)
+
+
 def main():
     test_anchor_and_schema()
     test_prompt_carries_a_grounded_worked_example()
@@ -447,6 +491,7 @@ def main():
     test_catch_up_stops_on_failure()
     test_catch_up_all_drains_past_the_one_pass_ceiling()
     test_poison_turn_cannot_wedge_the_backlog()
+    test_batch_char_budget()
     test_grounded_fold()
     test_grounding_refuses_invention()
     test_identity_firewall()

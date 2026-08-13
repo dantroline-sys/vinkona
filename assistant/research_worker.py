@@ -1857,7 +1857,8 @@ async def main():
                             big["url"], big["model"], should_yield=should_yield))
                         if st and st.get("failed"):
                             _log("mind-graph (forced): the big LM returned nothing usable — is it "
-                                 "serving and does it support JSON output? backlog left intact to retry")
+                                 "serving and does it support JSON output? backlog left intact; "
+                                 "the request stays pending and retries next idle cycle")
                         elif st and not st.get("done"):
                             _log(f"mind-graph (forced): stood down for the user after "
                                  f"+{st.get('nodes',0)} node(s)/+{st.get('edges',0)} edge(s) — "
@@ -1869,7 +1870,12 @@ async def main():
                         if st:
                             trace.write(kind="mind_graph", forced=True, **st,
                                         store_size=len(memory.entries))
-                        if not st or st.get("done") or st.get("failed"):
+                        # A FAILED attempt leaves the request PENDING — marking it handled
+                        # made the button silently give up after one bad LM spell, and the
+                        # backlog then sat frozen looking like a bug.  Only a finished
+                        # drain (or the feature being off) consumes the request; a failure
+                        # or a stand-down retries next idle cycle, from the checkpoint.
+                        if not st or st.get("done"):
                             memory.set_state("mind_graph_handled", mreq)
                     except Exception as e:
                         _log(f"manual mind-graph distill failed (continuing): {e}")

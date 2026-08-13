@@ -712,9 +712,16 @@ DEFAULTS: dict = {
         "mind_graph": {
             "enabled": False,
             "distill_batch_turns": 40,   # user turns folded per LM call (one extraction batch)
+            "distill_batch_chars": 12000,  # …and a batch stops accumulating at this many chars,
+                                         #   so long-form stretches cost the same call as
+                                         #   one-liners instead of timing out every pass
             "distill_max_batches": 6,    # batches drained per dreaming pass — 6*40=240 turns, so a
                                          #   backlog of old chats catches up over a few passes and
                                          #   the checkpoint means none is ever distilled twice
+            "extract_think": False,      # extraction has a worked example + JSON mode; unbounded
+                                         #   thinking made a batch take minutes on a big model
+            "extract_timeout_s": 600,    # the extraction call's own budget (dreaming is
+                                         #   latency-insensitive; reflect_timeout_s stays for reflection)
             "max_context_nodes": 6,      # entities surfaced into a recall context block
             "max_context_edges": 12,     # …and relations among them
             "min_quote_len": 6,          # a grounding quote must be at least this long

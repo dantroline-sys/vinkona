@@ -70,6 +70,17 @@ DEFAULTS: dict = {
     # LM's context window — that failure is DETERMINISTIC, so without a bound the same
     # batch fails on every pass and the backlog wedges forever (0 = no clipping).
     "max_turn_chars": 4000,
+    # …and the BATCH must be bounded too: 40 clipped turns can still stack to 160k chars
+    # (≈40k tokens) when the user talks in long form, which times out the extraction call
+    # on every pass — the same wedge one level up.  A batch stops accumulating at this
+    # many chars (it always takes at least one turn).  0 = count-only batching.
+    "distill_batch_chars": 12000,
+    # The extraction call itself: a worked example + JSON mode doesn't need long chains
+    # of thought, and unbounded thinking is what made a 40-turn batch take minutes on a
+    # big model (then time out).  Off by default; extract_timeout_s is generous because
+    # a dreaming pass is latency-insensitive.
+    "extract_think": False,
+    "extract_timeout_s": 600,
 }
 
 _WS = re.compile(r"\s+")
@@ -149,11 +160,24 @@ class MindGraph:
                         "ON CONFLICT(k) DO UPDATE SET v=excluded.v", (str(int(v)),))
 
     def _new_user_turns(self, limit: int) -> list[dict]:
-        """Unprocessed USER turns (their words are the fact source; assistant turns are context)."""
+        """Unprocessed USER turns (their words are the fact source; assistant turns are context).
+        Bounded BOTH by count and by total clipped chars (`distill_batch_chars`) — a batch of
+        long-form turns must cost roughly the same LM call as a batch of one-liners, or the
+        heavy stretches of the transcript time out on every pass and the backlog wedges."""
         rows = self.db.execute(
             "SELECT id, text FROM chat_logs WHERE role='user' AND id > ? ORDER BY id LIMIT ?",
             (self._last_id(), int(limit))).fetchall()
-        return [{"id": int(r[0]), "text": r[1] or ""} for r in rows]
+        turns = [{"id": int(r[0]), "text": r[1] or ""} for r in rows]
+        budget = int(self.c.get("distill_batch_chars") or 0)
+        if budget <= 0 or not turns:
+            return turns
+        out, used = [], 0
+        for t in turns:
+            used += len(self._clip(t["text"]))
+            if out and used > budget:
+                break
+            out.append(t)
+        return out
 
     def backlog(self) -> int:
         """USER turns not yet folded — how far behind the transcript the graph is.  Drops to 0
