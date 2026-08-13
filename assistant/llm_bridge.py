@@ -600,8 +600,20 @@ _DELIBERATE_DEFAULTS = {
                                # (set 0 to disable the loop-detector trigger)
     # Deadlines are STALL-based, not wall-clock: a model that is still streaming is making
     # progress and is never guillotined — that killed good answers to hard questions.
-    "timeout_s": 120.0,        # absolute backstop, even while output flows
-    "stall_timeout_s": 30.0,   # give up only after this long with NO output at all
+    "timeout_s": 180.0,        # absolute backstop, even while output flows
+    # Give up only after this long with NO output at all.  Generous on purpose: a thinking
+    # model can be silent ON THE WIRE for a long stretch — llama.cpp may buffer the whole
+    # reasoning block rather than streaming it — so a tight window here reads a model that
+    # is working perfectly as a wedged one and kills it just before the answer.
+    "stall_timeout_s": 75.0,
+    # Thinking budget for the considered answer: -1 = unlimited (default), 0 = no thinking.
+    # A positive token budget (server permitting) caps a runaway think and gets to the
+    # answer sooner — the main lever if deliberation feels slow.
+    "think_budget": -1,
+    # A long-form answer is already spoken prose (the prompt asks for exactly that), so
+    # re-generating it through the fast LM just to restyle costs a WHOLE extra pass for no
+    # gain.  Speak it as it stands.  False restores the rephrase for long answers too.
+    "longform_verbatim": True,
     "progress_after_s": 3.0,   # first "still thinking" line after this long, then each interval
     "stall": "Hold on — let me think about that properly for a second.",
     # A long-form question (why/how/compare/…) sets the expectation up front, which buys
@@ -2196,6 +2208,9 @@ class LLMBridge:
             # reads as considered rather than broken.
             stall = ((cfg.get("deep_stall") or _DELIBERATE_DEFAULTS["deep_stall"]) if longform
                      else (cfg.get("stall") or _DELIBERATE_DEFAULTS["stall"]))
+            # Start the knowledge pull BEFORE the stall line so it overlaps saying it,
+            # rather than adding its seconds to the silence after it.
+            kb_task = asyncio.create_task(self._deliberation_knowledge(question))
             await self.speak_sink(stall)
             n = int(cfg.get("history_turns", 12))
             recent = [m for m in self.history[-(n * 2):] if m["role"] in ("user", "assistant")]
@@ -2211,7 +2226,7 @@ class LLMBridge:
             # the questions it was escalated for.  Pull the KB now — not the fast path's
             # one-line live budget but a full (live=False) fetch, which this path can
             # afford because it is already allowed to take seconds.
-            kb = await self._deliberation_knowledge(question)
+            kb = await kb_task
             prompt = (
                 "You are the deliberate, knowledgeable reasoning core behind a voice "
                 "assistant. The user asked something where getting the facts and reasoning "
@@ -2336,7 +2351,9 @@ class LLMBridge:
         # for 30s (exactly what a hard question causes) reads as a stall and gets killed.
         async for chunk in self._stream_chat(self.big_url, self.big_model, messages,
                                              max_tokens=cap, think=True,
-                                             heartbeat=self._mark_think_alive):
+                                             heartbeat=self._mark_think_alive,
+                                             think_budget=int(
+                                                 self.deliberate_cfg.get("think_budget", -1))):
             parts.append(chunk)
             self._mark_think_alive()
         return "".join(parts).strip()
@@ -2459,7 +2476,13 @@ class LLMBridge:
         long-form answer the instruction keeps the substance and the budget is sized to
         the text; if the rephrase still comes back truncated we speak the big LM's own
         (complete) answer instead of a half-finished paraphrase."""
-        if self.deliberate_cfg.get("deliver_via_fast", True) and self.speak_sink is not None:
+        # A long-form answer was already written as spoken prose; re-generating it through
+        # the fast LM only to restyle costs a whole extra pass on the turn the user is
+        # already waiting on.  Speak it directly.
+        via_fast = self.deliberate_cfg.get("deliver_via_fast", True)
+        if longform and self.deliberate_cfg.get("longform_verbatim", True):
+            via_fast = False
+        if via_fast and self.speak_sink is not None:
             system = self.system_prompt
             if self.inject_time:
                 system += "\n\n" + self._time_context()
@@ -2743,6 +2766,7 @@ class LLMBridge:
         asides_out: tp.Optional[list] = None,
         think: bool = False,
         heartbeat: tp.Optional[tp.Callable[[], None]] = None,
+        think_budget: int = -1,
     ) -> tp.AsyncGenerator[str, None]:
         """
         Async generator yielding text chunks from an OpenAI-compatible
@@ -2769,7 +2793,7 @@ class LLMBridge:
         # the model's chat template expects; ignored harmlessly otherwise.  Background
         # curation (reflection/research) is a separate path that keeps thinking on.
         payload["chat_template_kwargs"] = {"enable_thinking": bool(think)}
-        payload["reasoning_budget"] = -1 if think else 0
+        payload["reasoning_budget"] = (think_budget if think else 0)
         if tools:
             payload["tools"] = tools
         stripper = _TagStripper(_THINK_OPEN, _THINK_CLOSE)          # <think> → dropped, never spoken

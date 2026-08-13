@@ -768,20 +768,35 @@ async def test_longform_deliberation_is_not_cut_off():
     long_answer = ("Suxamethonium is a depolarizing blocker, while rocuronium is a "
                    "non-depolarizing one that competes for the same receptors. " * 6).strip()
     seen = {}
-    b = mk({"deliver_via_fast": True})
     async def big(prompt, max_tokens=None):
         seen["budget"] = max_tokens
         return long_answer
-    b._big_lm_consider = big
     async def fake_tts(messages, tools=None, max_tokens=None):
         seen["tts_budget"] = max_tokens
         seen["system"] = messages[0].get("content") or ""
         return "A properly finished rephrasing of the whole thing.", []
+
+    # DEFAULT: a long-form answer is already spoken prose — speak it, don't pay for a
+    # second full generation just to restyle it.
+    spoken.clear()
+    b = mk({"deliver_via_fast": True})
+    b._big_lm_consider = big
     b._stream_to_tts = fake_tts
     out = await b._deliberate("why are rocuronium and suxamethonium incompatible?")
     check("the big LM gets the long-form token budget",
           seen["budget"] == b._answer_budget(True))
-    check("the delivery pass is sized to the answer, not the 200-token default",
+    check("long-form skips the rephrase pass entirely (no second generation)",
+          "tts_budget" not in seen and "depolarizing" in out)
+    check("…and the considered answer is what gets spoken",
+          any("depolarizing" in s for s in spoken))
+
+    # opt out: with longform_verbatim off the rephrase runs, sized to the text
+    seen.clear()
+    b = mk({"deliver_via_fast": True, "longform_verbatim": False})
+    b._big_lm_consider = big
+    b._stream_to_tts = fake_tts
+    out = await b._deliberate("why are rocuronium and suxamethonium incompatible?")
+    check("with longform_verbatim off, the rephrase is sized to the answer",
           seen["tts_budget"] > b.FAST_MAX_TOKENS)
     check("the rephrase is spoken when it completes", "properly finished" in out)
     check("long-form delivery tells the voice to KEEP the substance (not 3 sentences)",
@@ -889,6 +904,17 @@ async def test_deliberation_is_knowledge_grounded_and_honest_on_failure():
     out = await b._deliberate("why might that be?")
     check("a hanging knowledge pull fails open (the answer still arrives)",
           out == "Considered answer.")
+
+    # ── the stall budget must survive a SILENT think ─────────────────────────
+    b = mk()
+    check("the silence budget is generous (a thinking model can be quiet on the wire)",
+          float(b.deliberate_cfg["stall_timeout_s"]) >= 60)
+    check("the absolute backstop is larger still",
+          float(b.deliberate_cfg["timeout_s"]) > float(b.deliberate_cfg["stall_timeout_s"]))
+    import inspect
+    sig = inspect.signature(bridge.LLMBridge._stream_chat)
+    check("the thinking budget is tunable (reasoning_budget passthrough)",
+          sig.parameters["think_budget"].default == -1)
 
 
 async def test_identity_injection_and_tools():

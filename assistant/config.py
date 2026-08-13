@@ -372,8 +372,18 @@ DEFAULTS: dict = {
             # is making progress and is never cut off — a hard question that deserves 40s
             # of thought gets it.  We give up only when output STOPS (stall_timeout_s) or
             # the absolute backstop trips (timeout_s).
-            "timeout_s": 120.0,         # absolute backstop even while output flows
-            "stall_timeout_s": 30.0,    # give up after this long with NO output at all
+            "timeout_s": 180.0,         # absolute backstop even while output flows
+            # Generous on purpose: a thinking model can be silent ON THE WIRE for a long
+            # stretch (llama.cpp may buffer the whole reasoning block instead of streaming
+            # it), so a tight window kills a model that is working perfectly.
+            "stall_timeout_s": 75.0,    # give up after this long with NO output at all
+            # -1 = unlimited thinking (default), 0 = none, positive = a token budget that
+            # caps a runaway think.  The main lever if deliberation feels slow.
+            "think_budget": -1,
+            # A long-form answer is already spoken prose, so re-generating it through the
+            # fast LM just to restyle costs a whole extra pass on a turn the user is
+            # already waiting on.  False restores the rephrase for long answers too.
+            "longform_verbatim": True,
             "progress_after_s": 3.0,    # first progress line after this, then every interval
             "stall": "Hold on — let me think about that properly for a second.",
             # Long-form questions (why/how/compare/…) announce the deeper think, which sets
