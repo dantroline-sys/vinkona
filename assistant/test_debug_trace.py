@@ -98,6 +98,22 @@ def main():
     check("a tool call shows its name and arguments",
           "call `read_calendar`" in txt2 and '"day": "+1"' in txt2)
     check("a tool result shows what came back", "09:00 list" in txt2)
+    check("a streamed reply shows its first-token latency", "first token 140 ms" in txt2)
+
+    # ── a tool-terminated turn never streamed a content token: first_token_ms
+    # is None (say-back / silent note_person).  The page must render, and say
+    # nothing rather than a made-up "0 ms" — this exact shape 500'd /api/debug.
+    TOOLED = [dict(CLEAN[0]),
+              {"ts": T + 101.5, "kind": "fast_reply",
+               "text": "Saved — I'll remind you at nine.", "first_token_ms": None}]
+    try:
+        txt3 = H._render_debug(H, TOOLED, 1)
+    except Exception:
+        txt3 = None
+    check("a fast_reply with first_token_ms=None renders instead of crashing",
+          txt3 is not None and "Saved — I'll remind you at nine." in txt3)
+    check("…and the first-token note is omitted, not faked as 0 ms",
+          txt3 is not None and "first token" not in txt3)
 
     # ── turn splitting + bounds ──────────────────────────────────────────────
     both = H._render_debug(H, STALLED + CLEAN, 2)

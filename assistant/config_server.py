@@ -1151,8 +1151,13 @@ class Handler(BaseHTTPRequestHandler):
                                + (f", stage=`{e.get('stage')}`" if e.get("stage") else "")
                                + (f", longform={e.get('longform')}" if "longform" in e else ""))
                 elif kind == "fast_reply":
-                    out.append(f"\n{stamp} — spoken reply "
-                               f"(first token {e.get('first_token_ms', 0):.0f} ms)")
+                    # first_token_ms is None when the reply never streamed a content
+                    # token (a tool ended the turn — say-back or silent note_person):
+                    # say nothing rather than a made-up "0 ms", and never crash the page.
+                    ft = e.get("first_token_ms")
+                    out.append(f"\n{stamp} — spoken reply"
+                               + (f" (first token {ft:.0f} ms)"
+                                  if isinstance(ft, (int, float)) else ""))
                     out.append(self._fmt_block("Said", e.get("text")))
                 elif kind == "briefing":
                     out.append(f"\n{stamp} — background briefing for the NEXT turn "
