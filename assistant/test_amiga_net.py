@@ -183,5 +183,36 @@ out = status.render(10)
 assert "deny by default" in out and "test research" in out
 ok("status: policy in plain language + recent events")
 
+# ── credentials never ride argv (world-readable /proc/*/cmdline) ─────────────
+import subprocess as _sp
+from pathlib import Path as _P
+captured = {}
+def _fake_run(cmd, check=True, timeout=None, env=None):
+    captured["cmd"] = list(cmd)
+    captured["env"] = dict(env) if env else None
+    conf = next((c.split("=", 1)[1] for c in cmd if str(c).startswith("--conf-path=")), None)
+    captured["conf_text"] = _P(conf).read_text() if conf else ""
+    captured["conf_mode"] = (_P(conf).stat().st_mode & 0o777) if conf else None
+    if env and env.get("WGETRC"):
+        captured["conf_text"] = _P(env["WGETRC"]).read_text()
+        captured["conf_mode"] = _P(env["WGETRC"]).stat().st_mode & 0o777
+    return None
+_real_run = broker.subprocess.run
+broker.subprocess.run = _fake_run
+try:
+    hdrs = {"Authorization": "Bearer hf_SECRET123", "User-Agent": "amiga"}
+    broker._dl_aria2c("https://x/y.bin", _P("/tmp/amiga-test-dl.bin"), hdrs, 5)
+    assert not any("hf_SECRET123" in str(c) for c in captured["cmd"]), "token on argv!"
+    assert any(str(c).startswith("--conf-path=") for c in captured["cmd"])
+    assert "hf_SECRET123" in captured["conf_text"] and captured["conf_mode"] == 0o600
+    assert any("User-Agent" in str(c) for c in captured["cmd"]), "plain headers stay on argv"
+    ok("aria2c: bearer token via 0600 conf file, never argv")
+    broker._dl_wget("https://x/y.bin", _P("/tmp/amiga-test-dl.bin"), hdrs, 5)
+    assert not any("hf_SECRET123" in str(c) for c in captured["cmd"])
+    assert "hf_SECRET123" in captured["conf_text"] and captured["conf_mode"] == 0o600
+    ok("wget: bearer token via 0600 WGETRC, never argv")
+finally:
+    broker.subprocess.run = _real_run
+
 srv.shutdown()
 print(f"test_amiga_net: {OK} checks OK")

@@ -144,8 +144,36 @@ class Qwen3TTSEngine:
         if attn_implementation:
             kw["attn_implementation"] = attn_implementation
         _log(f"loading {model_repo} on {dev} ({dtype}) ...")
+        # Egress contract: the FIRST load downloads the checkpoint from Hugging Face
+        # inside the qwen-tts package — network code the import-scanning inventory
+        # can't see, and previously un-brokered (deny-by-default said this couldn't
+        # happen).  A cached snapshot loads fully offline; a real download runs
+        # under an audited broker lease (rule 'huggingface'), so a disabled rule
+        # DENIES it with a clear message instead of leaking.  Only a missing broker
+        # module (stripped env) falls open — loudly.
+        cached = False
+        try:
+            from huggingface_hub import snapshot_download
+            snapshot_download(model_repo, local_files_only=True)
+            os.environ.setdefault("HF_HUB_OFFLINE", "1")
+            cached = True
+            _log(f"{model_repo} is already local — loading offline")
+        except Exception:
+            pass
+        lease = None
+        if not cached:
+            try:
+                from amiga_net import broker as _broker
+                lease = _broker.lease(f"qwen3-tts checkpoint: {model_repo}", "huggingface")
+            except ImportError:
+                _log("WARNING: egress broker unavailable in this env — the qwen3 "
+                     "checkpoint download runs UNbrokered (un-audited)")
         t0 = time.monotonic()
-        self._model = Qwen3TTSModel.from_pretrained(model_repo, **kw)
+        if lease is not None:
+            with lease:
+                self._model = Qwen3TTSModel.from_pretrained(model_repo, **kw)
+        else:
+            self._model = Qwen3TTSModel.from_pretrained(model_repo, **kw)
         if not hasattr(self._model, "generate_voice_design"):
             raise RuntimeError(
                 "this qwen-tts build has no generate_voice_design(); check the "

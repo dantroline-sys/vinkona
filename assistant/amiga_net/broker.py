@@ -164,23 +164,62 @@ def _engine() -> str:
     return "stdlib"
 
 
+_SECRET_HDRS = ("authorization", "cookie", "x-api-key")
+
+
+def _split_headers(headers: dict) -> tuple:
+    """(plain, secret) — credentials must never ride the command line: argv is
+    world-readable via /proc/*/cmdline for the whole (possibly hours-long) transfer.
+    Secret headers go to the engine through a 0600 temp file instead."""
+    plain, secret = {}, {}
+    for k, v in (headers or {}).items():
+        (secret if k.lower() in _SECRET_HDRS else plain)[k] = v
+    return plain, secret
+
+
+@contextlib.contextmanager
+def _hdr_file(secret: dict, fmt: str):
+    """A mode-0600 temp file carrying the secret headers, one option line each
+    (aria2c conf 'header=K: V' / wgetrc 'header = K: V'); unlinked afterwards."""
+    import tempfile
+    if not secret:
+        yield None
+        return
+    fd, path = tempfile.mkstemp(prefix="amiga-hdr-")     # mkstemp is already 0600
+    try:
+        with os.fdopen(fd, "w") as fh:
+            for k, v in secret.items():
+                fh.write(fmt.format(k=k, v=v) + "\n")
+        yield path
+    finally:
+        with contextlib.suppress(OSError):
+            os.unlink(path)
+
+
 def _dl_aria2c(url: str, dest: Path, headers: dict, timeout: float) -> None:
     # engines run silent (--summary-interval=0, -q): the broker's own watcher
     # prints ONE progress format whichever engine is doing the work
+    plain, secret = _split_headers(headers)
     cmd = ["aria2c", "-c", "-x4", "-s4", "--file-allocation=none",
            "--auto-file-renaming=false", "--allow-overwrite=true",
            "--console-log-level=warn", "--summary-interval=0",
            "-d", str(dest.parent), "-o", dest.name, url]
-    for k, v in headers.items():
+    for k, v in plain.items():
         cmd[1:1] = [f"--header={k}: {v}"]
-    subprocess.run(cmd, check=True, timeout=timeout)
+    with _hdr_file(secret, "header={k}: {v}") as conf:
+        if conf:
+            cmd[1:1] = [f"--conf-path={conf}"]
+        subprocess.run(cmd, check=True, timeout=timeout)
 
 
 def _dl_wget(url: str, dest: Path, headers: dict, timeout: float) -> None:
+    plain, secret = _split_headers(headers)
     cmd = ["wget", "-c", "-q", "-O", str(dest), url]
-    for k, v in headers.items():
+    for k, v in plain.items():
         cmd[1:1] = [f"--header={k}: {v}"]
-    subprocess.run(cmd, check=True, timeout=timeout)
+    with _hdr_file(secret, "header = {k}: {v}") as rc:
+        env = {**os.environ, "WGETRC": rc} if rc else None
+        subprocess.run(cmd, check=True, timeout=timeout, env=env)
 
 
 def _dl_stdlib(url: str, dest: Path, headers: dict, timeout: float) -> None:
