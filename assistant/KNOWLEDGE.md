@@ -42,6 +42,34 @@ configured (see where the music host is added in `cascade_server.py`).
 
 ---
 
+## How Vinkona consumes it today (addendum, 2026-08-14)
+
+Three tiers exist in the shipped code, selectable independently in config:
+
+1. **`knowledge` block → `kb_search`** — the live fast-LM tool: passage retrieval with
+   citations, injected mid-conversation (live-injection is the default via the Basic
+   feature recipe).
+2. **`knowledge_host` block → `kb_ask`** — the planner-guided structured ask against a
+   running knowledge-host process: fit-gated cards + graph context with a confidence band;
+   abstains rather than guesses. The host also serves `kb_reason` (graph reasoning:
+   about/compare/paths/effects/siblings/contradictions), `kb_brain` (hot-swap loaded
+   brains), and `library_search` (the lexical document library).
+3. **`local_kb` block → LocalKB packs** (VINUR-PACK-01 §1.6, `local_kb.py`) — the
+   **in-process knowledge tier**: no knowledge-host process at all. Shareable `.kdb`
+   knowledge packs (clean-room distillates, license-gated, manifest-stamped) are imported
+   into a local master kb and queried by consuming vinur's read path **as a library**
+   (zero hard dependencies by ratchet). It duck-types the host client — same `ask()`/
+   `search()` signatures and result shapes — so the cascade cannot tell the tiers apart;
+   fail-soft (construction failure just leaves it disabled with a reason). Without an
+   embedder endpoint it serves its lexical tier. This is the consumer story for machines
+   that will never run the full host: import a pack, get grounded answers.
+
+Packs themselves (production, manifest v2, license gate, compat table) are specified in
+vinur's VINUR-PACK-01; brains (load/unload of bundle `.kdb`s on a running host) are the
+host-side counterpart.
+
+---
+
 ## Phasing at a glance
 
 | Phase | Corpus size | Adds | It becomes |

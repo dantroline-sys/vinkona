@@ -1461,10 +1461,15 @@ FIELD_LEVELS: dict[str, str] = {
     "memory.working_graph.brief_max_chars": "advanced",
     "memory.working_graph.brief_threads": "advanced",
     "memory.working_graph.keep_turns": "advanced",
+    "memory.mind_graph.*": "expert",                    # distill-batch/extraction internals…
+    "memory.mind_graph.max_context_nodes": "advanced",  # …but the recall-block size is power-user
+    "memory.mind_graph.max_context_edges": "advanced",
     "big_lm.deliberate.*": "expert",                    # deliberation-loop timing internals
     "big_lm.context.*": "expert",                       # per-task context-window budgets
     "tts.orpheus_gguf.*": "expert",                     # sampling params for the default TTS engine
     "tts.qwen3.*": "expert",                             # Qwen3-TTS codec/sampling/voices (advanced engine)
+    "tts.chatterbox.*": "expert",                       # clone-clip + sampling for the other two
+    "tts.neutts.*": "expert",                           #   engines — same tier as their siblings
 }
 
 

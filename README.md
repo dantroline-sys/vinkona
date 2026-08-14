@@ -12,7 +12,8 @@ and research. Nothing about you is sent to a cloud service.
 > user-facing front-end, is **PolyForm Noncommercial 1.0.0** from the split
 > onward (all earlier commits remain Apache 2.0 — see [LICENSE](LICENSE)).
 > Vinkona works without Vinur, and talks to it only over the tool-host HTTP
-> contract when it's there.
+> contract when it's there — or consumes shipped **knowledge packs** (`.kdb`)
+> entirely in-process via its `LocalKB` tier, no host process at all.
 
 Vinkona is built around a deliberately **small** language model (~9B). The bet is
 that *understanding isn't about model size — it's about explicit, persistent,
@@ -25,7 +26,7 @@ already own, alongside a lower-tier TTS model.
 
 | Where | What it is |
 |---|---|
-| [`assistant/`](assistant/) (this repo) | The voice assistant: a real-time local cascade (denoise → VAD → ASR → fast LM → TTS, with a big LM reasoning in the background), persistent memory, personas, a Flutter client, a config web UI, and an autonomous research worker. |
+| [`assistant/`](assistant/) (this repo) | The voice assistant: a real-time local cascade (denoise → VAD → ASR → fast LM → TTS, with a big LM reasoning in the background), pluggable TTS engines (Orpheus-GGUF default · Chatterbox · NeuTTS · Qwen3-TTS), persistent memory, personas, a Flutter client, a config web UI, and an autonomous research worker. |
 | [Vinur](https://github.com/dantroline-sys/vinur) (its own repo, Apache 2.0) | A standalone knowledge-base service: ingests Wikipedia snapshots, PDFs, books and the assistant's own research; distills them into typed, cited knowledge cards; answers `kb_search`/`kb_ask` over HTTP with trust tiers, facets, and conflict checking. |
 
 They are separate services that speak a tiny, shared **tool-host contract**
@@ -88,12 +89,43 @@ Three composable systems (see
   scores answers against the asked situation and abstains on a clash, so
   "topically near" never silently becomes "wrong answer".
 
+Grown around those since:
+
+- **A durable mind graph** (`assistant/mind_graph.py`) — during dreaming, the
+  big LM distils entities and typed relations about *your* world from your own
+  chat turns (never from email/files — no untrusted-source poisoning). Every
+  edge is grounded in a real quote, your identity is a locked anchor, and
+  retraction is reversible; the graph is consulted at recall time and
+  inspectable in the config UI.
+- **A working-memory graph** (`assistant/working_graph.py`) — a volatile,
+  deterministic per-conversation graph that keeps the broad thread of a very
+  long session alive without a very long context window; it can persist
+  across sessions as waning associations.
+- **Characteristic adaptations** — the persona's chosen traits are cast from
+  its locked core and adjusted purposefully from evidence (trait reflection,
+  visible in the Self tab), rather than drifting with the wind.
+- **Spontaneity with a way in** — she can raise a headline, finding, or open
+  research question mid-reply when it genuinely touches what was just said;
+  every segue is watermarked and outcome-judged.
+- **Time-sense and orientation** — a semantic clock (time of day, rhythm,
+  sunrise, holidays) plus an orientation pull at boot, dreaming, and daily, so
+  she wakes already knowing the basics.
+- **An activity surface** — "what is she doing right now" (`/api/activity`,
+  the header pill), with graceful preemption: a new conversation supersedes
+  lingering background work instead of fighting it.
+
 ## Design principles
 
 - **Local and private.** All models run locally (llama.cpp, faster-whisper).
-  The only outbound traffic is explicit, keyless research fetches
-  (Wikipedia, OpenAlex, PubMed, …) — and outbound queries pass a privacy filter
-  that masks emails, phone numbers, and known private names first.
+  Outbound traffic is **deny-by-default**: every direct external call goes
+  through the `amiga_net` egress broker under lease-only policy rules
+  (`assistant/egress.toml`) — a rule grants nothing between operations, and
+  every decision lands in an audit log. What the rules permit is explicit and
+  keyless (the scholarly research fallbacks, the built-in Wikipedia tool,
+  digest-verified binary/model acquisition), outbound queries pass a privacy
+  filter that masks emails, phone numbers, and known private names first, and
+  the config UI's Network tab shows the whole picture — a graded leak check,
+  open leases with a revoke button, per-rule traffic, the audit tail.
 - **Personal content is firewalled.** Your memory database, live config,
   personas, and research drops are user data, never source — they are
   git-ignored and stay on your machine.
@@ -124,6 +156,16 @@ and is the reference example of writing a host.
 
 ## Getting started
 
+The one-command path:
+
+```bash
+./vinkona.sh setup  # clone → chatting: checks the machine, walks the missing
+                    #   pieces (models, config, services) in order, starts the stack
+./vinkona.sh doctor # is this machine ready? named checks, one remedy command each
+```
+
+Or the pick-your-parts path:
+
 ```bash
 ./install.sh        # interactive checklist — pick off tasks until everything is green
 ./vinkona.sh start  # then start the system (asks once what THIS machine runs:
@@ -139,8 +181,11 @@ shell): live status, one Start/Stop button, a tray icon, the web UIs in
 native windows, and wizards for first-run setup (model check + download)
 and connecting a knowledge box. `launcher/install-desktop.sh` adds it to
 the Linux application menu. It drives the same `vinkona.sh`/supervisor
-underneath, so the two stay interchangeable; the config web UI remains the
-expert surface under "All settings".
+underneath, so the two stay interchangeable. The config web UI under "All
+settings" is no longer expert-only: the Settings form opens on a small
+**Basic** view (audience tiers Basic / Advanced / Expert), and Basic toggles
+run as **feature recipes** — a preview of the companion changes and required
+dependencies, then confirm.
 
 To run the knowledge host too, clone [Vinur](https://github.com/dantroline-sys/vinur)
 **next to** this repository (`../vinur`) — the installer and orchestrator find

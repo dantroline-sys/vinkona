@@ -4,9 +4,10 @@ A real-time, full-duplex voice assistant running entirely on local hardware: a
 classic **cascade** (denoise → VAD → ASR → LLM → TTS) wrapped around persistent
 memory, personas, tool calling, and an autonomous background research loop.
 
-This directory is the assistant half of the Vinkona monorepo; the knowledge-base
-service lives in [`../knowledge-host/`](../knowledge-host/), and the system-level
-overview is in the [top-level README](../README.md).
+This directory is the assistant. The knowledge-base service is
+[Vinur](https://github.com/dantroline-sys/vinur), its own repository since the
+2026-07-13 split (cloned alongside as `../vinur`); the system-level overview is
+in the [top-level README](../README.md).
 
 ---
 
@@ -70,14 +71,16 @@ barge-in via VAD.
 
 | Area | Files | Docs |
 |---|---|---|
-| Voice cascade | `cascade_server.py`, `asr.py`, `rnnoise_frontend.py`, `llm_bridge.py`, `tts_server.py`, `tts_orpheus_gguf.py`, `tts_orpheus.py`, `tts_neutts.py` | — |
-| LM serving (llama.cpp) | `llm_server.py`, `serve_fast_lm.sh`, `serve_big_lm.sh`, `serve_embed.sh` | [`ENVIRONMENTS.md`](ENVIRONMENTS.md) |
-| Memory & people | `memory.py`, `people.py`, `news_store.py`, `calendar_sync.py`, `calendar_resolve.py` | [`MEMORY_CONSOLIDATION.md`](MEMORY_CONSOLIDATION.md) |
+| Voice cascade | `cascade_server.py`, `asr.py`, `rnnoise_frontend.py`, `llm_bridge.py`, `tool_facade.py`, `tts_server.py` + engines `tts_orpheus_gguf.py`, `tts_chatterbox.py`, `tts_neutts.py`, `tts_qwen3.py` | — |
+| LM serving (llama.cpp) | `llm_server.py`, `fetch_llama.py` (prebuilt llama-server), `lm_lease.py` (busy leases), `serve_fast_lm.sh`, `serve_big_lm.sh`, `serve_embed.sh` | [`ENVIRONMENTS.md`](ENVIRONMENTS.md) |
+| Memory & graphs | `memory.py`, `mind_graph.py` (durable chat-derived graph), `working_graph.py` (volatile per-conversation graph), `people.py`, `news_store.py`, `calendar_sync.py`, `calendar_resolve.py` | [`MEMORY_CONSOLIDATION.md`](MEMORY_CONSOLIDATION.md), [`working_memory_graph_spec.md`](working_memory_graph_spec.md) |
 | Conscious reasoning | `user_model.py` (+ the corrections idle-reviewer in `memory.py`/`research_worker.py`) | [`CONSCIOUS_REASONING.md`](CONSCIOUS_REASONING.md), [`USER_MODEL_INTEGRATION.md`](USER_MODEL_INTEGRATION.md) |
-| Research loop | `research_worker.py`, `research_export.py`, `capture.py` | [`research_loop_spec.md`](research_loop_spec.md) |
-| Tools & hosts | `tools_client.py`, `knowledge_host.py`, `safety.py`, `wsauth.py` | [`MAC_TOOLS.md`](MAC_TOOLS.md), [`KNOWLEDGE.md`](KNOWLEDGE.md), [`MUSIC.md`](MUSIC.md), [`WS_AUTH.md`](WS_AUTH.md) |
-| Awareness | `timesense.py`, `spoken_time.py`, `ambient.py`, `spontaneity.py` | [`NOTIFICATIONS.md`](NOTIFICATIONS.md) |
-| Config & UI | `config.py`, `config_server.py`, `config_ui.html`, `chat_ui.html` | — |
+| Research loop | `research_worker.py`, `research_export.py`, `capture.py`, `idle_control.py` (quiet hours), `worker_activity.py` (activity surface + preemption) | [`research_loop_spec.md`](research_loop_spec.md) |
+| Tools & hosts | `tools_client.py`, `knowledge_host.py`, `local_kb.py` (in-process knowledge packs), `safety.py`, `wsauth.py` | [`MAC_TOOLS.md`](MAC_TOOLS.md), [`KNOWLEDGE.md`](KNOWLEDGE.md), [`MUSIC.md`](MUSIC.md), [`WS_AUTH.md`](WS_AUTH.md) |
+| Network & egress | `amiga_net/` (the broker: policy, leases, audit, status), `egress.toml` (the policy file), `posture.py` (leak check), `netadmin.py` (Network tab server side) | — |
+| Awareness | `timesense.py`, `spoken_time.py`, `ambient.py`, `spontaneity.py`, `pronouns.py` | [`NOTIFICATIONS.md`](NOTIFICATIONS.md) |
+| Config & UI | `config.py`, `confighelp.py`, `config_server.py`, `config_ui.html`, `chat_ui.html` | — |
+| Lifecycle | `supervisor.py` (the process supervisor), `doctor.py`, `vinkona.sh` | — |
 | Client | `vinkona_client/` (Flutter) | — |
 | Tests | `test_*.py` (stdlib-only, no pip installs) | — |
 
@@ -120,13 +123,17 @@ itself if the system one won't do — see [`ENVIRONMENTS.md`](ENVIRONMENTS.md).
 GGUF on a plain llama-server (the `tts_lm` tier, port 11439) and vocodes with
 SNAC via onnxruntime on the CPU — preset voices and `<laugh>`/`<sigh>` tags, no
 separate venv, no Python-version pin, and it's the path that can port to macOS
-(Metal). Two alternative engines clone a voice from a reference clip and
-carry their own torch in their own venvs (see
-[`ENVIRONMENTS.md`](ENVIRONMENTS.md)): `neutts`, and `chatterbox` — a ~0.5B
-model (~2-3 GB loaded, cuda/mps/cpu) with an emotion-exaggeration knob, the
-low-footprint choice for machines that can't hold the Orpheus 3B backbone at
-real time (e.g. a 16 GB M2 mini). Switch engines with `tts.engine` in the
-config UI; `vinkona.sh` starts the right services for whichever is set.
+(Metal). Three alternative engines carry their own torch in their own venvs
+(see [`ENVIRONMENTS.md`](ENVIRONMENTS.md)): `neutts` and `chatterbox` clone a
+voice from a reference clip — chatterbox is a ~0.5B model (~2-3 GB loaded,
+cuda/mps/cpu) with an emotion-exaggeration knob, the low-footprint choice for
+machines that can't hold the Orpheus 3B backbone at real time (e.g. a 16 GB
+M2 mini) — and `qwen3` is Qwen3-TTS via the official `qwen-tts` package
+(1.7B LM + 12.5 Hz codec, 24 kHz), with three voice modes: `design` (build a
+stable voice from a natural-language description, fixed seed), `clone`, or
+`custom`, plus clause-level sub-chunk streaming to cut time-to-first-audio.
+Switch engines with `tts.engine` in the config UI's Models tab; `vinkona.sh`
+starts the right services for whichever is set.
 
 **Filesystem guarantee:** everything the assistant writes stays inside this
 folder — live config, personas and memory in `config/`, weights in `Models/`,
@@ -186,14 +193,23 @@ On first server start a human-typable access token is generated and printed
 
 ## Security & privacy posture
 
-- Everything runs locally; the only outbound traffic is explicit research
-  fetches from keyless sources, and those queries pass `safety.query_privacy()`
-  first (masks emails, phone numbers, long numbers, known private names).
+- Everything runs locally. Direct outbound traffic is **deny-by-default**:
+  it goes through the `amiga_net` egress broker under the lease-only rules in
+  [`egress.toml`](egress.toml) (a rule grants nothing between operations),
+  with one JSON audit line per decision in `var/log/egress.jsonl`. The
+  permitted surface is explicit and keyless — the scholarly research
+  fallbacks, the built-in Wikipedia tool, digest-verified binary/model
+  acquisition — and research queries pass `safety.query_privacy()` first
+  (masks emails, phone numbers, long numbers, known private names).
+  `posture.py` grades the box's actual state (binds, policy, token file
+  permissions) on the config UI's Network tab, which also shows open leases
+  (revokable), per-rule traffic, and the audit tail.
 - All external content (web, documents, KB passages) is wrapped as untrusted
   data — fenced, sanitized of chat-template control tokens, and never treated
   as instructions (`safety.py`).
-- The WebSocket requires a pre-shared token (`wsauth.py`); the config UI binds
-  to localhost only.
+- The WebSocket requires a pre-shared token (`wsauth.py`), and the cascade's
+  HTTP routes honour the same token off-loopback; the config UI binds to
+  localhost only and refuses non-loopback peers.
 - `config/` (live config, personas, memory.db, trace, token) is git-ignored
   user data.
 

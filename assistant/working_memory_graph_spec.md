@@ -1,6 +1,23 @@
 # VIN-WM-02 — Conversational Working-Memory Graph & Instrument
 
-**Status:** Draft for review (Dan to mark up)
+**Status (post-split, updated 2026-08-14):** PARTIALLY EXECUTED / PARTIALLY SUPERSEDED — read with the notes below.
+
+- **SHIPPED (phase 1a):** `working_graph.py` — the deterministic no-LM half exactly as
+  scoped: volatile per-conversation RAKE phrase graph → decaying frame → fenced
+  "working notes" briefing; nodes + untyped co-occurrence edges only; deterministic,
+  bounded, grounded; off by default (`memory.working_graph`). The instrument + drift
+  guard (§6 harvest) landed there too (`metrics()`, trace kind=working_graph).
+  The P2 first-person asides lane shipped as chat_logs `role='aside'`.
+- **SUPERSEDED (2026-08-09 architecture split):** the slow LM-extraction lane and
+  typed relations in THIS volatile graph. Typed knowledge now lives in the DURABLE
+  store's `mind_graph.py` (big-LM distillation at dreaming time) — the volatile lane
+  stays untyped by design. The staging-copy apply/abort protocol and §9 idle harvest
+  fell away with that lane.
+- Kept as the reference design: invariants G-1..G-8 remain binding on the shipped
+  code, and the slow-lane sections document the road not taken if in-conversation
+  typed extraction is ever wanted.
+
+**Original status:** Draft for review (Dan to mark up)
 **Owner repository:** `vinkona` (PolyForm)
 **Realizes:** VIN-WM-01 phase 1 (the between-turn lane), in the fuller shape Dan specified — live extraction of a *here-and-now* graph, not just an activation overlay.
 **Reuses:** VIN-WM-01 phase 0 (`WorkingActivation`, the decaying per-conversation activation already in `recall()`); the deterministic span matcher (`_AhoCorasick.search`); the `lm_lease` yield primitive; the gardening/idle cycle.
