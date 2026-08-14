@@ -214,5 +214,127 @@ try:
 finally:
     broker.subprocess.run = _real_run
 
+# ── the configured proxy applies to broker traffic (sync + async) ───────────
+# A proxy set on the Network tab must steer request()/download() AND the async
+# BrokerSession lane — urllib reads env only and aiohttp reads nothing, so the
+# config keys were silently ignored and brokered calls went direct.
+POL.write_text(POL.read_text() + f"""
+[[rule]]
+name = "proxytest"
+hosts = ["proxytest.example"]
+port = 443
+methods = ["GET"]
+purpose = "proxy injection check"
+ttl_seconds = 60
+max_uses = 10
+
+[[rule]]
+name = "huggingface"
+hosts = ["huggingface.co"]
+port = 443
+methods = ["GET"]
+purpose = "weights gate check"
+ttl_seconds = 60
+max_uses = 10
+""")
+_real_cfg = broker._config
+broker._config = lambda: {"http_proxy": "http://proxy.corp:3128",
+                          "https_proxy": "http://proxy.corp:3129",
+                          "no_proxy": "corp.internal"}
+try:
+    env = broker._proxy_env()
+    assert env["https_proxy"] == "http://proxy.corp:3129" and env["HTTP_PROXY"]
+    assert "127.0.0.1" in env["no_proxy"] and "corp.internal" in env["no_proxy"]
+    assert broker._proxy_for("https://proxytest.example/x") == "http://proxy.corp:3129"
+    assert broker._proxy_for("http://proxytest.example/x") == "http://proxy.corp:3128"
+    assert broker._proxy_for("https://a.corp.internal/x") == ""
+    assert broker._proxy_for(f"{BASE}/x") == "", "loopback is always exempt"
+
+    class FakeRawKw(FakeRaw):
+        def get(self, url, **kw):
+            self.calls.append((url, kw))
+            return FakeResp()
+
+    async def _proxy_case():
+        raw = FakeRawKw()
+        bs = broker.BrokerSession(raw, "proxy check")
+        with broker.lease("proxy check", "proxytest"):
+            async with bs.get("https://proxytest.example/api") as r:
+                assert r.status == 200
+        (url, kw), = raw.calls
+        assert kw.get("proxy") == "http://proxy.corp:3129", kw
+
+    asyncio.run(_proxy_case())
+
+    captured2 = {}
+    _rr = broker.subprocess.run
+    broker.subprocess.run = lambda cmd, check=True, timeout=None, env=None: \
+        captured2.update(cmd=list(cmd), env=dict(env or {}))
+    try:
+        broker._dl_aria2c("https://x/y.bin", Path(TD / "p.bin"), {}, 5)
+        assert captured2["env"].get("https_proxy") == "http://proxy.corp:3129"
+        assert "127.0.0.1" in captured2["env"].get("no_proxy", "")
+        broker._dl_wget("https://x/y.bin", Path(TD / "p.bin"), {}, 5)
+        assert captured2["env"].get("http_proxy") == "http://proxy.corp:3128"
+    finally:
+        broker.subprocess.run = _rr
+finally:
+    broker._config = _real_cfg
+ok("proxy: Network-tab mapping steers sync + async + engine lanes; "
+   "no_proxy + loopback exempt")
+
+# ── chatterbox weights ride the broker (cached-else-lease, like qwen3) ──────
+import contextlib as _ctx
+import importlib.util as _ilu
+import types as _types
+
+sys.modules.setdefault("amiga_net", sys.modules["assistant.amiga_net"])
+_spec = _ilu.spec_from_file_location(
+    "tts_chatterbox", Path(__file__).resolve().parent / "tts_chatterbox.py")
+_cbx = _ilu.module_from_spec(_spec)
+_spec.loader.exec_module(_cbx)
+
+_hub = _types.ModuleType("huggingface_hub")
+_snap_dir = TD / "snap"
+_snap_dir.mkdir(exist_ok=True)
+_hub.snapshot_download = lambda repo, local_files_only=False: str(_snap_dir)
+_prev_hub = sys.modules.get("huggingface_hub")
+sys.modules["huggingface_hub"] = _hub
+_prev_offline = os.environ.pop("HF_HUB_OFFLINE", None)
+try:
+    # incomplete cache (files missing) -> a broker lease, audited on entry
+    gate = _cbx._weights_gate("ResembleAI/chatterbox")
+    assert not isinstance(gate, _ctx.nullcontext), "incomplete cache must lease"
+    with gate:
+        pass
+    assert any(e["verdict"] == "LEASE_OPEN" and "chatterbox" in e.get("purpose", "")
+               for e in audit.tail(5)), "the weights lease must be audited"
+    # complete cache -> offline load, no lease, HF_HUB_OFFLINE pinned
+    for f in _cbx._WEIGHT_FILES:
+        (_snap_dir / f).write_text("x")
+    gate = _cbx._weights_gate("ResembleAI/chatterbox")
+    assert isinstance(gate, _ctx.nullcontext), "complete cache loads offline"
+    assert os.environ.get("HF_HUB_OFFLINE") == "1"
+    os.environ.pop("HF_HUB_OFFLINE", None)
+    # disabled rule -> the download is DENIED before any bytes move
+    for f in _cbx._WEIGHT_FILES:
+        (_snap_dir / f).unlink()
+    policy.set_rule_enabled("huggingface", False, POL)
+    try:
+        with _cbx._weights_gate("ResembleAI/chatterbox"):
+            raise AssertionError("disabled rule must deny the weights download")
+    except broker.EgressDenied:
+        pass
+    policy.set_rule_enabled("huggingface", True, POL)
+finally:
+    if _prev_hub is not None:
+        sys.modules["huggingface_hub"] = _prev_hub
+    else:
+        sys.modules.pop("huggingface_hub", None)
+    if _prev_offline is not None:
+        os.environ["HF_HUB_OFFLINE"] = _prev_offline
+ok("chatterbox weights: complete cache loads offline; else an audited "
+   "huggingface lease; a disabled rule DENIES the download")
+
 srv.shutdown()
 print(f"test_amiga_net: {OK} checks OK")

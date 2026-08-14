@@ -20,12 +20,48 @@ synthesize() is blocking (GPU/CPU inference); call it from a worker thread,
 never directly on the asyncio event loop.
 """
 
+from __future__ import annotations
+
+import contextlib
+import os
 from pathlib import Path
 import typing as tp
 
-import numpy as np
-
 SAMPLE_RATE = 24000
+
+# The five files ChatterboxTTS.from_pretrained pulls from the hub (mirrors the
+# library's own list) — used only to verify a cached copy is COMPLETE before
+# committing to an offline load.
+_WEIGHT_FILES = ("ve.safetensors", "t3_cfg.safetensors", "s3gen.safetensors",
+                 "tokenizer.json", "conds.pt")
+
+
+def _weights_gate(repo: str):
+    """Egress contract (same as tts_qwen3): the FIRST load downloads ~2 GB of
+    weights from the HF hub inside the chatterbox library — network code the
+    import-scanning inventory can't see, and previously un-brokered
+    (deny-by-default said this couldn't happen).  A complete cached snapshot
+    loads fully offline; a real download runs under an audited broker lease
+    (rule 'huggingface'), so a disabled rule DENIES it with a clear message
+    instead of leaking.  Only a missing broker module (stripped env) falls
+    open — loudly.  Returns a context manager to hold across the load."""
+    try:
+        from huggingface_hub import snapshot_download
+        snap = Path(snapshot_download(repo, local_files_only=True))
+        if all((snap / f).exists() for f in _WEIGHT_FILES):
+            os.environ.setdefault("HF_HUB_OFFLINE", "1")
+            print(f"[tts-chatterbox] {repo} is already local — loading offline",
+                  flush=True)
+            return contextlib.nullcontext()
+    except Exception:
+        pass
+    try:
+        from amiga_net import broker
+        return broker.lease(f"chatterbox weights: {repo}", "huggingface")
+    except ImportError:
+        print("[tts-chatterbox] WARNING: egress broker unavailable in this env — "
+              "the weight download runs UNbrokered (un-audited)", flush=True)
+        return contextlib.nullcontext()
 
 
 def _resolve_device(device: str) -> str:
@@ -50,19 +86,21 @@ class ChatterboxEngine:
         cfg_weight: float = 0.5,
         temperature: float = 0.8,
     ):
-        from chatterbox.tts import ChatterboxTTS  # raises ImportError if not installed
+        import chatterbox.tts as _cbx  # raises ImportError if not installed
+        ChatterboxTTS = _cbx.ChatterboxTTS
         device = _resolve_device(device)
-        try:
-            self._model = ChatterboxTTS.from_pretrained(device=device)
-        except Exception:
-            if device == "mps":
-                # Some chatterbox/torch pairings trip over mps map_location at
-                # load time; CPU still works (slower) rather than not at all.
-                print("[tts-chatterbox] mps load failed — falling back to cpu", flush=True)
-                device = "cpu"
+        with _weights_gate(getattr(_cbx, "REPO_ID", "ResembleAI/chatterbox")):
+            try:
                 self._model = ChatterboxTTS.from_pretrained(device=device)
-            else:
-                raise
+            except Exception:
+                if device == "mps":
+                    # Some chatterbox/torch pairings trip over mps map_location at
+                    # load time; CPU still works (slower) rather than not at all.
+                    print("[tts-chatterbox] mps load failed — falling back to cpu", flush=True)
+                    device = "cpu"
+                    self._model = ChatterboxTTS.from_pretrained(device=device)
+                else:
+                    raise
         self.device = device
         self.sample_rate = int(getattr(self._model, "sr", SAMPLE_RATE))
         self._exaggeration = exaggeration
@@ -98,11 +136,12 @@ class ChatterboxEngine:
             self._model.prepare_conditionals(ref, exaggeration=self._exaggeration)
         self._prepared = voice
 
-    def synthesize(self, text: str, voice: str) -> np.ndarray:
+    def synthesize(self, text: str, voice: str) -> "np.ndarray":  # noqa: F821
         """
         Synthesize one utterance.  Returns float32 PCM at self.sample_rate.
         BLOCKING — run in a worker thread, not on the event loop.
         """
+        import numpy as np   # lazy: keeps the module importable without numpy
         if voice not in self._voices:
             raise KeyError(f"unknown voice '{voice}'; registered: {self.voices}")
         self._prepare(voice)
@@ -119,5 +158,6 @@ class ChatterboxEngine:
         """Yield 16-bit PCM byte chunks.  Chatterbox synthesizes a whole
         utterance at once, so this is a single chunk — same wire format as the
         Orpheus stream."""
+        import numpy as np
         pcm = self.synthesize(text, voice)
         yield (np.clip(pcm, -1.0, 1.0) * 32767.0).astype(np.int16).tobytes()

@@ -123,6 +123,59 @@ def lease(purpose: str, rule_name: str):
         audit.write("LEASE_CLOSE", purpose=purpose, rule=rule.name)
 
 
+_PROXY_KEYS = ("http_proxy", "https_proxy", "all_proxy")
+_LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1")
+
+
+def _proxy_env() -> dict:
+    """The outbound proxy for broker traffic: config keys (the Network tab)
+    first, process environment second; {} means direct.  no_proxy always
+    gains loopback so the box never proxies its own services."""
+    cfg = _config()
+    out: dict = {}
+    for key in _PROXY_KEYS:
+        val = str(cfg.get(key) or os.environ.get(key)
+                  or os.environ.get(key.upper()) or "").strip()
+        if val:
+            out[key] = out[key.upper()] = val
+    if not out:
+        return {}
+    hosts = [h.strip() for h in str(cfg.get("no_proxy") or os.environ.get("no_proxy")
+                                    or os.environ.get("NO_PROXY") or "").split(",")
+             if h.strip()]
+    for h in _LOCAL_HOSTS:
+        if h not in hosts:
+            hosts.append(h)
+    out["no_proxy"] = out["NO_PROXY"] = ",".join(hosts)
+    return out
+
+
+def _proxy_for(url: str) -> str:
+    """The proxy URL one request to `url` should ride, or '' for direct —
+    scheme-matched, no_proxy respected."""
+    env = _proxy_env()
+    if not env:
+        return ""
+    host = _dest_of(url)[0]
+    if urllib.request.proxy_bypass_environment(host, {"no": env.get("no_proxy", "")}):
+        return ""
+    scheme = "https" if url.lower().startswith("https") else "http"
+    return env.get(f"{scheme}_proxy") or env.get("all_proxy") or ""
+
+
+def _urlopen(req: urllib.request.Request, timeout: float):
+    """urlopen honouring the CONFIGURED proxy, not just the process
+    environment (urllib's default reads env only — a proxy set on the Network
+    tab was silently ignored, so brokered calls went direct and failed on
+    proxied networks)."""
+    if not _proxy_env():
+        return urllib.request.urlopen(req, timeout=timeout)
+    pxy = _proxy_for(req.full_url)
+    proxies = {"http": pxy, "https": pxy} if pxy else {}
+    return urllib.request.build_opener(
+        urllib.request.ProxyHandler(proxies)).open(req, timeout=timeout)
+
+
 def request(purpose: str, url: str, method: str = "GET", data: bytes | None = None,
             headers: dict | None = None, timeout: float = 30.0) -> bytes:
     """A small allowed call; returns the body bytes.  Auth headers come from
@@ -134,7 +187,7 @@ def request(purpose: str, url: str, method: str = "GET", data: bytes | None = No
         hdrs.setdefault("Authorization", f"Bearer {tok}")
     req = urllib.request.Request(url, method=method, data=data, headers=hdrs)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        with _urlopen(req, timeout) as r:
             body = r.read()
     except urllib.error.HTTPError as e:
         if e.code in (401, 403):
@@ -209,7 +262,10 @@ def _dl_aria2c(url: str, dest: Path, headers: dict, timeout: float) -> None:
     with _hdr_file(secret, "header={k}: {v}") as conf:
         if conf:
             cmd[1:1] = [f"--conf-path={conf}"]
-        subprocess.run(cmd, check=True, timeout=timeout)
+        # aria2c reads http_proxy/https_proxy/all_proxy/no_proxy from env —
+        # merge the configured proxy in so the Network tab's setting applies
+        subprocess.run(cmd, check=True, timeout=timeout,
+                       env={**os.environ, **_proxy_env()})
 
 
 def _dl_wget(url: str, dest: Path, headers: dict, timeout: float) -> None:
@@ -218,7 +274,9 @@ def _dl_wget(url: str, dest: Path, headers: dict, timeout: float) -> None:
     for k, v in plain.items():
         cmd[1:1] = [f"--header={k}: {v}"]
     with _hdr_file(secret, "header = {k}: {v}") as rc:
-        env = {**os.environ, "WGETRC": rc} if rc else None
+        env = {**os.environ, **_proxy_env()}
+        if rc:
+            env["WGETRC"] = rc
         subprocess.run(cmd, check=True, timeout=timeout, env=env)
 
 
@@ -232,7 +290,7 @@ def _dl_stdlib(url: str, dest: Path, headers: dict, timeout: float) -> None:
         mode = "ab"
     req = urllib.request.Request(url, headers=hdrs)
     try:
-        r = urllib.request.urlopen(req, timeout=min(timeout, 120))
+        r = _urlopen(req, min(timeout, 120))
     except urllib.error.HTTPError as e:
         if e.code == 416:                     # already complete
             return
@@ -409,6 +467,13 @@ class BrokerSession:
             hdrs = dict(kwargs.get("headers") or {})
             hdrs.setdefault("Authorization", f"Bearer {tok}")
             kwargs["headers"] = hdrs
+        # aiohttp ignores env/config proxies unless told per request — without
+        # this, a proxy set on the Network tab applied to pulls but research
+        # and the live Wikipedia tool silently went direct
+        if "proxy" not in kwargs:
+            pxy = _proxy_for(url)
+            if pxy:
+                kwargs["proxy"] = pxy
         return rule
 
     def get(self, url, **kwargs):
