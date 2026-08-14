@@ -84,12 +84,20 @@ DEFAULTS: dict = {
 }
 
 _WS = re.compile(r"\s+")
-_NORM_STRIP = re.compile(r"[^a-z0-9 ]+")
+# Keep LETTERS — all of them.  The old [^a-z0-9 ] class deleted every non-ASCII
+# character, so "Reykjavík" mangled to "reykjav k" and a fully non-Latin label
+# ("北京") normalised to "" — every such entity of one type collapsed into a single
+# "type:" node and edges naming them were refused.  \w is Unicode-aware in Python;
+# '_' is stripped separately so slugs don't leak into matching keys.
+_NORM_STRIP = re.compile(r"[^\w ]+|_+")
 
 
 def _norm(s: str) -> str:
-    """Lowercase, strip punctuation, collapse whitespace — the matching key for a label."""
-    return _WS.sub(" ", _NORM_STRIP.sub(" ", (s or "").lower())).strip()
+    """Lowercase (casefold), strip punctuation, collapse whitespace — the matching key
+    for a label.  Unicode letters and digits survive; see _NORM_STRIP above."""
+    import unicodedata
+    s = unicodedata.normalize("NFKC", (s or "")).casefold()
+    return _WS.sub(" ", _NORM_STRIP.sub(" ", s)).strip()
 
 
 def _rel_norm(s: str) -> str:
@@ -138,6 +146,53 @@ class MindGraph:
             self.db.execute("ALTER TABLE kg_edges ADD COLUMN fact TEXT")
         except Exception:
             pass                                            # column already present
+        # Migration: _norm() once deleted every non-ASCII character, so accented labels
+        # mangled ("Reykjavík" → "reykjav k") and fully non-Latin ones collapsed to
+        # "type:".  Recompute each node's key under the current _norm and rename —
+        # merging into an existing node when the corrected key is already taken — then
+        # re-key the touched edges (their PRIMARY KEY embeds src/dst).  One-time
+        # (kg_state norm_v marker); the tables are small.
+        try:
+            done = self.db.execute("SELECT v FROM kg_state WHERE k='norm_v'").fetchone()
+            if not done or done[0] != "2":
+                for nid, typ, label in self.db.execute(
+                        "SELECT id, type, label FROM kg_nodes").fetchall():
+                    if nid == USER_ID:
+                        continue                            # the locked anchor never moves
+                    nn = _norm(label or "")
+                    new_id = f"{typ}:{nn}"
+                    if not nn or new_id == nid:
+                        continue
+                    if self.db.execute("SELECT 1 FROM kg_nodes WHERE id=?",
+                                       (new_id,)).fetchone():
+                        self.db.execute(
+                            "UPDATE kg_nodes SET mentions=mentions+"
+                            "(SELECT mentions FROM kg_nodes WHERE id=?) WHERE id=?",
+                            (nid, new_id))
+                        self.db.execute("DELETE FROM kg_nodes WHERE id=?", (nid,))
+                    else:
+                        self.db.execute("UPDATE kg_nodes SET id=?, norm=? WHERE id=?",
+                                        (new_id, nn, nid))
+                    self.db.execute("UPDATE kg_edges SET src=? WHERE src=?", (new_id, nid))
+                    self.db.execute("UPDATE kg_edges SET dst=? WHERE dst=?", (new_id, nid))
+                for eid, src, rel, dst in self.db.execute(
+                        "SELECT id, src, rel, dst FROM kg_edges").fetchall():
+                    ne = _edge_key(src or "", rel or "", dst or "")
+                    if ne == eid:
+                        continue
+                    if self.db.execute("SELECT 1 FROM kg_edges WHERE id=?",
+                                       (ne,)).fetchone():
+                        self.db.execute(
+                            "UPDATE kg_edges SET mentions=mentions+"
+                            "(SELECT mentions FROM kg_edges WHERE id=?) WHERE id=?",
+                            (eid, ne))
+                        self.db.execute("DELETE FROM kg_edges WHERE id=?", (eid,))
+                    else:
+                        self.db.execute("UPDATE kg_edges SET id=? WHERE id=?", (ne, eid))
+                self.db.execute("INSERT INTO kg_state(k,v) VALUES('norm_v','2') "
+                                "ON CONFLICT(k) DO UPDATE SET v=excluded.v")
+        except Exception:
+            pass                                            # retried on the next open
         self.db.commit()
 
     def _ensure_anchor(self, user_label: str) -> None:

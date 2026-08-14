@@ -21,6 +21,7 @@ import argparse
 import asyncio
 import importlib.util
 import json
+import os
 import re
 import time
 import urllib.parse
@@ -69,10 +70,36 @@ def outbound_query(query, memory, rcfg) -> tuple[str | None, list, str]:
     return None, kinds, masked
 
 
+def _compact_trace(path: Path, max_lines: int) -> None:
+    """Twin of cascade_server._compact_trace — keep them in step.  The feed has two
+    writers (cascade + this worker); size-triggered, flock-guarded, atomic-replace
+    compaction.  The worker used to append with NO cap at all: on a cascade-idle box
+    (the common overnight state) the feed grew without bound."""
+    try:
+        import fcntl
+    except ImportError:
+        fcntl = None
+    with open(str(path) + ".lock", "w") as lk:
+        if fcntl is not None:
+            try:
+                fcntl.flock(lk, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                return
+        lines = path.read_text().splitlines()
+        if len(lines) <= max_lines:
+            return
+        tmp = Path(str(path) + ".tmp")
+        tmp.write_text("\n".join(lines[-max_lines:]) + "\n")
+        os.replace(tmp, path)
+
+
 class _Trace:
     """Append research events to the same feed the config UI Live tab reads."""
+    _MAX_LINES = 2000                    # worker keeps more history than the UI shows
+
     def __init__(self, path):
         self.path = Path(path) if path else None
+        self._n = 0
 
     def write(self, **event):
         if not self.path:
@@ -80,6 +107,10 @@ class _Trace:
         try:
             with self.path.open("a") as f:
                 f.write(json.dumps({"ts": time.time(), "session": "research", **event}) + "\n")
+            self._n += 1
+            if self._n >= 50:            # amortised size check against the file itself
+                self._n = 0
+                _compact_trace(self.path, self._MAX_LINES)
         except Exception:
             pass
 

@@ -398,6 +398,17 @@ class MemoryAdmin:
                 return {"ok": False, "error": str(e)}
         return {"ok": True, "reopened": reopened}
 
+    def _doc_text(self, triggers, payload) -> str:
+        """The stored-side embed text in the SAME format memory.py writes: the task
+        prefix included when memory.embed_task_prefix is on.  UI re-embeds/upserts
+        used to write RAW vectors against prefixed queries — a silent retrieval
+        degradation nothing reported (July #8)."""
+        text = " ".join(triggers) + " " + (payload or "")
+        if self.m.get("embed_task_prefix"):
+            pfx = (self.m.get("embed_prefixes") or {}).get("document", "search_document: ")
+            return pfx + text
+        return text
+
     def upsert(self, e: dict) -> dict:
         import time, uuid
         now = time.time()
@@ -406,7 +417,7 @@ class MemoryAdmin:
         tags = [t.strip() for t in e.get("context_tags", []) if t.strip()]
         payload = e.get("payload", "")
         blob = _embed_blob(self.e["url"], self.e["model"],
-                           " ".join(triggers) + " " + payload)
+                           self._doc_text(triggers, payload))
         with self._conn(ensure=True) as c:
             existing = c.execute("SELECT 1 FROM memories WHERE id=?", (mid,)).fetchone()
             if existing:
@@ -678,22 +689,34 @@ class MemoryAdmin:
         return {"ok": True, "queued": True}
 
     def reembed(self) -> dict:
-        """Recompute the embedding for every entry (e.g. after starting serve_embed)."""
+        """Recompute the embedding for every entry (e.g. after starting serve_embed).
+        Embeds run OUTSIDE the write transaction: the old shape opened the implicit
+        write txn on the first UPDATE and held memory.db's ONE write lock across every
+        remaining HTTP embed call (<=20s each) — cascade/worker writes failed
+        'database is locked' mid-conversation for the whole sweep.  Also writes the
+        stored-side format honestly: prefixed text when the config says so, and the
+        embed_format stamp the worker checks (twin of memory.EMBED_FORMAT)."""
         if not Path(self.path).exists():
             return {"embedded": 0, "total": 0}
-        ok = total = 0
         with self._conn(ensure=True) as c:
             rows = c.execute("SELECT id, triggers, payload FROM memories").fetchall()
-            for r in rows:
-                total += 1
-                triggers = json.loads(r["triggers"] or "[]")
-                blob = _embed_blob(self.e["url"], self.e["model"],
-                                   " ".join(triggers) + " " + (r["payload"] or ""))
-                if blob is not None:
-                    c.execute("UPDATE memories SET embedding=? WHERE id=?", (blob, r["id"]))
-                    ok += 1
+        vecs = []
+        for r in rows:
+            triggers = json.loads(r["triggers"] or "[]")
+            blob = _embed_blob(self.e["url"], self.e["model"],
+                               self._doc_text(triggers, r["payload"]))
+            if blob is not None:
+                vecs.append((blob, r["id"]))
+        with self._conn(ensure=True) as c:
+            c.executemany("UPDATE memories SET embedding=? WHERE id=?", vecs)
+            fmt = "prefixed-v1" if self.m.get("embed_task_prefix") else "raw-v1"
+            try:
+                c.execute("INSERT INTO worker_state(key,value) VALUES('embed_format',?) "
+                          "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (fmt,))
+            except sqlite3.OperationalError:
+                pass                       # worker never ran → no format contract yet
             c.commit()
-        return {"embedded": ok, "total": total}
+        return {"embedded": len(vecs), "total": len(rows)}
 
 
 # ── Self / personality access (people store + self-memories) ─────────────────
@@ -1074,7 +1097,7 @@ class Handler(BaseHTTPRequestHandler):
         path = Path(cs.get("trace_path", "config/trace.jsonl"))
         events = []
         if path.exists():
-            for line in path.read_text().splitlines()[-n:]:
+            for line in _tail(path, n).splitlines():
                 try:
                     events.append(json.loads(line))
                 except Exception:
@@ -1201,7 +1224,9 @@ class Handler(BaseHTTPRequestHandler):
         path = Path(cs.get("trace_path", "config/trace.jsonl"))
         events = []
         if path.exists():
-            for line in path.read_text().splitlines():
+            # A bounded tail, not the whole feed: this used to re-read every byte on
+            # each request, and the feed can be MBs on a research-busy box.
+            for line in _tail(path, max(400, turns * 400)).splitlines():
                 try:
                     events.append(json.loads(line))
                 except Exception:

@@ -1171,6 +1171,68 @@ def test_announce_classification():
     check("nothing to announce without a tool host", not b._is_announce_write("calendar_create"))
 
 
+async def test_mixed_tool_rounds():
+    """Stock-take 2026-08-13 (July #3): a round mixing tool kinds.  The confirm stash
+    used to hold EVERY call — a sibling read was replayed through _run_write on 'yes'
+    (raw JSON spoken); and the announce/confirm early-returns silently dropped
+    sibling say-backs and notes."""
+    # ── confirm round with a read sibling: stash writes ONLY ─────────────────
+    spoken, traces = [], []
+    async def say(s): spoken.append(s)
+    b = bridge.LLMBridge(server_state=types.SimpleNamespace(), fast_lm_url="http://f",
+                         big_lm_url=None, speak_sink=say, inject_time=False,
+                         announce_tools=[])
+    sq = [("", [{"id": "1", "name": "calendar_range", "arguments": '{"day":"+1"}'},
+                {"id": "2", "name": "calendar_delete", "arguments": '{"id":"X"}'}])]
+    async def fs(msgs, tools=None):
+        return sq.pop(0)
+    b._stream_to_tts = fs
+    b._trace = lambda kind, **kw: traces.append((kind, kw))
+    b.tools = _FakeTools({"calendar_delete": _ok('{"deleted": true}'),
+                          "calendar_range": _ok('{"events": []}')})
+    await b._run_turn([{"role": "system", "content": "x"}], [{"x": 1}])
+    check("the stash holds ONLY the write",
+          [c["name"] for c in b._pending_confirm["calls"]] == ["calendar_delete"])
+    check("the dropped read is visible in the trace, not silent",
+          any(k == "tools_dropped" and kw.get("names") == ["calendar_range"]
+              for k, kw in traces))
+    await b._resolve_confirmation("yes")
+    check("on yes, only the write runs (the read is never POSTed as a write)",
+          [n for n, _ in b.tools.calls] == ["calendar_delete"])
+    check("no raw JSON is ever spoken", not any("{" in s for s in spoken))
+
+    # ── announce round with a silent note + a say-back sibling ───────────────
+    spoken2 = []
+    async def say2(s): spoken2.append(s)
+    sq2 = [("", [{"id": "1", "name": "calendar_create",
+                  "arguments": '{"title":"Dinner","start":"2026-06-26T19:00"}'},
+                 {"id": "2", "name": "note_person",
+                  "arguments": '{"name":"Mara","note":"visiting this week"}'},
+                 {"id": "3", "name": "remind_me",
+                  "arguments": '{"when":"2026-06-26T18:00","text":"book the table"}'}])]
+    async def fs2(msgs, tools=None):
+        return sq2.pop(0)
+    b2 = bridge.LLMBridge(server_state=types.SimpleNamespace(), fast_lm_url="http://f",
+                          big_lm_url=None, speak_sink=say2, inject_time=False)
+    b2._stream_to_tts = fs2
+    b2._trace = lambda *a, **k: None
+    b2.tools = _FakeTools({
+        "calendar_create": _ok('{"created": true, "verified": true, "when": "Fri 19:00"}'),
+        "note_person": _ok("Got it — I'll remember that about Mara."),
+        "remind_me": _ok("I'll remind you at six to book the table."),
+    })
+    out = await b2._run_turn([{"role": "system", "content": "x"}], [{"x": 1}])
+    ran = [n for n, _ in b2.tools.calls]
+    check("the silent note runs even though announce ends the turn",
+          "note_person" in ran)
+    check("the say-back sibling runs and its line is spoken",
+          "remind_me" in ran and "book the table" in out)
+    check("the announce write ran and is announced", "calendar_create" in ran
+          and "scheduled" in out.lower() or "calendar" in out.lower())
+    check("the note itself is never spoken",
+          not any("remember" in s.lower() for s in spoken2))
+
+
 async def test_act_then_announce():
     spoken = []
     async def say(s): spoken.append(s)
@@ -1301,6 +1363,7 @@ async def main():
     test_asr_clarify_gate()
     test_announce_classification()
     await test_act_then_announce()
+    await test_mixed_tool_rounds()
     await test_situation_feed_to_big_lm()
     await test_multi_host_routing()
     await test_self_knowledge_injection()

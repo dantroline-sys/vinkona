@@ -127,12 +127,40 @@ _NUCLEUS_STOP = frozenset(
     "does doing because would".split())
 
 
+def _compact_trace(path: Path, max_lines: int) -> None:
+    """Cap the shared trace feed.  TWO processes append here (the cascade's TraceLog
+    and the worker's _Trace — keep its twin in research_worker.py in step), so:
+    trigger on the file's actual size (an own-write counter never fires on a box
+    where only the other writer is busy — the feed grew without bound), guard with
+    an flock so compactions can't interleave, and swap the rewritten tail in
+    ATOMICALLY (os.replace) — the old read_text/write_text pair could drop the
+    other writer's concurrent lines, or the whole feed on a crash mid-write.
+    A line appended in the tiny read→replace window can still be lost; that loss
+    is bounded, unlike what this replaces."""
+    try:
+        import fcntl
+    except ImportError:                            # non-POSIX: best-effort, no lock
+        fcntl = None
+    with open(str(path) + ".lock", "w") as lk:
+        if fcntl is not None:
+            try:
+                fcntl.flock(lk, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                return                             # the other process is compacting
+        lines = path.read_text().splitlines()
+        if len(lines) <= max_lines:
+            return
+        tmp = Path(str(path) + ".tmp")
+        tmp.write_text("\n".join(lines[-max_lines:]) + "\n")
+        os.replace(tmp, path)
+
+
 class TraceLog:
     """Append-only ring buffer of LM-activity events (JSONL), read by the config UI.
 
-    Single writer (this process); the config web service only reads.  Capped at
-    `max_events` lines — when it grows past the cap we rewrite, keeping the tail.
-    """
+    TWO writers share the file (this class + the worker's _Trace); appends are
+    single atomic lines, and compaction goes through _compact_trace above.  Capped
+    at `max_events` lines, checked against the file itself every ~50 writes."""
 
     def __init__(self, path: str, max_events: int = 400):
         self.path = Path(path)
@@ -152,10 +180,9 @@ class TraceLog:
             with self.path.open("a") as f:
                 f.write(json.dumps(event) + "\n")
             self._n += 1
-            if self._n > self.max_events * 2:     # amortised compaction
-                lines = self.path.read_text().splitlines()[-self.max_events:]
-                self.path.write_text("\n".join(lines) + ("\n" if lines else ""))
-                self._n = len(lines)
+            if self._n >= 50:                     # amortised: check the FILE, not our count
+                self._n = 0
+                _compact_trace(self.path, self.max_events)
         except Exception:
             pass
 
@@ -440,6 +467,12 @@ class CascadeServer:
         # matches no current event — churned-uid duplicates, cancelled or
         # moved events — is pruned instead of firing.  This also drains the
         # backlog an older Vinkona built up, on the first scan after upgrade.
+        # BUT never on a suspect-empty read (calendar_sync's rule): a transient
+        # zero-event answer that still parsed used to make wanted=∅ and delete
+        # EVERY undelivered calendar reminder — one blip and reminders whose
+        # lead time passed before the next good scan were gone for good.
+        if not cache and not wanted:
+            return
         dropped = self.memory.prune_notifications("calendar", wanted)
         if (made or dropped) and self.trace:
             self.trace.write({"ts": time.time(), "session": "scheduler",
@@ -861,7 +894,13 @@ class _Session:
                         # re-raises here — swallow it or the loop aborts, the fast-LM
                         # lease keepalive leaks, and the session is never reflected.
                         _log(f"session task ended with error (cleanup continues): {e}")
-                self.s.mark_activity(open=False)              # session closed; idle clock starts
+                # Close the busy flag only if THIS session's socket still owns it: a
+                # SUPERSEDED session's late cleanup used to write open=False (and drop
+                # the fast-LM lease) right after the new connection wrote open=True —
+                # the worker then read "idle" and could start big-LM work against a
+                # just-opened chat.  The new session owns the flag now; leave it be.
+                if self.s._active_ws is self.ws:
+                    self.s.mark_activity(open=False)          # session closed; idle clock starts
                 self._save_working_graph(force=True, reason="session-close")   # persist the final graph
                 await self._reflect()
 

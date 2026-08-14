@@ -517,6 +517,57 @@ def test_fold_crash_cannot_wedge_the_backlog():
     check("the quarantine is auditable in stats", g.stats()["skipped"] == 2)
 
 
+def test_non_latin_labels():
+    """The old _NORM_STRIP deleted every non-ASCII char: "北京" normalised to "" (all
+    such entities of one type collapsed into a single node, their edges refused) and
+    "Reykjavík" mangled to "reykjav k"."""
+    check("non-Latin labels keep their letters", mg._norm("北京") == "北京")
+    check("accented labels keep their accents", mg._norm("Reykjavík") == "reykjavík")
+    check("punctuation still strips", mg._norm("  Mara,  O'Brien! ") == "mara o brien")
+    db = fresh_db()
+    add_turn(db, "user", "My friend Wei lives in 北京 now.")
+    g = mg.MindGraph(db)
+    st = distill(g, {"nodes": [{"type": "person", "label": "Wei"},
+                               {"type": "place", "label": "北京"}],
+                     "edges": [{"src": "Wei", "dst": "北京", "rel": "lives_in",
+                                "quote": "lives in 北京"}]})
+    check("a non-Latin entity gets its own node and a grounded edge",
+          st.get("edges", 0) == 1
+          and g.db.execute("SELECT COUNT(*) FROM kg_nodes WHERE id='place:北京'")
+                 .fetchone()[0] == 1)
+
+
+def test_norm_migration_renames_mangled_keys():
+    """A graph built under the ASCII-only _norm carries mangled keys ("person:reykjav k");
+    opening it under the fixed _norm must rename node + edge keys in place, once."""
+    db = fresh_db()
+    g = mg.MindGraph(db)                       # creates schema + sets the norm_v marker
+    g.db.execute("DELETE FROM kg_state WHERE k='norm_v'")      # pretend: pre-fix graph
+    g.db.execute("INSERT INTO kg_nodes(id,type,label,norm,aliases,mentions,first_ts,"
+                 "last_ts,status,locked) VALUES('person:reykjav k','person','Reykjavík',"
+                 "'reykjav k','[]',3,1,1,'active',0)")
+    old_eid = mg._edge_key(mg.USER_ID, "visited", "person:reykjav k")
+    g.db.execute("INSERT INTO kg_edges(id,src,dst,rel,mentions,first_ts,last_ts,"
+                 "valid_from,valid_to,source_turn,quote,fact,status) VALUES(?,?,?,?,2,"
+                 "1,1,1,NULL,1,'q','visited Reykjavík','active')",
+                 (old_eid, mg.USER_ID, "person:reykjav k", "visited"))
+    g.db.commit()
+    g2 = mg.MindGraph(db)                      # re-open → migration runs
+    row = g2.db.execute("SELECT id, norm, mentions FROM kg_nodes "
+                        "WHERE id='person:reykjavík'").fetchone()
+    check("the mangled node key is renamed in place (mentions kept)",
+          row is not None and row[1] == "reykjavík" and row[2] == 3)
+    check("no ghost stays under the old key",
+          g2.db.execute("SELECT COUNT(*) FROM kg_nodes WHERE id='person:reykjav k'")
+             .fetchone()[0] == 0)
+    ne = mg._edge_key(mg.USER_ID, "visited", "person:reykjavík")
+    check("the edge follows: endpoints AND primary key re-keyed",
+          g2.db.execute("SELECT dst FROM kg_edges WHERE id=?", (ne,)).fetchone()
+          == ("person:reykjavík",))
+    check("migration is one-time (marker set)",
+          g2.db.execute("SELECT v FROM kg_state WHERE k='norm_v'").fetchone() == ("2",))
+
+
 def test_batch_char_budget():
     """The 'stuck at 1020' bug, one level up from the poison turn: per-TURN clipping
     bounded each turn at 4000 chars, but a batch of 40 long-form turns still stacked to
@@ -574,6 +625,8 @@ def main():
     test_value_coming_back_resurrects_not_crashes()
     test_retracted_edge_resurrects_on_fresh_evidence()
     test_fold_crash_cannot_wedge_the_backlog()
+    test_non_latin_labels()
+    test_norm_migration_renames_mangled_keys()
     test_batch_char_budget()
     test_grounded_fold()
     test_grounding_refuses_invention()

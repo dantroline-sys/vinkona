@@ -1652,39 +1652,10 @@ class LLMBridge:
                 line = await self._apply_self_edit(args)
                 await self.speak_sink(line)
                 return line
-            # Act-then-announce: low-stakes, reversible writes (calendar create/update to
-            # Vinkona's own calendar) run straight away and are *announced* with an undo
-            # affordance, rather than gated behind a confirmation — so Vinkona can maintain
-            # the calendar actively without nagging.  Still verified by _run_write (she
-            # never claims a write that didn't land); just not pre-confirmed.
-            announce_calls = [tc for tc in tool_calls if self._is_announce_write(tc["name"])]
-            if announce_calls:
-                lines = []
-                for tc in announce_calls:
-                    try:
-                        args = json.loads(tc["arguments"] or "{}")
-                    except Exception:
-                        args = {}
-                    lines.append(await self._run_write(tc["name"], args, announce=True))
-                self._trace("confirm", decision="auto",
-                            tools=[c["name"] for c in announce_calls])
-                text = " ".join(l for l in lines if l).strip() or "Done."
-                await self.speak_sink(text)
-                return text
-            # Confirm-before-write: if any call is a write (create/delete/send…), don't
-            # run it — read the action back and wait for the user's yes on the next turn.
-            confirm_calls = [tc for tc in tool_calls
-                             if self._needs_confirm(tc["name"]) and not self._is_announce_write(tc["name"])]
-            if confirm_calls:
-                self._pending_confirm = {"msgs": msgs, "calls": tool_calls}
-                question = self._confirm_question(confirm_calls)
-                self._trace("confirm", decision="ask",
-                            tools=[c["name"] for c in confirm_calls])
-                await self.speak_sink(question)
-                return question
-            # Silent side effects (note_person): run it, keep the transcript valid, say
-            # NOTHING about it, and carry on — remembering something about a person is
-            # not an answer to what was asked.
+            # Silent side effects (note_person) run FIRST, whatever else is in the
+            # round: the announce/confirm branches below end the turn early, and the
+            # note used to be silently dropped alongside them.  Remembering something
+            # about a person is not an answer to what was asked — say nothing.
             silent = [tc for tc in tool_calls if tc["name"] in _SILENT_TOOLS]
             if silent:
                 for tc in silent:
@@ -1712,6 +1683,77 @@ class LLMBridge:
                 tool_calls = [tc for tc in tool_calls if tc["name"] not in _SILENT_TOOLS]
                 if not tool_calls:
                     continue        # straight to the next round — now answer the message
+            # Act-then-announce: low-stakes, reversible writes (calendar create/update to
+            # Vinkona's own calendar) run straight away and are *announced* with an undo
+            # affordance, rather than gated behind a confirmation — so Vinkona can maintain
+            # the calendar actively without nagging.  Still verified by _run_write (she
+            # never claims a write that didn't land); just not pre-confirmed.
+            announce_calls = [tc for tc in tool_calls if self._is_announce_write(tc["name"])]
+            if announce_calls:
+                lines = []
+                for tc in announce_calls:
+                    try:
+                        args = json.loads(tc["arguments"] or "{}")
+                    except Exception:
+                        args = {}
+                    lines.append(await self._run_write(tc["name"], args, announce=True))
+                # Say-back siblings (remind_me, queue_research) still run — their
+                # finished line IS their answer, and the early return used to drop
+                # them with no error and no trace.
+                for tc in [t for t in tool_calls if t["name"] in _SAY_BACK_TOOLS]:
+                    try:
+                        args = json.loads(tc["arguments"] or "{}")
+                    except Exception:
+                        args = {}
+                    self._trace("tool_call", name=tc["name"], arguments=args)
+                    line = str(await self._call_tool(tc["name"], args))
+                    self._trace_tool_result(tc["name"], line)
+                    if line.strip():
+                        lines.append(line)
+                dropped = [t["name"] for t in tool_calls
+                           if t not in announce_calls and t["name"] not in _SAY_BACK_TOOLS]
+                if dropped:
+                    # A read can't follow this early return — but dropping it must be
+                    # VISIBLE in the trace, never silent.
+                    self._trace("tools_dropped", names=dropped,
+                                reason="announce ended the turn before these ran")
+                self._trace("confirm", decision="auto",
+                            tools=[c["name"] for c in announce_calls])
+                text = " ".join(l for l in lines if l).strip() or "Done."
+                await self.speak_sink(text)
+                return text
+            # Confirm-before-write: if any call is a write (create/delete/send…), don't
+            # run it — read the action back and wait for the user's yes on the next turn.
+            confirm_calls = [tc for tc in tool_calls
+                             if self._needs_confirm(tc["name"]) and not self._is_announce_write(tc["name"])]
+            if confirm_calls:
+                # Stash ONLY the writes: a "yes" replays the stash through _run_write,
+                # and stashing the whole round used to POST sibling READ tools to the
+                # host as writes and speak their raw JSON via the 'unknown' path.
+                self._pending_confirm = {"msgs": msgs, "calls": confirm_calls}
+                # Say-back siblings still run — their line is their whole answer.
+                pre = []
+                for tc in [t for t in tool_calls if t["name"] in _SAY_BACK_TOOLS]:
+                    try:
+                        args = json.loads(tc["arguments"] or "{}")
+                    except Exception:
+                        args = {}
+                    self._trace("tool_call", name=tc["name"], arguments=args)
+                    line = str(await self._call_tool(tc["name"], args))
+                    self._trace_tool_result(tc["name"], line)
+                    if line.strip():
+                        pre.append(line)
+                        await self.speak_sink(line)
+                dropped = [t["name"] for t in tool_calls
+                           if t not in confirm_calls and t["name"] not in _SAY_BACK_TOOLS]
+                if dropped:
+                    self._trace("tools_dropped", names=dropped,
+                                reason="confirmation question ended the turn before these ran")
+                question = self._confirm_question(confirm_calls)
+                self._trace("confirm", decision="ask",
+                            tools=[c["name"] for c in confirm_calls])
+                await self.speak_sink(question)
+                return " ".join(pre + [question]) if pre else question
             # Say-back built-ins (queue_research, remind_me): speak their finished line
             # directly so it's never dropped, and skip the filler/LM round-trip.  Any
             # other tools in the same round fall through to the normal read path.
