@@ -141,13 +141,16 @@ def duplicate_profile(src: str, dst: str) -> Path:
     ddir.mkdir(parents=True)
     sdb = sdir / "memory.db"
     if sdb.exists():
+        # sqlite's own backup API: a transactionally-consistent snapshot even while
+        # the cascade/worker are writing.  The old checkpoint-then-copy2 pair raced
+        # writes landing between the two steps (July #10) — a torn copy.
+        src_c = sqlite3.connect(str(sdb), timeout=10)
+        dst_c = sqlite3.connect(str(ddir / "memory.db"))
         try:
-            c = sqlite3.connect(str(sdb), timeout=10)
-            c.execute("PRAGMA wal_checkpoint(TRUNCATE)")  # flush WAL into the main file
-            c.close()
-        except Exception:
-            pass
-        shutil.copy2(sdb, ddir / "memory.db")
+            src_c.backup(dst_c)
+        finally:
+            dst_c.close()
+            src_c.close()
     sp = sdir / "personas.json"
     if sp.exists():
         shutil.copy2(sp, ddir / "personas.json")

@@ -936,18 +936,32 @@ class MemoryStore:
 
     # ── embeddings (OpenAI /v1/embeddings, e.g. llama.cpp --embedding) ────────
     async def embed(self, text: str, task: str | None = None) -> np.ndarray | None:
+        import asyncio
+
         import aiohttp
         if task and self.embed_task_prefix:
             text = self.embed_prefixes.get(task, "") + text
+        # One long-lived session per event loop: this is the recall hot path, and a
+        # fresh ClientSession per call paid TCP+TLS setup on every embed (July #4).
+        # Loop-aware because tests (and reloads) run separate asyncio.run() loops.
+        loop = asyncio.get_running_loop()
+        sess = getattr(self, "_embed_http", None)
+        if sess is None or sess.closed or getattr(self, "_embed_http_loop", None) is not loop:
+            if sess is not None and not sess.closed:
+                try:
+                    await sess.close()
+                except Exception:
+                    pass
+            sess = aiohttp.ClientSession()
+            self._embed_http, self._embed_http_loop = sess, loop
         try:
-            async with aiohttp.ClientSession() as s:
-                async with s.post(f"{self.embed_url}/v1/embeddings",
-                                  json={"model": self.embed_model, "input": text},
-                                  timeout=aiohttp.ClientTimeout(total=20)) as r:
-                    if r.status != 200:
-                        return None
-                    data = (await r.json()).get("data") or [{}]
-                    v = np.asarray(data[0].get("embedding", []), dtype=np.float32)
+            async with sess.post(f"{self.embed_url}/v1/embeddings",
+                                 json={"model": self.embed_model, "input": text},
+                                 timeout=aiohttp.ClientTimeout(total=20)) as r:
+                if r.status != 200:
+                    return None
+                data = (await r.json()).get("data") or [{}]
+                v = np.asarray(data[0].get("embedding", []), dtype=np.float32)
         except Exception:
             return None
         n = np.linalg.norm(v)

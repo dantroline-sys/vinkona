@@ -150,5 +150,10 @@ case "$cmd" in
         ;;
     -h|--help|help) usage 0 ;;
     "")             usage 0 ;;
+    setup|doctor|plan)
+        # The LM-Studio on-ramp lives in assistant/vinkona.sh — forward, so the
+        # one-command path the README teaches works from the repo root too
+        # (it used to answer "unknown command" here).
+        exec bash "$ROOT/assistant/vinkona.sh" "$cmd" "$@" ;;
     *) echo "unknown command: $cmd" >&2; usage 1 ;;
 esac

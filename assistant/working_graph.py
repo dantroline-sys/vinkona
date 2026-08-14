@@ -20,13 +20,16 @@ fenced "working notes" block for the next turn's prompt.
 Scope (see working_memory_graph_spec.md):
   * This is phase 1a — the cheap, deterministic half.  Nodes + *untyped* co-occurrence
     edges only.
-  * Typed relations (causes/blocks/…) and synonym merging are the LM slow lane, phase
-    1b — NOT here.  The instrument + drift guard is phase 1c — NOT here.
+  * Typed relations (causes/blocks/…) live in the DURABLE store (mind_graph.py,
+    dreaming-time) after the 2026-08-09 arch split — never in this volatile lane.
+    The instrument + drift guard (metrics/stall flag) IS here now (see metrics()).
 
 Invariants honoured here:
   * Deterministic (G-8): fixed iteration order (ascending id), math.exp, no randomness.
     The same turns replay to a bit-identical graph.
-  * Volatile (G-2): held in memory, discarded with the conversation.  No persistence.
+  * Volatile (G-2, amended): held in memory, discarded with the conversation — except
+    the OPT-IN cross-session carryover (memory.working_graph.persist.enabled, decayed
+    on load; see get/load_persisted), a deliberate reversal of the original G-2.
   * Bounded (G-7): node and edge counts are hard-capped.
   * Grounded (G-6): every node and edge records the turn indices that support it, and every
     node keeps a few short verbatim snippets of where its phrase actually occurred — so a

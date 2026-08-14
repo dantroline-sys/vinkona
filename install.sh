@@ -6,7 +6,7 @@
 #   ./install.sh                  # interactive: checklist -> pick a task -> repeat
 #   ./install.sh status           # the checklist, nothing else
 #   ./install.sh all              # run every missing task in order
-#   ./install.sh <task>           # one task: assistant-core | tts [orpheus_gguf|neutts|chatterbox]
+#   ./install.sh <task>           # one task: assistant-core | tts [orpheus_gguf|neutts|chatterbox|qwen3]
 #                                 #   | models | llama | vinur
 #   ./install.sh uninstall        # uninstall both components (keeps your data)
 #                 --with-models   #   also delete downloaded weights
