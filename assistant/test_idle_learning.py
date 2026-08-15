@@ -35,9 +35,11 @@ class _FakeResp:
 
 
 class _FakeSession:
+    closed = False                      # memory.embed's per-loop cache checks this
     def __init__(self, *a, **k): pass
     async def __aenter__(self): return self
     async def __aexit__(self, *a): return False
+    async def close(self): pass
     def post(self, url, json=None, timeout=None, **k):
         if url.endswith("/v1/chat/completions"):
             return _FakeResp(200, _RESP["fn"](url, json))

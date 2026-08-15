@@ -30,54 +30,23 @@ import urllib.parse
 
 import aiohttp
 
-try:                                    # untrusted-content defenses (prompt injection)
-    from safety import sanitize_external, wrap_untrusted
-except Exception:                       # importlib-loaded context without cwd on sys.path
+try:                                    # sibling-module loader — see localmod.py
+    import localmod
+except Exception:                       # file-path-loaded context: bootstrap it by path
     import importlib.util as _ilu
+    import sys as _sys
     from pathlib import Path as _Path
-    _spec = _ilu.spec_from_file_location("safety", _Path(__file__).resolve().parent / "safety.py")
-    _safety = _ilu.module_from_spec(_spec); _spec.loader.exec_module(_safety)
-    sanitize_external, wrap_untrusted = _safety.sanitize_external, _safety.wrap_untrusted
+    _s = _ilu.spec_from_file_location("localmod", _Path(__file__).resolve().parent / "localmod.py")
+    localmod = _ilu.module_from_spec(_s); _s.loader.exec_module(localmod)
+    _sys.modules.setdefault("localmod", localmod)
 
-try:                                    # per-LM busy leases (yield the big LM to nothing
-    import lm_lease                     # lower-priority — see lm_lease.py)
-except Exception:
-    import importlib.util as _ilu2
-    from pathlib import Path as _Path2
-    _spec2 = _ilu2.spec_from_file_location("lm_lease", _Path2(__file__).resolve().parent / "lm_lease.py")
-    lm_lease = _ilu2.module_from_spec(_spec2); _spec2.loader.exec_module(lm_lease)
-
-try:                                    # time-sense Phase 1: the semantic clock
-    import timesense
-except Exception:
-    import importlib.util as _ilu3
-    from pathlib import Path as _Path3
-    _spec3 = _ilu3.spec_from_file_location("timesense", _Path3(__file__).resolve().parent / "timesense.py")
-    timesense = _ilu3.module_from_spec(_spec3); _spec3.loader.exec_module(timesense)
-
-try:                                    # TTS-friendly spoken date/time (calendar confirmations)
-    import spoken_time
-except Exception:
-    import importlib.util as _ilu4
-    from pathlib import Path as _Path4
-    _spec4 = _ilu4.spec_from_file_location("spoken_time", _Path4(__file__).resolve().parent / "spoken_time.py")
-    spoken_time = _ilu4.module_from_spec(_spec4); _spec4.loader.exec_module(spoken_time)
-
-try:                                    # persona pronouns (she/he/it) for third-person prompt text
-    import pronouns as pronouns_mod
-except Exception:
-    import importlib.util as _ilu6
-    from pathlib import Path as _Path6
-    _spec6 = _ilu6.spec_from_file_location("pronouns", _Path6(__file__).resolve().parent / "pronouns.py")
-    pronouns_mod = _ilu6.module_from_spec(_spec6); _spec6.loader.exec_module(pronouns_mod)
-
-try:                                    # deterministic calendar date resolver (symbolic → concrete)
-    import calendar_resolve
-except Exception:
-    import importlib.util as _ilu5
-    from pathlib import Path as _Path5
-    _spec5 = _ilu5.spec_from_file_location("calendar_resolve", _Path5(__file__).resolve().parent / "calendar_resolve.py")
-    calendar_resolve = _ilu5.module_from_spec(_spec5); _spec5.loader.exec_module(calendar_resolve)
+_safety = localmod.use("safety")        # untrusted-content defenses (prompt injection)
+sanitize_external, wrap_untrusted = _safety.sanitize_external, _safety.wrap_untrusted
+lm_lease = localmod.use("lm_lease")     # per-LM busy leases (yield the big LM downward)
+timesense = localmod.use("timesense")   # time-sense Phase 1: the semantic clock
+spoken_time = localmod.use("spoken_time")        # TTS-friendly spoken date/time
+pronouns_mod = localmod.use("pronouns")          # persona pronouns (she/he/it)
+calendar_resolve = localmod.use("calendar_resolve")   # symbolic → concrete date resolver
 
 import importlib.util as _ilu_top
 # Is sympy installed?  Checked cheaply (no heavy import at startup — sympy is imported

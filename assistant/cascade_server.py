@@ -41,11 +41,16 @@ from aiohttp import web
 import numpy as np
 
 
-def _load(modname: str):
-    spec = importlib.util.spec_from_file_location(modname, Path(__file__).parent / f"{modname}.py")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+try:                                    # sibling-module loader — see localmod.py
+    import localmod
+except Exception:                       # file-path-loaded context: bootstrap it by path
+    import sys as _sys
+    _s = importlib.util.spec_from_file_location(
+        "localmod", Path(__file__).resolve().parent / "localmod.py")
+    localmod = importlib.util.module_from_spec(_s); _s.loader.exec_module(localmod)
+    _sys.modules.setdefault("localmod", localmod)
+
+_load = localmod.use                    # (was a private fresh-loader; now shared, cached)
 
 
 def _log(msg: str) -> None:

@@ -19,12 +19,14 @@ from datetime import datetime
 
 try:                                    # untrusted-content defense (prompt injection)
     from safety import sanitize_external
-except Exception:                       # importlib-loaded context without cwd on sys.path
+except Exception:                       # file-path-loaded context — see localmod.py
     import importlib.util as _ilu
+    import sys as _sys
     from pathlib import Path as _Path
-    _spec = _ilu.spec_from_file_location("safety", _Path(__file__).resolve().parent / "safety.py")
-    _safety = _ilu.module_from_spec(_spec); _spec.loader.exec_module(_safety)
-    sanitize_external = _safety.sanitize_external
+    _s = _ilu.spec_from_file_location("localmod", _Path(__file__).resolve().parent / "localmod.py")
+    _lm = _ilu.module_from_spec(_s); _s.loader.exec_module(_lm)
+    _sys.modules.setdefault("localmod", _lm)
+    sanitize_external = _lm.use("safety").sanitize_external
 
 
 def to_epoch(s: tp.Any) -> tp.Optional[float]:

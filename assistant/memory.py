@@ -40,97 +40,32 @@ import numpy as np
 # aiohttp is imported lazily inside embed()/reflect() so the CPU-only parts
 # (Aho-Corasick, scoring) don't require it.
 
-try:                                    # untrusted-content defenses (prompt injection)
-    from safety import sanitize_external, wrap_untrusted, query_privacy
-except Exception:                       # importlib-loaded context without cwd on sys.path
+try:                                    # sibling-module loader — see localmod.py
+    import localmod
+except Exception:                       # file-path-loaded context: bootstrap it by path
     import importlib.util as _ilu
+    import sys as _sys
     from pathlib import Path as _Path
-    _spec = _ilu.spec_from_file_location("safety", _Path(__file__).resolve().parent / "safety.py")
-    _safety = _ilu.module_from_spec(_spec); _spec.loader.exec_module(_safety)
-    sanitize_external, wrap_untrusted = _safety.sanitize_external, _safety.wrap_untrusted
-    query_privacy = _safety.query_privacy
+    _s = _ilu.spec_from_file_location("localmod", _Path(__file__).resolve().parent / "localmod.py")
+    localmod = _ilu.module_from_spec(_s); _s.loader.exec_module(localmod)
+    _sys.modules.setdefault("localmod", localmod)
 
-try:                                    # durable chat-derived knowledge graph (mind_graph)
-    from mind_graph import DEFAULTS as MG_DEFAULTS, MindGraph
-except Exception:
-    import importlib.util as _ilm
-    from pathlib import Path as _Pathm
-    _specm = _ilm.spec_from_file_location("mind_graph", _Pathm(__file__).resolve().parent / "mind_graph.py")
-    _mgmod = _ilm.module_from_spec(_specm); _specm.loader.exec_module(_mgmod)
-    MindGraph, MG_DEFAULTS = _mgmod.MindGraph, _mgmod.DEFAULTS
-
-try:                                    # privileged people/identity store
-    from people import UNADAPTABLE_FACETS, PeopleStore
-except Exception:
-    import importlib.util as _ilu
-    from pathlib import Path as _Path
-    _spec = _ilu.spec_from_file_location("people", _Path(__file__).resolve().parent / "people.py")
-    _people = _ilu.module_from_spec(_spec); _spec.loader.exec_module(_people)
-    PeopleStore = _people.PeopleStore
-    UNADAPTABLE_FACETS = _people.UNADAPTABLE_FACETS
-
-try:                                    # usage-rhythm log + recurrence store (time-sense P2/P3)
-    from timesense import UsageLog, RhythmStore
-except Exception:
-    import importlib.util as _iluts
-    from pathlib import Path as _Pathts
-    _spects = _iluts.spec_from_file_location("timesense", _Pathts(__file__).resolve().parent / "timesense.py")
-    _ts = _iluts.module_from_spec(_spects); _spects.loader.exec_module(_ts)
-    UsageLog, RhythmStore = _ts.UsageLog, _ts.RhythmStore
-
-try:                                    # disposable ambient-context cache (no-LM snapshot)
-    from ambient import AmbientStore
-except Exception:
-    import importlib.util as _ilu
-    from pathlib import Path as _Path
-    _spec = _ilu.spec_from_file_location("ambient", _Path(__file__).resolve().parent / "ambient.py")
-    _ambient = _ilu.module_from_spec(_spec); _spec.loader.exec_module(_ambient)
-    AmbientStore = _ambient.AmbientStore
-
-try:                                    # durable, queryable RSS/news headline archive
-    from news_store import NewsStore
-except Exception:
-    import importlib.util as _iluns
-    from pathlib import Path as _Pathns
-    _specns = _iluns.spec_from_file_location("news_store", _Pathns(__file__).resolve().parent / "news_store.py")
-    _news = _iluns.module_from_spec(_specns); _specns.loader.exec_module(_news)
-    NewsStore = _news.NewsStore
-
-try:                                    # persona pronouns (she/he/it) for third-person prompt text
-    import pronouns as _pron
-except Exception:
-    import importlib.util as _ilupn
-    from pathlib import Path as _Pathpn
-    _specpn = _ilupn.spec_from_file_location("pronouns", _Pathpn(__file__).resolve().parent / "pronouns.py")
-    _pron = _ilupn.module_from_spec(_specpn); _specpn.loader.exec_module(_pron)
-
-try:                                    # what she has brought up unprompted, and how it landed
-    import spontaneity as _spon
-    from spontaneity import OfferLog
-except Exception:
-    import importlib.util as _ilusp
-    from pathlib import Path as _Pathsp
-    _specsp = _ilusp.spec_from_file_location("spontaneity", _Pathsp(__file__).resolve().parent / "spontaneity.py")
-    _spon = _ilusp.module_from_spec(_specsp); _specsp.loader.exec_module(_spon)
-    OfferLog = _spon.OfferLog
-
-try:                                    # consolidated-calendar local copy (calendar sync)
-    from calendar_sync import CalendarStore
-except Exception:
-    import importlib.util as _iluc
-    from pathlib import Path as _Pathc
-    _specc = _iluc.spec_from_file_location("calendar_sync", _Pathc(__file__).resolve().parent / "calendar_sync.py")
-    _cs = _iluc.module_from_spec(_specc); _specc.loader.exec_module(_cs)
-    CalendarStore = _cs.CalendarStore
-
-try:                                    # user model — domain fluency, communication patterns, corrections
-    from user_model import UserModelStore
-except Exception:
-    import importlib.util as _ilum
-    from pathlib import Path as _Pathum
-    _specum = _ilum.spec_from_file_location("user_model", _Pathum(__file__).resolve().parent / "user_model.py")
-    _um = _ilum.module_from_spec(_specum); _specum.loader.exec_module(_um)
-    UserModelStore = _um.UserModelStore
+_safety = localmod.use("safety")        # untrusted-content defenses (prompt injection)
+sanitize_external, wrap_untrusted = _safety.sanitize_external, _safety.wrap_untrusted
+query_privacy = _safety.query_privacy
+_mg = localmod.use("mind_graph")        # durable chat-derived knowledge graph
+MindGraph, MG_DEFAULTS = _mg.MindGraph, _mg.DEFAULTS
+_people = localmod.use("people")        # privileged people/identity store
+PeopleStore, UNADAPTABLE_FACETS = _people.PeopleStore, _people.UNADAPTABLE_FACETS
+_ts = localmod.use("timesense")         # usage-rhythm log + recurrence store (time-sense P2/P3)
+UsageLog, RhythmStore = _ts.UsageLog, _ts.RhythmStore
+AmbientStore = localmod.use("ambient").AmbientStore      # disposable ambient-context cache
+NewsStore = localmod.use("news_store").NewsStore         # RSS/news headline archive
+_pron = localmod.use("pronouns")        # persona pronouns (she/he/it) for prompt text
+_spon = localmod.use("spontaneity")     # what she has brought up unprompted, and how it landed
+OfferLog = _spon.OfferLog
+CalendarStore = localmod.use("calendar_sync").CalendarStore   # consolidated-calendar local copy
+UserModelStore = localmod.use("user_model").UserModelStore    # domain fluency / corrections
 
 
 # Instruction the big LM follows at session end to curate memory (overridable via

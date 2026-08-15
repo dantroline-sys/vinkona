@@ -47,10 +47,14 @@ from pathlib import Path
 
 
 def _load_cfgmod():
-    spec = importlib.util.spec_from_file_location("config", str(Path(__file__).parent / "config.py"))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+    try:                                # sibling-module loader — see localmod.py
+        import localmod
+    except Exception:                   # file-path-loaded context: bootstrap it by path
+        spec = importlib.util.spec_from_file_location(
+            "localmod", Path(__file__).resolve().parent / "localmod.py")
+        localmod = importlib.util.module_from_spec(spec); spec.loader.exec_module(localmod)
+        sys.modules.setdefault("localmod", localmod)
+    return localmod.use("config")
 
 
 def build_command(cfg: dict, tier: str) -> tuple[list[str], dict, Path]:

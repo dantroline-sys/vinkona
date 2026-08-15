@@ -54,11 +54,16 @@ def _qint(raw, default):
         return default
 
 
-def _load_mod(name: str):
-    spec = importlib.util.spec_from_file_location(name, str(Path(__file__).parent / f"{name}.py"))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+try:                                    # sibling-module loader — see localmod.py
+    import localmod
+except Exception:                       # file-path-loaded context: bootstrap it by path
+    import sys as _sys
+    _s = importlib.util.spec_from_file_location(
+        "localmod", Path(__file__).resolve().parent / "localmod.py")
+    localmod = importlib.util.module_from_spec(_s); _s.loader.exec_module(localmod)
+    _sys.modules.setdefault("localmod", localmod)
+
+_load_mod = localmod.use                # (was a private fresh-loader; now shared, cached)
 
 
 def _atomic_json(path: Path, obj) -> None:
@@ -158,10 +163,7 @@ def _research_defaults() -> dict:
     '(default)' placeholder text and let the user reset a field to it.  Loaded lazily
     (memory.py imports numpy) and best-effort — returns {} if it can't be read."""
     try:
-        spec = importlib.util.spec_from_file_location(
-            "memory", str(Path(__file__).parent / "memory.py"))
-        mem = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mem)
+        mem = _load_mod("memory")
         return {"research_prompt": mem.DEFAULT_RESEARCH_PROMPT,
                 "synth_prompt": mem.DEFAULT_SYNTH_PROMPT,
                 "ingest_prompt": mem.DEFAULT_INGEST_PROMPT,

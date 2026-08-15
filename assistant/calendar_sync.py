@@ -183,11 +183,22 @@ def classify(events: list, vinkona_calendar="") -> tp.Tuple[list, dict, list]:
         ev = normalize(raw)
         muid = origin_uid_from_notes(ev["notes"])
         if muid:
-            mirrors[muid] = {**ev, "origin_uid": muid,
-                             "vinkona_id": str(raw.get("id") or ev["uid"]),
-                             "hash": event_hash(ev),
-                             "note": comment_from_notes(ev["notes"]),
-                             "legacy_marker": bool(_LEGACY_MARKER.search(ev["notes"]))}
+            entry = {**ev, "origin_uid": muid,
+                     "vinkona_id": str(raw.get("id") or ev["uid"]),
+                     "hash": event_hash(ev),
+                     "note": comment_from_notes(ev["notes"]),
+                     "legacy_marker": bool(_LEGACY_MARKER.search(ev["notes"]))}
+            cur = mirrors.get(muid)
+            if cur is None:
+                mirrors[muid] = entry
+            else:
+                # TWO mirrors carrying the same origin UID (duplicates from the
+                # pre-signature era, or a crash between create and adopt): keyed
+                # by UID, the later one used to silently SHADOW the earlier —
+                # invisible to update and prune both, so the stale twin lived
+                # forever.  Keep the first deterministically and record the
+                # twins' ids so plan_actions can retire them.
+                cur.setdefault("dupes", []).append(entry["vinkona_id"])
         elif own_names and ev["calendar"].lower() in own_names:
             own.append({**ev, "vinkona_id": str(raw.get("id") or ev["uid"])})
         else:
@@ -256,6 +267,15 @@ def plan_actions(origins: list, mirrors: dict, own: tp.Optional[list] = None,
         for uid, m in mirrors.items():
             if uid not in seen:
                 actions.append({"op": "delete", "uid": uid, "vinkona_id": m["vinkona_id"]})
+    if prune:
+        # Duplicate mirrors (same origin UID seen twice in this read): retire the
+        # shadowed twins.  Safe even on a suspect-empty origins read — a dupe is
+        # only known when BOTH copies appeared in this read, deletes still target
+        # only Vinkona's own mirrors, and the surviving twin keeps the appointment
+        # either way.
+        for uid, m in mirrors.items():
+            for vid in m.get("dupes", ()):
+                actions.append({"op": "delete", "uid": uid, "vinkona_id": vid})
     return actions
 
 

@@ -30,11 +30,14 @@ import uuid
 
 try:                                    # persona pronouns (she/he/it) — see pronouns.py
     import pronouns as _pron
-except Exception:
+except Exception:                       # file-path-loaded context — see localmod.py
     import importlib.util as _ilupr
+    import sys as _syspr
     from pathlib import Path as _Pathpr
-    _specpr = _ilupr.spec_from_file_location("pronouns", _Pathpr(__file__).resolve().parent / "pronouns.py")
-    _pron = _ilupr.module_from_spec(_specpr); _specpr.loader.exec_module(_pron)
+    _spr = _ilupr.spec_from_file_location("localmod", _Pathpr(__file__).resolve().parent / "localmod.py")
+    _lmpr = _ilupr.module_from_spec(_spr); _spr.loader.exec_module(_lmpr)
+    _syspr.modules.setdefault("localmod", _lmpr)
+    _pron = _lmpr.use("pronouns")
 
 # The HEXACO factors — the dial set the character is described in (the LLM can enact these).
 HEXACO = ("honesty_humility", "emotionality", "extraversion",

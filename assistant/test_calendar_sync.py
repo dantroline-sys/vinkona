@@ -416,6 +416,58 @@ def test_fold_mirrors_folds_legacy_mirror():
     assert "Amiga" not in folded[0]["note"] and "amiga-mirror" not in folded[0]["note"]
 
 
+def test_classify_records_shadowed_duplicate_mirrors():
+    # Two mirrors carrying the SAME origin UID: keyed by UID, the second used to
+    # silently shadow the first — invisible to update and prune both.  Now the
+    # first wins deterministically and the twin is recorded on it.
+    notes = cs.build_notes("note", "W1")
+    events = [
+        {"id": "M1", "title": "Meeting", "start": "2026-07-01T09:00",
+         "calendar": "Vinkona", "notes": notes},
+        {"id": "M2", "title": "Meeting", "start": "2026-07-01T09:00",
+         "calendar": "Vinkona", "notes": notes},
+    ]
+    origins, mirrors, own = cs.classify(events, vinkona_calendar="Vinkona")
+    assert list(mirrors) == ["W1"] and mirrors["W1"]["vinkona_id"] == "M1"
+    assert mirrors["W1"]["dupes"] == ["M2"]
+
+
+def test_plan_retires_duplicate_mirror_and_keeps_the_twin():
+    # With the origin live: the kept mirror SKIPs (unchanged), the shadowed twin
+    # is deleted — and only the twin.
+    notes = cs.build_notes("", "W1")
+    events = [
+        _origin("W1", "Meeting", "2026-07-01T09:00", cal="Work"),
+        {"id": "M1", "title": "Meeting", "start": "2026-07-01T09:00",
+         "calendar": "Vinkona", "notes": notes},
+        {"id": "M2", "title": "Meeting", "start": "2026-07-01T09:00",
+         "calendar": "Vinkona", "notes": notes},
+    ]
+    origins, mirrors, own = cs.classify(events, vinkona_calendar="Vinkona")
+    actions = cs.plan_actions(origins, mirrors, prune=True)
+    deletes = [a for a in actions if a["op"] == "delete"]
+    assert len(deletes) == 1 and deletes[0]["vinkona_id"] == "M2"
+    assert [a["vinkona_id"] for a in actions if a["op"] == "skip"] == ["M1"]
+
+
+def test_plan_retires_duplicates_even_on_suspect_empty_read_but_not_without_prune():
+    # A dupe is only known when both copies appeared in THIS read, so retiring it
+    # is safe even when zero origins came back (the orphan-prune guard still
+    # holds: no origin-vanished deletes).  prune=False still means hands-off.
+    notes = cs.build_notes("", "W1")
+    events = [
+        {"id": "M1", "title": "Meeting", "start": "2026-07-01T09:00",
+         "calendar": "Vinkona", "notes": notes},
+        {"id": "M2", "title": "Meeting", "start": "2026-07-01T09:00",
+         "calendar": "Vinkona", "notes": notes},
+    ]
+    origins, mirrors, own = cs.classify(events, vinkona_calendar="Vinkona")
+    acts = cs.plan_actions(origins, mirrors, prune=True)
+    assert [a["vinkona_id"] for a in acts if a["op"] == "delete"] == ["M2"], \
+        "the twin goes; the surviving mirror is NOT origin-pruned on an empty read"
+    assert cs.plan_actions(origins, mirrors, prune=False) == []
+
+
 def main():
     import types
     passed = failed = 0
