@@ -212,6 +212,7 @@ class CascadeServer:
         self._capture_mod = _load("capture")    # durable orchestration-trace capture (skill-LoRA)
         self._cal_sync_mod = _load("calendar_sync")  # mirror-aware calendar folding (dedupe + notes)
         self._facade_mod = _load("tool_facade")   # simplified fast-LM tool surface (wrappers)
+        self._toolbox_mod = _load("toolbox")      # her own sandboxed tools (read-any/write-store)
         self._spont_mod = _load("spontaneity")    # things she's holding + the segue test
         self._pron_mod = _load("pronouns")        # persona pronouns (she/he/it)
         self._wsauth = _load("wsauth")
@@ -266,6 +267,29 @@ class CascadeServer:
         # Own holder id so no other lm_fast writer can clobber/drop this hold
         # (per-holder lease files — see lm_lease.py).
         self._lease_holder = f"cascade-{os.getpid()}"
+        # Her own sandboxed tools (read anywhere, write only in her store — enforced by
+        # the OS in toolbox.py).  Built once, shared across sessions; None when disabled or
+        # when no containment backend exists on this platform (fail closed, with a note).
+        self._toolbox = None
+        try:
+            _otc = self._cfgmod.load_config(config_path).get("tools", {}).get("own_tools", {})
+        except Exception:
+            _otc = {}
+        if _otc.get("enabled"):
+            require = bool(_otc.get("require_sandbox", True))
+            if require and not self._toolbox_mod.available():
+                print("[cascade] own_tools enabled but no sandbox backend on this platform "
+                      "(Linux needs bubblewrap) — leaving them OFF (write containment can't "
+                      "be guaranteed). Install the backend or set "
+                      "tools.own_tools.require_sandbox=false to accept the risk.", flush=True)
+            else:
+                root = (_otc.get("dir") or "").strip() or str(
+                    Path(__file__).resolve().parent / "var" / "own_tools")
+                self._toolbox = self._toolbox_mod.Toolbox(root, cfg=_otc)
+                _be = self._toolbox_mod.sandbox_backend()
+                print(f"[cascade] own_tools: {len(self._toolbox.names())} tool(s) at {root} "
+                      f"(backend: {_be.name if _be else 'NONE — uncontained (opted in)'})",
+                      flush=True)
         # Ephemeral ambient cache: wipe stale rows from a previous run at startup unless
         # the user wants it persisted across restarts.
         try:
@@ -776,6 +800,9 @@ class _Session:
             calculator=bool(self.cfg.get("tools", {}).get("calculator", True)),
             wikipedia=self.s._bridge_mod.resolve_wikipedia_flag(self.cfg.get("tools", {})),
             wikipedia_lang=self.cfg.get("tools", {}).get("wikipedia_lang", "en"),
+            own_toolbox=self.s._toolbox,
+            own_tools_max=int(self.cfg.get("tools", {}).get("own_tools", {})
+                              .get("max_tools_offered", 12)),
             capture=capture,
             briefing_prompt=big.get("briefing_prompt"),
             lead=big.get("lead", 1),

@@ -918,6 +918,21 @@ DEFAULTS: dict = {
         # force it either way.  Results are fenced as untrusted data like any tool result.
         "wikipedia": "auto",
         "wikipedia_lang": "en",             # xx.wikipedia.org language code
+        # Vinkona's OWN tools: small single-file programs she can run during a chat (and,
+        # later, write for herself while idle).  The hard rule — read anywhere, write ONLY
+        # inside her sandbox store — is enforced by the OS, not Python: each tool runs under
+        # a containment backend (Linux = bubblewrap; macOS/Windows backends planned).  With
+        # NO backend on the platform, this stays OFF (require_sandbox) unless you knowingly
+        # opt out.  See toolbox.py.
+        "own_tools": {
+            "enabled": False,               # opt-in; needs a sandbox backend to actually run
+            "require_sandbox": True,        # false = run uncontained (trusted single-user box ONLY)
+            "dir": "",                      # tools + store root; "" = <assistant>/var/own_tools
+            "timeout_s": 10,                # wall-clock cap per tool call
+            "max_output_kb": 64,            # tool stdout truncated to this before it re-enters the prompt
+            "max_write_mb": 32,             # RLIMIT_FSIZE: no single file may exceed this
+            "max_tools_offered": 12,        # how many of her tools to catalogue to the fast LM at once
+        },
         # Connecting Vinkona to your tools on another computer (usually a Mac).
         # Vinkona runs HERE ("this machine"); your tools — calendar, mail, and so on —
         # run on ANOTHER computer (your Mac).  For safety the tool host on the Mac only
@@ -1434,6 +1449,13 @@ FIELD_LEVELS: dict[str, str] = {
     "tools.confirm_required": "basic",
     "tools.wikipedia": "basic",
     "tools.calculator": "basic",
+    "tools.own_tools.enabled": "basic",
+    "tools.own_tools.require_sandbox": "expert",
+    "tools.own_tools.dir": "expert",
+    "tools.own_tools.timeout_s": "expert",
+    "tools.own_tools.max_output_kb": "expert",
+    "tools.own_tools.max_write_mb": "expert",
+    "tools.own_tools.max_tools_offered": "advanced",
     "music.enabled": "basic",
     "knowledge.enabled": "basic",
     "knowledge_host.enabled": "basic",

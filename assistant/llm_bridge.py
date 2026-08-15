@@ -660,6 +660,8 @@ class LLMBridge:
         calculator: bool = False,
         wikipedia: bool = False,
         wikipedia_lang: str = "en",
+        own_toolbox: tp.Optional[tp.Any] = None,
+        own_tools_max: int = 12,
         capture: tp.Optional[tp.Any] = None,
         system_prompt: tp.Optional[str] = None,
         greeting: tp.Optional[str] = None,
@@ -845,6 +847,12 @@ class LLMBridge:
         # minimal box still has live reference search (cascade resolves the "auto" flag).
         self.wikipedia_on = bool(wikipedia)
         self.wikipedia_lang = (wikipedia_lang or "en").strip() or "en"
+        # Vinkona's OWN sandboxed tools (toolbox.Toolbox, or None).  Read anywhere, write
+        # only in her store — enforced by the OS in the toolbox, not here.  Runs off the
+        # event loop (subprocess); results are fenced as untrusted like any tool output.
+        self.own_tools = own_toolbox
+        self.own_tools_on = own_toolbox is not None
+        self.own_tools_max = int(own_tools_max)
         # Durable orchestration-trace capture for the future skill-LoRA loop (or None).
         # _turn_tool_calls accumulates the tool calls the 9B made this turn, for the record.
         self.capture = capture
@@ -1339,6 +1347,14 @@ class LLMBridge:
                 tools.append(CALCULATE_TOOL)        # built-in, in-process sympy math
             if self.wikipedia_on:
                 tools.append(SEARCH_WIKIPEDIA_TOOL)  # built-in, live online lookup
+            if self.own_tools_on:
+                try:                                # her own sandboxed tools (read-any/write-store)
+                    own = self.own_tools.catalogue()[: self.own_tools_max]
+                    existing = {(t.get("function") or {}).get("name") for t in tools}
+                    tools += [t for t in own
+                              if (t.get("function") or {}).get("name") not in existing]
+                except Exception as exc:
+                    _log("warning", f"own-tools catalogue failed: {exc}")
 
         # Build the fast LM system message in two bands so llama.cpp's prompt cache pays
         # off.  Everything STABLE across a session goes first (persona, identity anchor,
@@ -2162,6 +2178,24 @@ class LLMBridge:
             # Normally intercepted in _run_turn; here for completeness (e.g. a surface edit
             # reaching the generic path).
             return await self._apply_self_edit(args)
+        # Her own sandboxed tools (getattr: this is an optional feature, and it must not
+        # shadow a built-in/host name — checked last, only if nothing above claimed it).
+        # Read anywhere, write only in her store; the toolbox enforces that at the OS
+        # level.  Runs off the event loop; the result is fenced as untrusted by _run_tools.
+        if getattr(self, "own_tools_on", False) and self.own_tools.has(name):
+            try:
+                res = await asyncio.to_thread(self.own_tools.call, name, args)
+            except Exception as exc:
+                return f"(tool {name} failed to run: {exc})"
+            if not res.get("ok"):
+                return f"(tool {name} failed: {res.get('error') or 'unknown error'})"
+            payload = res.get("result")
+            try:
+                out = payload if isinstance(payload, str) else json.dumps(payload,
+                                                                          ensure_ascii=False)
+            except (TypeError, ValueError):
+                out = str(payload)
+            return out + ("  …(truncated)" if res.get("truncated") else "")
         if self.tools:
             return await self.tools.call(name, args)
         return f"(no tool named {name} is available)"
