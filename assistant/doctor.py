@@ -138,21 +138,19 @@ def main() -> int:
         try:
             sys.path.insert(0, str(ROOT))
             import toolbox as _tb
-            be = _tb.sandbox_backend(otc)
-            if be is not None:
-                row(GOOD, "tools sandbox", f"{be.name} — ready (read anywhere, "
+            dg = _tb.diagnostics(otc)
+            if dg.get("ready"):
+                how = dg["backend"]
+                if dg["backend"] == "container":
+                    how += f" ({dg.get('runtime')}" + \
+                           (", host bridge" if dg.get("host_bridge") else "") + ")"
+                row(GOOD, "tools sandbox", f"{how} — ready (read anywhere, "
                     "write only in her store)")
             else:
                 problems += 1
-                cb = _tb._ContainerBackend(otc)
-                if cb.runtime() and not cb.image_present():
-                    fix = f"./install.sh sandbox   (pull the image {cb.image})"
-                elif not cb.runtime():
-                    fix = "./install.sh sandbox   (installs/uses podman or docker)"
-                else:
-                    fix = "./install.sh sandbox"
-                row(BAD, "tools sandbox", "own_tools ON but no working sandbox backend",
-                    fix)
+                row(BAD, "tools sandbox",
+                    "own_tools ON but " + dg.get("reason", "no working backend"),
+                    dg.get("fix", "./install.sh sandbox"))
         except Exception as e:
             row(MEH, "tools sandbox", f"could not probe ({e})")
     else:

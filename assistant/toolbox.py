@@ -109,39 +109,60 @@ class _ContainerBackend(_Backend):
         cfg = cfg or {}
         self.image = str(cfg.get("image") or "docker.io/library/python:3.12-slim")
         self.pref = str(cfg.get("runtime") or "auto").lower()
+        self._rt = self._rt_probed = None       # cache: (name|None)
 
-    def runtime(self) -> str | None:
-        order = ([self.pref] if self.pref in ("podman", "docker")
-                 else ["podman", "docker"])
-        for rt in order:
-            if shutil.which(rt):
-                return rt
-        return None
+    def in_container(self) -> bool:
+        return os.path.exists("/run/.containerenv") or os.path.exists("/.dockerenv")
 
     def _prefix(self) -> list:
-        # Inside a container with a host bridge, run the runtime ON THE HOST (avoids
-        # nested podman); shared $HOME keeps the store path identical either side.
-        if os.path.exists("/run/.containerenv") and shutil.which("distrobox-host-exec"):
-            return ["distrobox-host-exec"]
+        # Inside a container, run the runtime ON THE HOST via the distrobox bridge
+        # (podman lives on the host, not in the box; nested podman is the thing we're
+        # avoiding).  Shared $HOME keeps the store path identical on both sides.
+        if self.in_container():
+            for bridge in ("distrobox-host-exec", "host-spawn"):
+                if shutil.which(bridge):
+                    return [bridge]
         return []
+
+    def _run(self, argv: list, timeout: float = 15) -> subprocess.CompletedProcess | None:
+        try:
+            return subprocess.run(self._prefix() + argv, stdout=subprocess.DEVNULL,
+                                  stderr=subprocess.DEVNULL, timeout=timeout)
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+
+    def runtime(self) -> str | None:
+        """The reachable runtime name, or None.  When we're in a container this probes
+        the runtime THROUGH the host bridge (shutil.which would only see the box's PATH,
+        where podman usually isn't installed — the bug that reported 'no runtime' on a
+        perfectly good host).  Cached (a host-bridge probe spawns a process)."""
+        if self._rt_probed:
+            return self._rt
+        self._rt_probed = True
+        order = ([self.pref] if self.pref in ("podman", "docker")
+                 else ["podman", "docker"])
+        prefix = self._prefix()
+        for rt in order:
+            if prefix:                          # in a container: is it on the HOST?
+                r = self._run([rt, "--version"])
+                if r is not None and r.returncode == 0:
+                    self._rt = rt
+                    return rt
+            elif shutil.which(rt):              # on the host: a plain PATH lookup
+                self._rt = rt
+                return rt
+        self._rt = None
+        return None
 
     def image_present(self) -> bool:
         rt = self.runtime()
         if not rt:
             return False
-        try:
-            r = subprocess.run(self._prefix() + [rt, "image", "exists", self.image],
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                               timeout=15)
-            if r.returncode == 0:
-                return True
-            # docker has no `image exists`; fall back to inspect
-            r = subprocess.run(self._prefix() + [rt, "image", "inspect", self.image],
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                               timeout=15)
-            return r.returncode == 0
-        except (OSError, subprocess.TimeoutExpired):
-            return False
+        r = self._run([rt, "image", "exists", self.image])
+        if r is not None and r.returncode == 0:
+            return True
+        r = self._run([rt, "image", "inspect", self.image])   # docker has no `image exists`
+        return r is not None and r.returncode == 0
 
     def available(self) -> bool:
         # A runtime alone isn't enough — the image must be provisioned (install.sh
@@ -149,6 +170,13 @@ class _ContainerBackend(_Backend):
         # belongs to the broker).  Absent image ⇒ not available ⇒ own_tools stay off
         # with a note that names the fix.
         return self.runtime() is not None and self.image_present()
+
+    def status(self) -> dict:
+        """Diagnostics for the panel/doctor: exactly what's present and the one fix."""
+        rt = self.runtime()
+        return {"backend": "container", "in_container": self.in_container(),
+                "host_bridge": bool(self._prefix()), "runtime": rt,
+                "image": self.image, "image_present": self.image_present() if rt else False}
 
     def argv(self, store: Path, tool_dir: Path, py: str, limits: dict) -> list:
         rt = self.runtime()
@@ -261,6 +289,44 @@ def sandbox_backend(cfg: dict | None = None) -> _Backend | None:
 def available(cfg: dict | None = None) -> bool:
     """True when SOME sandbox backend can contain writes here."""
     return sandbox_backend(cfg) is not None
+
+
+def diagnostics(cfg: dict | None = None) -> dict:
+    """A precise, actionable read of the sandbox situation for the panel and doctor:
+    which backend (if any) is ready, and — when none is — the ONE command that fixes it.
+    Reflects the real backend order (container first), never stale advice."""
+    cfg = cfg or {}
+    be = sandbox_backend(cfg)
+    if be is not None:
+        d = {"ready": True, "backend": be.name}
+        if be.name == "container":
+            d.update(be.status())
+        return d
+    # Nothing ready — diagnose why, in the same preference order, and name the fix.
+    cb = _ContainerBackend(cfg)
+    cst = cb.status()
+    bw = _BwrapBackend()
+    bw_present = bool(bw._bwrap())
+    bw_works = bw_present and bw._works()
+    d = {"ready": False, "backend": None, **cst,
+         "bwrap_present": bw_present, "bwrap_works": bw_works}
+    pref = str(cfg.get("backend") or "auto").lower()
+    if cst["runtime"] and not cst["image_present"]:
+        d["fix"] = f"./install.sh sandbox   (pull the sandbox image {cst['image']})"
+        d["reason"] = "a container runtime is present but the sandbox image isn't pulled yet"
+    elif not cst["runtime"] and pref != "bwrap":
+        where = "on the host (reachable from the box)" if cb.in_container() else "on this machine"
+        d["fix"] = "./install.sh sandbox   (installs/uses podman or docker), then pull the image"
+        d["reason"] = f"no container runtime (podman/docker) found {where}"
+    elif bw_present and not bw_works:
+        d["reason"] = ("bubblewrap is installed but a trivial sandbox failed — nested user "
+                       "namespaces are blocked here (normal inside a container); use the "
+                       "container backend instead")
+        d["fix"] = "./install.sh sandbox"
+    else:
+        d["reason"] = "no containment backend is ready"
+        d["fix"] = "./install.sh sandbox   (recommended), or install bubblewrap for the Linux fallback"
+    return d
 
 
 # ── the seed tools (materialised on first init) ──────────────────────────────

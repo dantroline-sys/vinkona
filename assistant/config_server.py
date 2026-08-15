@@ -974,12 +974,13 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 otc = (self._cfg().get("tools", {}) or {}).get("own_tools", {}) or {}
                 box = self._toolbox()
-                be = TOOLBOX.sandbox_backend(otc)
+                diag = TOOLBOX.diagnostics(otc)
                 return self._json(200, {
                     "enabled": bool(otc.get("enabled")),
                     "require_sandbox": bool(otc.get("require_sandbox", True)),
-                    "backend": be.name if be else None,
-                    "sandboxed": be is not None,
+                    "backend": diag.get("backend"),
+                    "sandboxed": bool(diag.get("ready")),
+                    "diag": diag,               # runtime/image/bridge + reason + one-line fix
                     "store": str(box.store),
                     "tools": box.roster()})
             except Exception as e:

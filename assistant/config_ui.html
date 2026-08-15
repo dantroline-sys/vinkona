@@ -2030,16 +2030,25 @@ async function loadTools() {
   catch (e) { list.innerHTML = '<div class="status err">fetch failed</div>'; return; }
   if (d.error) { list.innerHTML = '<div class="status err">' + escHtml(d.error) + '</div>'; return; }
   toolsData = d;
-  // sandbox / enablement banner — the containment story, stated plainly
+  // sandbox / enablement banner — the containment story, stated plainly, with the
+  // PRECISE reason + one command when a backend isn't ready (no stale advice).
   const sb = document.getElementById('toolsSandbox');
+  const dg = d.diag || {};
   if (d.sandboxed) {
-    sb.innerHTML = `Sandbox: <strong>${escHtml(d.backend)}</strong> ✓ — a tool may read anywhere but ` +
-      `can only write inside its store (<code>${escHtml(d.store)}</code>). No network.`;
+    let how = d.backend === 'container'
+      ? `container (<code>${escHtml(dg.runtime || 'podman/docker')}</code>` +
+        `${dg.host_bridge ? ', via the host bridge' : ''}, image <code>${escHtml(dg.image || '')}</code>)`
+      : `<code>${escHtml(d.backend)}</code>`;
+    sb.innerHTML = `Sandbox: ${how} ✓ — a tool may read anywhere but can only write inside ` +
+      `its store (<code>${escHtml(d.store)}</code>). No network.`;
     sb.className = 'hint';
   } else {
-    sb.innerHTML = `⚠ No sandbox backend on this machine — writes cannot be contained, so ` +
-      `saving a tool will fail its self-test${d.require_sandbox ? '' : ' unless run uncontained'}. ` +
-      `On Linux, install <code>bubblewrap</code>.`;
+    const reason = dg.reason || 'no containment backend is ready';
+    const fix = dg.fix || './install.sh sandbox';
+    sb.innerHTML = `⚠ No sandbox backend ready — ${escHtml(reason)}. ` +
+      `Saving a tool will fail its self-test until this is fixed` +
+      `${d.require_sandbox ? '' : ' (or set require_sandbox off to run uncontained)'}.` +
+      `<br>Fix: <code>${escHtml(fix)}</code>`;
     sb.className = 'hint err';
   }
   document.getElementById('toolsHint').innerHTML = d.enabled

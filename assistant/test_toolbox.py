@@ -300,8 +300,25 @@ def test_backend_selection():
           [b.name for b in tb._backends({"backend": "bwrap"})] == ["bwrap"])
 
 
+def test_diagnostics_actionable():
+    """diagnostics() must always give a precise reason + a real fix when not ready — the
+    banner/doctor render this, so it must never be stale or empty."""
+    # container forced but (in CI) no image → not ready, names the image-pull fix
+    d = tb.diagnostics({"enabled": True, "backend": "container"})
+    if d.get("ready"):
+        return skip("diagnostics not-ready path", "a container image IS present here")
+    check("not-ready diagnostics carry a reason", bool(d.get("reason")))
+    check("not-ready diagnostics carry a one-line fix", "install.sh sandbox" in (d.get("fix") or ""))
+    check("diagnostics report the runtime probe result", "runtime" in d)
+    # ready path (bwrap works on a bare Linux box)
+    if HAVE_BWRAP:
+        db = tb.diagnostics({"enabled": True, "backend": "bwrap"})
+        check("bwrap diagnostics report ready", db.get("ready") and db.get("backend") == "bwrap")
+
+
 def main():
     test_backend_selection()
+    test_diagnostics_actionable()
     test_container_backend()
     test_seed_and_catalogue()
     test_install_validation()
