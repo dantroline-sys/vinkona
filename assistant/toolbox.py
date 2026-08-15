@@ -69,6 +69,20 @@ RESERVED = frozenset({
 
 _TOOL_STDIN_LIMIT = 256 * 1024          # args JSON handed to a tool (generous; it's ours)
 
+# Every sandbox container we launch is named "<prefix><pid>-<n>" so a timed-out one can be
+# force-removed by name and a crashed parent's leftovers reaped at the next startup.
+CONTAINER_PREFIX = "vinkona-tool-"
+_run_seq = 0
+
+
+def _next_run_name() -> str:
+    # pid + counter + a monotonic tail: one Toolbox is shared across sessions, so two
+    # concurrent tool calls could otherwise land on the same counter value and collide on
+    # the container name (podman rejects a duplicate --name).
+    global _run_seq
+    _run_seq += 1
+    return f"{CONTAINER_PREFIX}{os.getpid()}-{_run_seq}-{time.monotonic_ns() & 0xffffff}"
+
 
 # ── sandbox backends (the platform seam) ─────────────────────────────────────
 # A backend turns (store, tool_dir, python, limits) into the argv that runs the tool
@@ -83,12 +97,20 @@ class _Backend:
     name = "none"
     tool_root = ""
     uses_preexec = False
+    wants_name = False           # True if run_tool should mint a name it can clean up
 
     def available(self) -> bool:
         return False
 
-    def argv(self, store: Path, tool_dir: Path, py: str, limits: dict) -> list:
+    def argv(self, store: Path, tool_dir: Path, py: str, limits: dict,
+             name: str | None = None) -> list:
         raise NotImplementedError
+
+    def cleanup(self, name: str | None) -> None:
+        """Best-effort teardown after a timeout/kill.  No-op for backends whose sandbox
+        dies with the launching process (bwrap); overridden by the container backend,
+        whose container outlives a killed client."""
+        return None
 
 
 class _ContainerBackend(_Backend):
@@ -104,6 +126,7 @@ class _ContainerBackend(_Backend):
     sidestepping podman-in-podman."""
     name = "container"
     tool_root = "/host"
+    wants_name = True            # we --name every run so a timed-out container can be reaped
 
     def __init__(self, cfg: dict | None = None):
         cfg = cfg or {}
@@ -225,13 +248,20 @@ class _ContainerBackend(_Backend):
             binds += ["-v", f"{mp}:/host{mp}:ro"]
         return binds
 
-    def argv(self, store: Path, tool_dir: Path, py: str, limits: dict) -> list:
+    def argv(self, store: Path, tool_dir: Path, py: str, limits: dict,
+             name: str | None = None) -> list:
         rt = self.runtime()
         fsize = max(1, int(limits.get("max_write_mb", 32))) * 1024 * 1024
         mem = max(64, int(limits.get("max_mem_mb", 512)))
         cpu = max(1, int(limits.get("cpu_s", 12)))
+        # --name lets run_tool force-remove the container if it has to kill us on a
+        # timeout: killing the `podman run` client does NOT stop the container (conmon
+        # keeps it alive, reparented to init), so --rm never fires and a hung tool would
+        # otherwise leak a live container holding its memory reservation.  All names share
+        # the CONTAINER_PREFIX so a crashed parent's leftovers can be reaped at startup.
+        named = ["--name", name] if name else []
         return self._prefix() + [
-            rt, "run", "--rm",
+            rt, "run", "--rm", *named,
             "--network", "none",                       # no network, full stop
             "--read-only",                             # container rootfs read-only …
             "--tmpfs", "/tmp:rw,size=64m",             # … with ephemeral scratch
@@ -258,6 +288,33 @@ class _ContainerBackend(_Backend):
             "-i",                                      # tool reads args JSON on stdin
             self.image, "python3", "/tool/tool.py",
         ]
+
+    def cleanup(self, name: str | None) -> None:
+        """Force-remove a container left running after we killed a timed-out client.
+        `-t 0` = SIGKILL immediately: without it `rm -f` honours the 10s stop-timeout
+        (SIGTERM, wait, SIGKILL), which drags teardown out and races our own timeout."""
+        rt = self.runtime()
+        if not (rt and name):
+            return
+        self._run([rt, "rm", "-f", "-t", "0", name], timeout=15)
+
+    def reap(self) -> int:
+        """Remove any of our containers orphaned by a previous crash/kill (they all carry
+        CONTAINER_PREFIX).  Returns how many were removed.  Called once at startup."""
+        rt = self.runtime()
+        if not rt:
+            return 0
+        try:
+            r = subprocess.run(
+                self._prefix() + [rt, "ps", "-aq", "--filter",
+                                  f"name=^{CONTAINER_PREFIX}", "--format", "{{.ID}}"],
+                capture_output=True, text=True, timeout=15)
+            ids = [x for x in (r.stdout or "").split() if x] if r.returncode == 0 else []
+        except (OSError, subprocess.TimeoutExpired):
+            return 0
+        if ids:
+            self._run([rt, "rm", "-f", "-t", "0", *ids], timeout=20)
+        return len(ids)
 
 
 class _BwrapBackend(_Backend):
@@ -295,7 +352,8 @@ class _BwrapBackend(_Backend):
             self._ok = False
         return self._ok
 
-    def argv(self, store: Path, tool_dir: Path, py: str, limits: dict) -> list:
+    def argv(self, store: Path, tool_dir: Path, py: str, limits: dict,
+             name: str | None = None) -> list:      # name unused: bwrap dies with us
         tool_py = Path(tool_dir) / "tool.py"
         return [
             self._bwrap(),
@@ -344,6 +402,17 @@ def sandbox_backend(cfg: dict | None = None) -> _Backend | None:
 def available(cfg: dict | None = None) -> bool:
     """True when SOME sandbox backend can contain writes here."""
     return sandbox_backend(cfg) is not None
+
+
+def reap_orphans(cfg: dict | None = None) -> int:
+    """Remove sandbox containers orphaned by a previous crash/kill (they all carry
+    CONTAINER_PREFIX).  Safe to call at startup even when the container backend isn't the
+    active one — it's a no-op without a reachable runtime.  Returns how many were removed."""
+    cb = _ContainerBackend(cfg or {})
+    try:
+        return cb.reap()
+    except Exception:
+        return 0
 
 
 def diagnostics(cfg: dict | None = None) -> dict:
@@ -513,8 +582,11 @@ def run_tool(tool_dir: Path, args: dict, *, store: Path, cfg: dict | None = None
 
     backend = sandbox_backend(cfg)
     use_preexec = False
+    run_name = None
     if backend is not None:
-        argv = backend.argv(store, tool_dir, py, limits)
+        if backend.wants_name:
+            run_name = _next_run_name()
+        argv = backend.argv(store, tool_dir, py, limits, name=run_name)
         use_preexec = backend.uses_preexec
         contained = True
     elif not require:
@@ -547,6 +619,13 @@ def run_tool(tool_dir: Path, args: dict, *, store: Path, cfg: dict | None = None
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             timeout=timeout_s, **kw)
     except subprocess.TimeoutExpired:
+        # We SIGKILL'd the client; for the container backend that leaves the container
+        # running (see argv), so tear it down by name.  Off the critical path — best effort.
+        if backend is not None and run_name:
+            try:
+                backend.cleanup(run_name)
+            except Exception:
+                pass
         return {"ok": False, "error": f"tool timed out after {timeout_s:.0f}s",
                 "elapsed_s": round(time.monotonic() - t0, 2)}
     except OSError as e:

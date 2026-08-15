@@ -344,6 +344,16 @@ step_llama() {
 }
 
 step_sandbox() {
+    # `auto` (used by `all`): skip the image pull unless own_tools is actually enabled —
+    # a default setup shouldn't fetch ~150 MB for an off-by-default feature.  An EXPLICIT
+    # `./install.sh sandbox` always provisions (the user asked for it).
+    if [ "${1:-}" = auto ] && command -v python3 >/dev/null 2>&1 \
+       && [ -f config/config.json ]; then
+        if ! python3 -c 'import json,sys; sys.exit(0 if (json.load(open("config/config.json")).get("tools",{}).get("own_tools",{}) or {}).get("enabled") else 1)' 2>/dev/null; then
+            say "sandbox: own_tools is off — skipping (run './install.sh sandbox' to provision it, or turn it on in the Tools tab)"
+            return 0
+        fi
+    fi
     # Provision the containment backend for Vinkona's OWN tools (toolbox.py).  The
     # default backend is a throwaway CONTAINER — the platform-independent one (same on
     # Linux/macOS/Windows, and it works even where nested user namespaces are blocked,
@@ -473,7 +483,7 @@ case "$cmd" in
     sandbox)    step_sandbox ;;
     all)        step_core; step_tts orpheus_gguf; step_models
                 { command -v llama-server >/dev/null 2>&1 || [ -x bin/llama-server ]; } || step_llama
-                step_sandbox ;;
+                step_sandbox auto ;;
     status)     step_status ;;
     uninstall)  shift || true; step_uninstall "$@" ;;
     -h|--help|help) usage 0 ;;

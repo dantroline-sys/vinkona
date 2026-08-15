@@ -288,6 +288,15 @@ class CascadeServer:
                     Path(__file__).resolve().parent / "var" / "own_tools")
                 self._toolbox = self._toolbox_mod.Toolbox(root, cfg=_otc)
                 _be = self._toolbox_mod.sandbox_backend(_otc)
+                # Reap any sandbox containers a previous crash/kill left running (they
+                # outlive the process that launched them — see toolbox.run_tool).
+                try:
+                    _reaped = self._toolbox_mod.reap_orphans(_otc)
+                    if _reaped:
+                        print(f"[cascade] own_tools: reaped {_reaped} orphaned "
+                              "sandbox container(s)", flush=True)
+                except Exception:
+                    pass
                 print(f"[cascade] own_tools: {len(self._toolbox.names())} tool(s) at {root} "
                       f"(backend: {_be.name if _be else 'NONE — uncontained (opted in)'})",
                       flush=True)

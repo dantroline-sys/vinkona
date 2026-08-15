@@ -11,7 +11,9 @@ weaker path.  Registry/install/self-test logic is exercised regardless.
 import importlib.util
 import json
 import os
+import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 HERE = Path(__file__).parent
@@ -312,6 +314,48 @@ def test_container_backend():
               r.get("ok") and not r["result"]["wrote"] and not leaked)
 
 
+def test_container_timeout_no_leak():
+    """A tool that hangs past the wall-clock timeout must NOT leak a live container:
+    killing the `podman run` client leaves the container running (conmon reparents it),
+    so --rm never fires — run_tool has to force-remove it by name.  Regression for the
+    orphaned-container leak."""
+    cb = tb._ContainerBackend({})
+    if not (cb.runtime() and cb.image_present()):
+        return skip("container timeout leak", "no container image")
+    rt = cb.runtime()
+
+    def _ours():
+        r = subprocess.run([rt, "ps", "-a", "--filter",
+                            f"name=^{tb.CONTAINER_PREFIX}", "--format", "{{.Names}}"],
+                           capture_output=True, text=True)
+        return [x for x in r.stdout.split() if x]
+
+    before = set(_ours())
+    with tempfile.TemporaryDirectory() as td:
+        box = tb.Toolbox(Path(td) / "own",
+                         cfg={"backend": "container", "timeout_s": 3}, seed=False)
+        tdir = box.tools_dir / "hang"
+        tdir.mkdir(parents=True)
+        # sleeps far longer than the timeout AND burns no CPU, so only the wall-clock
+        # timeout can stop it (RLIMIT_CPU never trips) — the exact leak shape.
+        (tdir / "tool.py").write_text("import time, json\ntime.sleep(120)\n"
+                                      "print(json.dumps({'done': True}))")
+        (tdir / "manifest.json").write_text('{"name":"hang"}')
+        res = tb.run_tool(tdir, {}, store=box.store,
+                          cfg={"backend": "container", "timeout_s": 3})
+        check("a hanging tool times out", not res.get("ok") and "timed out" in res["error"])
+        # give rm -f a moment to complete the teardown it kicked off
+        deadline = time.time() + 12
+        leaked = set(_ours()) - before
+        while leaked and time.time() < deadline:
+            time.sleep(0.5)
+            leaked = set(_ours()) - before
+        if leaked:                                  # clean up so we don't wedge the next run
+            subprocess.run([rt, "rm", "-f", *leaked],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        check("the timed-out container was torn down (no leak)", not leaked)
+
+
 def test_backend_selection():
     """auto prefers the container backend; explicit picks are honoured; TOOL_ROOT differs."""
     check("bwrap backend advertises TOOL_ROOT=''", tb._BwrapBackend().tool_root == "")
@@ -343,6 +387,7 @@ def main():
     test_backend_selection()
     test_diagnostics_actionable()
     test_container_backend()
+    test_container_timeout_no_leak()
     test_seed_and_catalogue()
     test_install_validation()
     test_install_selftest_gate()

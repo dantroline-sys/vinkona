@@ -7,7 +7,7 @@
 #   ./install.sh status           # the checklist, nothing else
 #   ./install.sh all              # run every missing task in order
 #   ./install.sh <task>           # one task: assistant-core | tts [orpheus_gguf|neutts|chatterbox|qwen3]
-#                                 #   | models | llama | vinur
+#                                 #   | models | llama | sandbox | vinur
 #   ./install.sh uninstall        # uninstall both components (keeps your data)
 #                 --with-models   #   also delete downloaded weights
 #                 --purge         #   ALSO delete user data + knowledge base (asks)
@@ -36,7 +36,7 @@ say() { echo -e "${CYAN}==>${RESET} $*"; }
 usage() { sed -n '2,/^set /p' "$0" | sed -n 's/^#\{1,\} \{0,1\}//p'; exit "${1:-0}"; }
 
 # ── task registry: id | description | check | action ────────────────────────
-TASKS=(assistant-core tts models llama vinur)
+TASKS=(assistant-core tts models llama sandbox vinur)
 
 desc() {
     case "$1" in
@@ -44,6 +44,11 @@ desc() {
         tts)            echo "TTS engine (orpheus_gguf: llama.cpp + SNAC, no venv — default; neutts / chatterbox / qwen3, own venv)" ;;
         models)         echo "LM weights (download defaults from HF, or select models you copied in)" ;;
         llama)          echo "llama-server binary (llama.cpp — system PATH or built in-tree)" ;;
+        sandbox)        if _own_tools_enabled; then
+                            echo "own-tools sandbox (container image so her read-anywhere / write-in-store tools can run)"
+                        else
+                            echo "own-tools sandbox (only needed if you turn on tools.own_tools — off by default)"
+                        fi ;;
         vinur)          if [ -d "$VINUR" ]; then
                             echo "knowledge host — Vinur @ $VINUR (.venv + config; format flags for pdf/epub/zim)"
                         else
@@ -83,6 +88,22 @@ sys.exit(0 if p.exists() else 1)
 PY
 }
 
+# The own-tools sandbox image (config override, else the toolbox default).
+_sandbox_image() {
+    local img=""
+    if [ -f assistant/config/config.json ] && command -v python3 >/dev/null 2>&1; then
+        img="$(python3 -c 'import json;print((json.load(open("assistant/config/config.json")).get("tools",{}).get("own_tools",{}) or {}).get("image",""))' 2>/dev/null)"
+    fi
+    [ -n "$img" ] || img="docker.io/library/python:3.12-slim"
+    echo "$img"
+}
+
+# Is Vinkona's own-tools feature turned on?  (When off, the sandbox needs nothing.)
+_own_tools_enabled() {
+    [ -f assistant/config/config.json ] && command -v python3 >/dev/null 2>&1 || return 1
+    python3 -c 'import json,sys; sys.exit(0 if (json.load(open("assistant/config/config.json")).get("tools",{}).get("own_tools",{}) or {}).get("enabled") else 1)' 2>/dev/null
+}
+
 installed() {
     case "$1" in
         # Core = the venv AND the in-tree librnnoise build.  The second half
@@ -96,6 +117,18 @@ installed() {
                         || _venv_has assistant/chatterbox_env chatterbox ;;
         models)         [ -n "$(find -L assistant/Models -name '*.gguf' -print -quit 2>/dev/null)" ] ;;
         llama)          [ -x assistant/bin/llama-server ] || command -v llama-server >/dev/null 2>&1 ;;
+        sandbox)
+            # Off ⇒ nothing to provision (green, and `all` skips the image pull).  On ⇒
+            # a container runtime with the sandbox image pulled, or a working bwrap.
+            _own_tools_enabled || return 0
+            local rt img; img="$(_sandbox_image)"
+            for c in podman docker; do command -v "$c" >/dev/null 2>&1 && { rt="$c"; break; }; done
+            if [ -n "$rt" ] && { "$rt" image exists "$img" >/dev/null 2>&1 \
+                                 || "$rt" image inspect "$img" >/dev/null 2>&1; }; then
+                return 0
+            fi
+            { command -v bwrap >/dev/null 2>&1 || [ -x assistant/bin/bwrap ]; } \
+                && bwrap --ro-bind / / --unshare-all --die-with-parent -- /bin/true >/dev/null 2>&1 ;;
         vinur)          [ -f "$VINUR/.venv/bin/activate" ] ;;   # installer smoke-tests itself
     esac
 }
@@ -119,6 +152,11 @@ run_task() {
             fi ;;
         models)         (cd assistant && ./install.sh models) ;;
         llama)          (cd assistant && ./install.sh llama) ;;
+        sandbox)
+            # Provision ON THE HOST (not inside the box): the container image must live
+            # where host podman/docker can serve it, and the assistant reaches it from
+            # the box via the distrobox bridge.  assistant/install.sh sandbox does the pull.
+            (cd assistant && ./install.sh sandbox) ;;
         vinur)
             if [ ! -d "$VINUR" ]; then
                 echo -e "${RED}no Vinur checkout found${RESET} — the knowledge host lives in its own repo now:"

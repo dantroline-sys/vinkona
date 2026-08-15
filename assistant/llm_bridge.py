@@ -853,6 +853,12 @@ class LLMBridge:
         self.own_tools = own_toolbox
         self.own_tools_on = own_toolbox is not None
         self.own_tools_max = int(own_tools_max)
+        # The own-tool names actually OFFERED this turn (after dedup vs built-ins/host
+        # tools + the max-offered cap).  Dispatch checks this so it mirrors the catalogue:
+        # a name a host/built-in tool already claimed was NOT offered as an own-tool, so it
+        # must not be silently executed as one.  Refreshed every turn when the catalogue
+        # is built.
+        self._own_offered: set = set()
         # Durable orchestration-trace capture for the future skill-LoRA loop (or None).
         # _turn_tool_calls accumulates the tool calls the 9B made this turn, for the record.
         self.capture = capture
@@ -1347,12 +1353,16 @@ class LLMBridge:
                 tools.append(CALCULATE_TOOL)        # built-in, in-process sympy math
             if self.wikipedia_on:
                 tools.append(SEARCH_WIKIPEDIA_TOOL)  # built-in, live online lookup
+            self._own_offered = set()
             if self.own_tools_on:
                 try:                                # her own sandboxed tools (read-any/write-store)
                     own = self.own_tools.catalogue()[: self.own_tools_max]
                     existing = {(t.get("function") or {}).get("name") for t in tools}
-                    tools += [t for t in own
-                              if (t.get("function") or {}).get("name") not in existing]
+                    offered = [t for t in own
+                               if (t.get("function") or {}).get("name") not in existing]
+                    tools += offered
+                    self._own_offered = {(t.get("function") or {}).get("name")
+                                         for t in offered}
                 except Exception as exc:
                     _log("warning", f"own-tools catalogue failed: {exc}")
 
@@ -2180,9 +2190,14 @@ class LLMBridge:
             return await self._apply_self_edit(args)
         # Her own sandboxed tools (getattr: this is an optional feature, and it must not
         # shadow a built-in/host name — checked last, only if nothing above claimed it).
-        # Read anywhere, write only in her store; the toolbox enforces that at the OS
-        # level.  Runs off the event loop; the result is fenced as untrusted by _run_tools.
-        if getattr(self, "own_tools_on", False) and self.own_tools.has(name):
+        # Gate on _own_offered, not merely has(name): the catalogue drops an own-tool whose
+        # name a host/built-in already claimed, so dispatch must too — otherwise the LM is
+        # shown the host tool but silently runs the own-tool of the same name.  Read
+        # anywhere, write only in her store; the toolbox enforces that at the OS level.
+        # Runs off the event loop; the result is fenced as untrusted by _run_tools.
+        if (getattr(self, "own_tools_on", False)
+                and name in getattr(self, "_own_offered", set())
+                and self.own_tools.has(name)):
             try:
                 res = await asyncio.to_thread(self.own_tools.call, name, args)
             except Exception as exc:
