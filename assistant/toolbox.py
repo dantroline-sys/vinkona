@@ -171,12 +171,59 @@ class _ContainerBackend(_Backend):
         # with a note that names the fix.
         return self.runtime() is not None and self.image_present()
 
+    # Read roots to fall back on when the mount table can't be read — the places real
+    # files live; NEVER a bare `-v /:/host:ro` (its submounts stay writable — see below).
+    _FALLBACK_ROOTS = ("/home", "/etc", "/usr", "/opt", "/srv", "/mnt", "/media", "/var")
+
     def status(self) -> dict:
         """Diagnostics for the panel/doctor: exactly what's present and the one fix."""
         rt = self.runtime()
         return {"backend": "container", "in_container": self.in_container(),
                 "host_bridge": bool(self._prefix()), "runtime": rt,
                 "image": self.image, "image_present": self.image_present() if rt else False}
+
+    def _host_mountpoints(self) -> list:
+        """Every mountpoint on the host the runtime uses (prefix-aware).  [] on failure."""
+        try:
+            r = subprocess.run(self._prefix() + ["cat", "/proc/self/mountinfo"],
+                               capture_output=True, text=True, timeout=15)
+            out = r.stdout if r.returncode == 0 else ""
+        except (OSError, subprocess.TimeoutExpired):
+            out = ""
+        mps = []
+        for line in out.splitlines():
+            try:
+                left, right = line.split(" - ", 1)
+                mp = left.split(" ")[4]
+                fstype = right.split(" ")[0]
+            except (IndexError, ValueError):
+                continue
+            mp = mp.replace("\\040", " ").replace("\\011", "\t")   # mountinfo octal escapes
+            if fstype.startswith("fuse") or fstype == "autofs":
+                continue                                # fuse portals can't be bind-mounted
+            if "/run/user/" in mp and mp.rsplit("/", 1)[-1] in ("doc", "gvfs"):
+                continue
+            mps.append(mp)
+        return sorted(set(mps), key=lambda p: (p.count("/"), p))
+
+    def _ro_binds(self) -> list:
+        """Read-anywhere, contained: bind the host root read-only AND every submount
+        read-only.  podman's `:ro` is NON-recursive (5.8 has no rro), so `-v /:/host:ro`
+        alone leaves /tmp, /home, /dev/shm, even /proc WRITABLE through /host — a real
+        escape.  Binding each mountpoint :ro closes every one.  If the mount table can't
+        be read, degrade to a curated read-set (never the leaky bare-root bind)."""
+        mps = self._host_mountpoints()
+        if not mps:
+            binds = []
+            for r in self._FALLBACK_ROOTS:
+                binds += ["-v", f"{r}:/host{r}:ro"]
+            return binds
+        binds = ["-v", "/:/host:ro"]
+        for mp in mps:
+            if mp == "/":
+                continue
+            binds += ["-v", f"{mp}:/host{mp}:ro"]
+        return binds
 
     def argv(self, store: Path, tool_dir: Path, py: str, limits: dict) -> list:
         rt = self.runtime()
@@ -188,11 +235,19 @@ class _ContainerBackend(_Backend):
             "--network", "none",                       # no network, full stop
             "--read-only",                             # container rootfs read-only …
             "--tmpfs", "/tmp:rw,size=64m",             # … with ephemeral scratch
-            "-v", f"/:/host:ro",                       # read anywhere (host tree, read-only)
+            *self._ro_binds(),                         # read anywhere (host tree + every
+                                                       # submount, all read-only)
             "-v", f"{store}:/store:rw",                # write only here
             "-v", f"{tool_dir}:/tool:ro",              # the tool's code, read-only
             "-w", "/store",
             "--security-opt", "no-new-privileges",
+            # Read-anywhere needs the container to read host files through the /host bind;
+            # under SELinux (enforcing) that's denied unless we opt the container out of
+            # type enforcement.  Safe here: write containment is the MOUNT flags (rootfs
+            # --read-only, /host :ro, only /store :rw) + --network none, none of which
+            # SELinux provides — relabeling (:z/:Z) is not an option because it would
+            # rewrite the whole host tree's labels via the /host mount.
+            "--security-opt", "label=disable",
             "--cap-drop", "ALL",
             "--pids-limit", "128",
             "--memory", f"{mem}m",

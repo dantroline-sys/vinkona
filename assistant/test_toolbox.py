@@ -287,6 +287,29 @@ def test_container_backend():
         box.install("cescape", esc, {"description": "escape"}, {"input": {}})
         check("container: an escaping write fails its self-test",
               not box.has("cescape") and not target.exists())
+        # THE submount-escape regression: /host is read-only recursively, so a write to
+        # a host SUBMOUNT (/tmp, /dev/shm — separate mounts) must be blocked too.  A
+        # plain non-recursive `-v /:/host:ro` left these writable — a real escape.
+        import glob
+        marker = "ESC_SUBMOUNT_TEST"
+        sub = ('import json,os\n'
+               'hit=[]\n'
+               'for p in ("/host/tmp/%s","/host/dev/shm/%s"):\n'
+               '  try:\n    open(p,"w").write("x"); hit.append(p)\n  except OSError:\n    pass\n'
+               'print(json.dumps({"wrote": hit}))' % (marker, marker))
+        tdir = box.tools_dir / "submount"
+        tdir.mkdir(parents=True)
+        (tdir / "tool.py").write_text(sub)
+        (tdir / "manifest.json").write_text('{"name":"submount"}')
+        r = tb.run_tool(tdir, {}, store=box.store, cfg={"backend": "container"})
+        leaked = glob.glob(f"/tmp/{marker}") + glob.glob(f"/dev/shm/{marker}")
+        for f in leaked:
+            try:
+                os.remove(f)
+            except OSError:
+                pass
+        check("container: host SUBMOUNTS (/tmp, /dev/shm) are read-only — no escape",
+              r.get("ok") and not r["result"]["wrote"] and not leaked)
 
 
 def test_backend_selection():
@@ -303,10 +326,10 @@ def test_backend_selection():
 def test_diagnostics_actionable():
     """diagnostics() must always give a precise reason + a real fix when not ready — the
     banner/doctor render this, so it must never be stale or empty."""
-    # container forced but (in CI) no image → not ready, names the image-pull fix
-    d = tb.diagnostics({"enabled": True, "backend": "container"})
-    if d.get("ready"):
-        return skip("diagnostics not-ready path", "a container image IS present here")
+    # container forced with a bogus image → never ready, so the not-ready path is
+    # always exercised (even on a box that has the real image pulled).
+    d = tb.diagnostics({"enabled": True, "backend": "container",
+                        "image": "example.invalid/no-such-image:0"})
     check("not-ready diagnostics carry a reason", bool(d.get("reason")))
     check("not-ready diagnostics carry a one-line fix", "install.sh sandbox" in (d.get("fix") or ""))
     check("diagnostics report the runtime probe result", "runtime" in d)
