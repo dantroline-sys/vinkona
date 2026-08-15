@@ -356,6 +356,62 @@ def test_container_timeout_no_leak():
         check("the timed-out container was torn down (no leak)", not leaked)
 
 
+def test_ideas_store():
+    """Tool ideas: add (deduped by title), list, remove — the 'couldn't build it' track."""
+    with tempfile.TemporaryDirectory() as td:
+        box = _box(td)
+        r = box.add_idea("CSV summariser", rationale="user keeps pasting CSVs")
+        check("an idea is added", r.get("ok") and box.ideas()[0]["title"] == "CSV summariser")
+        dup = box.add_idea("csv summariser")            # case-insensitive title dedupe
+        check("a duplicate idea is refused", not dup.get("ok") and dup.get("duplicate"))
+        check("an empty title is refused", not box.add_idea("")["ok"])
+        iid = box.ideas()[0]["id"]
+        check("an idea is removed", box.remove_idea(iid).get("ok") and box.ideas() == [])
+        check("removing a missing idea fails", not box.remove_idea("nope")["ok"])
+
+
+def test_usage_ledger():
+    """call() records outcomes; usage() aggregates per tool.  Self-tests (install) must NOT
+    pollute the ledger — only real calls do."""
+    if not HAVE_BWRAP:
+        return skip("usage ledger", "no bwrap")
+    with tempfile.TemporaryDirectory() as td:
+        box = _box(td)
+        code = ("import sys, json\na = json.load(sys.stdin)\n"
+                "print(json.dumps({'echo': a.get('x')}))")
+        box.install("echoer", code, {"description": "echo"},
+                    {"input": {"x": 1}, "expect_keys": ["echo"]})
+        check("install self-test left no ledger rows", box.usage() == {})
+        box.call("echoer", {"x": 1}); box.call("echoer", {"x": 2})
+        u = box.usage()
+        check("usage counts real calls", u.get("echoer", {}).get("calls") == 2)
+        check("usage counts successes", u.get("echoer", {}).get("ok") == 2)
+        check("usage records a last-used time", bool(u.get("echoer", {}).get("last_used")))
+
+
+def test_read_paths_allowlist():
+    """read_paths exposes ONLY the listed folders (the cross-platform share list); a path
+    outside them is invisible.  read_denylist hides a secret even inside a shared folder."""
+    cb = tb._ContainerBackend({})
+    if not (cb.runtime() and cb.image_present()):
+        return skip("read_paths allowlist", "no container image")
+    with tempfile.TemporaryDirectory() as td:
+        cfg = {"backend": "container", "read_paths": ["/etc"],
+               "read_denylist": ["/etc/passwd"]}
+        box = tb.Toolbox(Path(td) / "own", cfg=cfg, seed=False)
+        code = ("import sys, json, os\na = json.load(sys.stdin)\n"
+                "p = os.environ.get('TOOL_ROOT','') + a['path']\n"
+                "try:\n  n = len(open(p).read()); print(json.dumps({'read': True, 'n': n}))\n"
+                "except Exception as e:\n  print(json.dumps({'read': False}))")
+        box.install("reader", code, {"description": "r"}, {"input": {"path": "/x"}})
+        inside = box.call("reader", {"path": "/etc/group"}).get("result") or {}
+        outside = box.call("reader", {"path": "/usr/lib/os-release"}).get("result") or {}
+        denied = box.call("reader", {"path": "/etc/passwd"}).get("result") or {}
+        check("read inside a shared folder works", inside.get("read") and inside.get("n"))
+        check("read outside the share list is blocked", outside.get("read") is False)
+        check("a denylisted file reads empty", denied.get("read") and denied.get("n") == 0)
+
+
 def test_backend_selection():
     """auto prefers the container backend; explicit picks are honoured; TOOL_ROOT differs."""
     check("bwrap backend advertises TOOL_ROOT=''", tb._BwrapBackend().tool_root == "")
@@ -388,6 +444,9 @@ def main():
     test_diagnostics_actionable()
     test_container_backend()
     test_container_timeout_no_leak()
+    test_ideas_store()
+    test_usage_ledger()
+    test_read_paths_allowlist()
     test_seed_and_catalogue()
     test_install_validation()
     test_install_selftest_gate()

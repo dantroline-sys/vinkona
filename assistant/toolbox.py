@@ -74,6 +74,9 @@ _TOOL_STDIN_LIMIT = 256 * 1024          # args JSON handed to a tool (generous; 
 CONTAINER_PREFIX = "vinkona-tool-"
 _run_seq = 0
 
+_LEDGER_MAX_BYTES = 1_000_000   # trim the call ledger once it passes ~1 MB…
+_LEDGER_KEEP = 3000             # …keeping the most recent this-many outcomes
+
 
 def _next_run_name() -> str:
     # pid + counter + a monotonic tail: one Toolbox is shared across sessions, so two
@@ -132,6 +135,14 @@ class _ContainerBackend(_Backend):
         cfg = cfg or {}
         self.image = str(cfg.get("image") or "docker.io/library/python:3.12-slim")
         self.pref = str(cfg.get("runtime") or "auto").lower()
+        # read_paths: expose ONLY these host folders (a read-allowlist).  Empty = read
+        # anywhere (the whole host tree).  This is how macOS/Windows share folders into the
+        # Linux-VM container — where "/" is the VM's root, not the real host — and how a
+        # locked-down box narrows what a tool can see.  read_denylist: paths to hide even
+        # under read-anywhere (secrets like ~/.ssh, config tokens) — shadowed by an empty
+        # ephemeral mount so the content is invisible and any write there stays container-local.
+        self.read_paths = [str(p) for p in (cfg.get("read_paths") or []) if str(p).strip()]
+        self.deny_paths = [str(p) for p in (cfg.get("read_denylist") or []) if str(p).strip()]
         self._rt = self._rt_probed = None       # cache: (name|None)
 
     def in_container(self) -> bool:
@@ -229,24 +240,61 @@ class _ContainerBackend(_Backend):
             mps.append(mp)
         return sorted(set(mps), key=lambda p: (p.count("/"), p))
 
+    @staticmethod
+    def _under(mp: str, root: str) -> bool:
+        return root == "/" or mp == root or mp.startswith(root.rstrip("/") + "/")
+
+    def _isdir_host(self, path: str) -> bool:
+        # Classify a secret path on the HOST (prefix-aware for the distrobox bridge) so the
+        # shadow matches: tmpfs can only cover a directory, not a file.
+        try:
+            r = subprocess.run(self._prefix() + ["test", "-d", path],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                               timeout=10)
+            return r.returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+
+    def _deny_shadows(self) -> list:
+        # Hide a secret path at its /host location so its content is invisible and any write
+        # there stays container-local (never the host).  A directory gets an empty tmpfs; a
+        # FILE gets /dev/null bound read-only (reads return empty) — a tmpfs can't cover a
+        # file.  Applied last so it wins over the read binds beneath it.
+        out = []
+        for d in self.deny_paths:
+            if self._isdir_host(d):
+                out += ["--tmpfs", f"/host{d}"]
+            else:
+                out += ["-v", f"/dev/null:/host{d}:ro"]
+        return out
+
     def _ro_binds(self) -> list:
-        """Read-anywhere, contained: bind the host root read-only AND every submount
-        read-only.  podman's `:ro` is NON-recursive (5.8 has no rro), so `-v /:/host:ro`
-        alone leaves /tmp, /home, /dev/shm, even /proc WRITABLE through /host — a real
-        escape.  Binding each mountpoint :ro closes every one.  If the mount table can't
-        be read, degrade to a curated read-set (never the leaky bare-root bind)."""
+        """Read side, contained.  By default read-anywhere: bind the host root read-only AND
+        every submount read-only — podman's `:ro` is NON-recursive (5.8 has no rro), so
+        `-v /:/host:ro` alone leaves /tmp, /home, /dev/shm, even /proc WRITABLE through
+        /host (a real escape); binding each mountpoint :ro closes every one.  With read_paths
+        set, expose ONLY those folders (plus their submounts, same :ro treatment) — the
+        cross-platform share list.  If the mount table can't be read, degrade to the
+        allowlist or a curated read-set, NEVER the leaky bare-root bind."""
         mps = self._host_mountpoints()
+        roots = self.read_paths or ["/"]
         if not mps:
+            src = self.read_paths or list(self._FALLBACK_ROOTS)
             binds = []
-            for r in self._FALLBACK_ROOTS:
-                binds += ["-v", f"{r}:/host{r}:ro"]
-            return binds
-        binds = ["-v", "/:/host:ro"]
-        for mp in mps:
-            if mp == "/":
-                continue
-            binds += ["-v", f"{mp}:/host{mp}:ro"]
-        return binds
+            for r in src:
+                binds += (["-v", "/:/host:ro"] if r == "/"
+                          else ["-v", f"{r}:/host{r}:ro"])
+            return binds + self._deny_shadows()
+        binds = []
+        for root in roots:
+            binds += (["-v", "/:/host:ro"] if root == "/"
+                      else ["-v", f"{root}:/host{root}:ro"])
+            for mp in mps:
+                if mp == "/" or mp == root:
+                    continue
+                if self._under(mp, root):
+                    binds += ["-v", f"{mp}:/host{mp}:ro"]
+        return binds + self._deny_shadows()
 
     def argv(self, store: Path, tool_dir: Path, py: str, limits: dict,
              name: str | None = None) -> list:
@@ -326,6 +374,13 @@ class _BwrapBackend(_Backend):
     tool_root = ""
     uses_preexec = True
 
+    def __init__(self, cfg: dict | None = None):
+        cfg = cfg or {}
+        # Same read-allowlist / secret-denylist as the container backend (see there).
+        # bwrap sees real host paths (TOOL_ROOT=""), so binds use the path as-is.
+        self.read_paths = [str(p) for p in (cfg.get("read_paths") or []) if str(p).strip()]
+        self.deny_paths = [str(p) for p in (cfg.get("read_denylist") or []) if str(p).strip()]
+
     def available(self) -> bool:
         return sys.platform.startswith("linux") and bool(self._bwrap()) and self._works()
 
@@ -352,12 +407,28 @@ class _BwrapBackend(_Backend):
             self._ok = False
         return self._ok
 
+    def _read_binds(self) -> list:
+        # Read anywhere by default; with read_paths, only those folders.  bwrap's --ro-bind
+        # IS recursive, so no per-submount handling is needed.  Denylist paths are shadowed
+        # with an empty tmpfs (content hidden; writes there stay in the ephemeral namespace).
+        if self.read_paths:
+            out = []
+            for p in self.read_paths:
+                out += ["--ro-bind", p, p]
+        else:
+            out = ["--ro-bind", "/", "/"]
+        for d in self.deny_paths:
+            # dir → empty tmpfs; file → /dev/null (tmpfs can't cover a file)
+            out += (["--tmpfs", d] if os.path.isdir(d)
+                    else ["--ro-bind", "/dev/null", d])
+        return out
+
     def argv(self, store: Path, tool_dir: Path, py: str, limits: dict,
              name: str | None = None) -> list:      # name unused: bwrap dies with us
         tool_py = Path(tool_dir) / "tool.py"
         return [
             self._bwrap(),
-            "--ro-bind", "/", "/",              # read anywhere (whole host tree, read-only) …
+            *self._read_binds(),                # read anywhere / the share list, read-only …
             "--proc", "/proc",
             "--dev", "/dev",
             "--bind", str(store), str(store),   # … write only here (laid over the ro tree)
@@ -382,7 +453,7 @@ def _backends(cfg: dict | None = None) -> list:
     cfg = cfg or {}
     pref = str(cfg.get("backend") or "auto").lower()
     container = _ContainerBackend(cfg)
-    bwrap = _BwrapBackend()
+    bwrap = _BwrapBackend(cfg)
     if pref == "container":
         return [container]
     if pref == "bwrap":
@@ -740,7 +811,120 @@ class Toolbox:
     def call(self, name: str, args: dict) -> dict:
         if not self.has(name):
             return {"ok": False, "error": f"no such tool: {name}"}
-        return run_tool(self._tool_dir(name), args or {}, store=self.store, cfg=self.cfg)
+        res = run_tool(self._tool_dir(name), args or {}, store=self.store, cfg=self.cfg)
+        self._record_call(name, res)             # real usage only (self-tests go via install)
+        return res
+
+    # -- usage ledger (feeds retirement, the panel, and later the skill-LoRA corpus) --
+    @property
+    def _ledger_path(self) -> Path:
+        return self.root / "ledger.jsonl"
+
+    def _record_call(self, name: str, res: dict) -> None:
+        """Append one call outcome.  Best-effort: a ledger write must never break a tool
+        call.  Trimmed to the last _LEDGER_KEEP lines once the file grows past a threshold."""
+        try:
+            rec = {"ts": round(time.time(), 3), "name": name,
+                   "ok": bool(res.get("ok")), "elapsed_s": res.get("elapsed_s")}
+            if not res.get("ok"):
+                rec["error"] = str(res.get("error") or "")[:200]
+            p = self._ledger_path
+            with open(p, "a") as f:
+                f.write(json.dumps(rec) + "\n")
+            if p.stat().st_size > _LEDGER_MAX_BYTES:
+                self._trim_ledger()
+        except OSError:
+            pass
+
+    def _trim_ledger(self) -> None:
+        try:
+            lines = self._ledger_path.read_text().splitlines()
+        except OSError:
+            return
+        tail = lines[-_LEDGER_KEEP:]
+        tmp = self._ledger_path.with_suffix(".tmp")
+        try:
+            tmp.write_text("\n".join(tail) + ("\n" if tail else ""))
+            tmp.replace(self._ledger_path)
+        except OSError:
+            pass
+
+    def usage(self) -> dict:
+        """Per-tool aggregate from the ledger: {name: {calls, ok, last_used, avg_elapsed_s}}.
+        Names no longer installed are still reported (useful for 'this idea got retired')."""
+        acc: dict = {}
+        try:
+            with open(self._ledger_path) as f:
+                for line in f:
+                    try:
+                        r = json.loads(line)
+                    except ValueError:
+                        continue
+                    s = acc.setdefault(r.get("name", "?"),
+                                       {"calls": 0, "ok": 0, "last_used": 0.0,
+                                        "_es": 0.0, "_en": 0})
+                    s["calls"] += 1
+                    s["ok"] += 1 if r.get("ok") else 0
+                    s["last_used"] = max(s["last_used"], float(r.get("ts") or 0))
+                    if isinstance(r.get("elapsed_s"), (int, float)):
+                        s["_es"] += r["elapsed_s"]
+                        s["_en"] += 1
+        except OSError:
+            return {}
+        out = {}
+        for n, s in acc.items():
+            out[n] = {"calls": s["calls"], "ok": s["ok"],
+                      "last_used": s["last_used"] or None,
+                      "avg_elapsed_s": round(s["_es"] / s["_en"], 3) if s["_en"] else None}
+        return out
+
+    # -- tool IDEAS: designs she (or you) want but that aren't built yet --
+    def _ideas_path(self) -> Path:
+        return self.root / "ideas.json"
+
+    def _write_ideas(self, ideas: list) -> None:
+        tmp = self._ideas_path().with_suffix(".tmp")
+        tmp.write_text(json.dumps({"ideas": ideas}, indent=2))
+        tmp.replace(self._ideas_path())
+
+    def ideas(self) -> list:
+        try:
+            d = json.loads(self._ideas_path().read_text())
+            return d.get("ideas", []) if isinstance(d, dict) else []
+        except (OSError, ValueError):
+            return []
+
+    def add_idea(self, title: str, *, rationale: str = "", sketch: str = "",
+                 source: str = "toolsmith") -> dict:
+        """Record a tool she wishes existed but couldn't build (or you jotted down).  Shown
+        in the same panel section as real tools.  Deduped by title so a recurring wish
+        doesn't pile up."""
+        title = str(title or "").strip()[:120]
+        if not title:
+            return {"ok": False, "error": "an idea needs a title"}
+        ideas = self.ideas()
+        if any(str(i.get("title", "")).strip().lower() == title.lower() for i in ideas):
+            return {"ok": False, "error": "a similar idea already exists", "duplicate": True}
+        idea = {"id": f"idea-{int(time.time() * 1000)}", "title": title,
+                "rationale": str(rationale or "")[:2000], "sketch": str(sketch or "")[:4000],
+                "source": str(source or "toolsmith"), "created_at": _man_time(self.cfg)}
+        ideas.append(idea)
+        try:
+            self._write_ideas(ideas)
+        except OSError as e:
+            return {"ok": False, "error": f"could not save idea: {e}"}
+        return {"ok": True, "idea": idea}
+
+    def remove_idea(self, idea_id: str) -> dict:
+        ideas = self.ideas()
+        keep = [i for i in ideas if i.get("id") != idea_id]
+        if len(keep) == len(ideas):
+            return {"ok": False, "error": "no such idea"}
+        try:
+            self._write_ideas(keep)
+        except OSError as e:
+            return {"ok": False, "error": f"could not save: {e}"}
+        return {"ok": True, "removed": idea_id}
 
     # -- installation (validate → self-test in a throwaway sandbox → promote) --
     def install(self, name: str, code: str, manifest: dict, test: dict,

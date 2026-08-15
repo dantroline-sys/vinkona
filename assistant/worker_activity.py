@@ -83,6 +83,7 @@ LABELS = {
     "garden": "Gardening her knowledge base",
     "reconcile": "Reorganising memory",
     "calendar_sync": "Tidying your calendar",
+    "toolsmith": "Making herself a new tool",
     "orient": "Catching up on the world (weather, news, calendar)",
     "standing_down": "Standing down to talk with you…",
 }

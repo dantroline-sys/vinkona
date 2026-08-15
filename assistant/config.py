@@ -939,6 +939,22 @@ DEFAULTS: dict = {
             "max_write_mb": 32,             # RLIMIT_FSIZE: no single file may exceed this
             "max_mem_mb": 512,              # container memory cap per tool call
             "max_tools_offered": 12,        # how many of her tools to catalogue to the fast LM at once
+            # Read side.  Empty read_paths = read anywhere (the whole machine).  Set it to a
+            # list of folders to expose ONLY those (a share list) — this is how macOS/Windows
+            # share host folders into the Linux-VM container, and how a locked-down box narrows
+            # what a tool can see.  read_denylist hides specific secrets even under read-anywhere
+            # (their content reads as empty), e.g. ["~/.ssh", "config/config.json"].
+            "read_paths": [],               # [] = read anywhere; else the only folders exposed
+            "read_denylist": [],            # paths hidden from tools even under read-anywhere
+            # The idle toolsmith: between chats, the big LM reflects and either writes herself a
+            # small sandboxed tool (self-tested before it's ever offered) or records a "tool idea"
+            # it can't build.  Off by default; needs own_tools on and the big LM up.
+            "toolsmith": {
+                "enabled": False,           # let her write her own tools while idle
+                "min_interval_s": 21600,    # at most once every ~6h (persisted; not every boot)
+                "max_repair": 2,            # self-test failed? feed the traceback back this many times
+                "max_tools": 24,            # once she has this many, she only records ideas
+            },
         },
         # Connecting Vinkona to your tools on another computer (usually a Mac).
         # Vinkona runs HERE ("this machine"); your tools — calendar, mail, and so on —
@@ -1467,6 +1483,12 @@ FIELD_LEVELS: dict[str, str] = {
     "tools.own_tools.max_write_mb": "expert",
     "tools.own_tools.max_mem_mb": "expert",
     "tools.own_tools.max_tools_offered": "advanced",
+    "tools.own_tools.read_paths": "advanced",
+    "tools.own_tools.read_denylist": "advanced",
+    "tools.own_tools.toolsmith.enabled": "basic",
+    "tools.own_tools.toolsmith.min_interval_s": "expert",
+    "tools.own_tools.toolsmith.max_repair": "expert",
+    "tools.own_tools.toolsmith.max_tools": "advanced",
     "music.enabled": "basic",
     "knowledge.enabled": "basic",
     "knowledge_host.enabled": "basic",

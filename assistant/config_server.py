@@ -975,14 +975,20 @@ class Handler(BaseHTTPRequestHandler):
                 otc = (self._cfg().get("tools", {}) or {}).get("own_tools", {}) or {}
                 box = self._toolbox()
                 diag = TOOLBOX.diagnostics(otc)
+                usage = box.usage()
+                roster = box.roster()
+                for t in roster:                # fold usage into each tool row for the panel
+                    t["usage"] = usage.get(t["name"], {})
                 return self._json(200, {
                     "enabled": bool(otc.get("enabled")),
                     "require_sandbox": bool(otc.get("require_sandbox", True)),
+                    "toolsmith": bool((otc.get("toolsmith") or {}).get("enabled")),
                     "backend": diag.get("backend"),
                     "sandboxed": bool(diag.get("ready")),
                     "diag": diag,               # runtime/image/bridge + reason + one-line fix
                     "store": str(box.store),
-                    "tools": box.roster()})
+                    "tools": roster,
+                    "ideas": box.ideas()})      # designs not built yet (toolsmith + you)
             except Exception as e:
                 return self._json(500, {"error": str(e)})
         if path == "/api/own_tools/get":
@@ -1373,6 +1379,19 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/own_tools/remove":
             try:
                 return self._json(200, self._toolbox().remove(str(obj.get("name") or "")))
+            except Exception as e:
+                return self._json(500, {"ok": False, "error": str(e)})
+        if path == "/api/own_tools/idea_add":
+            try:
+                r = self._toolbox().add_idea(
+                    str(obj.get("title") or ""), rationale=str(obj.get("rationale") or ""),
+                    sketch=str(obj.get("sketch") or ""), source="user")
+                return self._json(200 if r.get("ok") else 400, r)
+            except Exception as e:
+                return self._json(500, {"ok": False, "error": str(e)})
+        if path == "/api/own_tools/idea_remove":
+            try:
+                return self._json(200, self._toolbox().remove_idea(str(obj.get("id") or "")))
             except Exception as e:
                 return self._json(500, {"ok": False, "error": str(e)})
         if path == "/api/memory":

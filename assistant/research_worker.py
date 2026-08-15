@@ -1355,6 +1355,43 @@ async def main():
             if any(cstats.values()):
                 _log(f"consolidate: {cstats}")
                 trace.write(kind="consolidate", **cstats, store_size=len(memory.entries))
+        # Idle toolsmith: reflect on how things have gone and, if it helps, WRITE herself a
+        # small sandboxed tool (self-tested before it's ever offered) or note a tool idea she
+        # can't build.  Interval-gated (persisted; not on every tick or every boot), under the
+        # big-LM lease already held for this cycle, and preemptible like the rest.
+        if _stand_down():
+            return
+        _tsc = _otc.get("toolsmith", {}) or {}
+        if own_toolbox is not None and _toolsmith and _tsc.get("enabled") and big.get("url"):
+            _ts_last = float(memory.get_state("toolsmith_ran_at") or 0)
+            if time.time() - _ts_last >= float(_tsc.get("min_interval_s", 21600)):
+                set_activity("toolsmith")
+                try:
+                    async def _ts_chat(prompt, think=True):
+                        return await memory._chat_json(big["url"], big["model"], prompt,
+                                                       think=think)
+                    _facs = []
+                    try:
+                        if tools.active:
+                            _facs = [f"{t['function']['name']}: "
+                                     f"{t['function'].get('description', '')}"
+                                     for t in (await tools.catalogue()) if t.get("function")]
+                    except Exception:
+                        pass
+                    st = await _toolsmith.run(
+                        own_toolbox, _ts_chat, logs=memory.recent_logs(24),
+                        faculties=_facs, context=memory._voice_anchor(),
+                        max_repair=int(_tsc.get("max_repair", 2)),
+                        max_tools=int(_tsc.get("max_tools", 24)))
+                    memory.set_state("toolsmith_ran_at", str(time.time()))
+                    if st.get("action") not in (None, "none"):
+                        _log("toolsmith: " + st.get("action", "?") + " "
+                             + str(st.get("name") or st.get("title") or "")
+                             + (f" (attempt {st['attempts']})" if st.get("attempts") else ""))
+                        trace.write(kind="toolsmith", **st, store_size=len(memory.entries))
+                except Exception as e:
+                    _log(f"toolsmith failed (continuing): {e}")
+                    memory.set_state("toolsmith_ran_at", str(time.time()))  # don't hammer on error
         if _task_on("perspective_audit") and idle_cfg.get("perspective_audit", True):
             try:
                 pstats = await memory.audit_perspective(
@@ -1538,6 +1575,24 @@ async def main():
                                      "timeout_s": _kcfg.get("timeout_s", 20),
                                      "auth_token": _kcfg.get("auth_token")}))
     tools = _tc.MultiHost(_rhosts) if len(_rhosts) > 1 else _rhosts[0]
+
+    # Vinkona's OWN sandboxed tools + the idle toolsmith that writes them (toolbox.py /
+    # toolsmith.py).  Built only when the feature is on AND writes can actually be contained
+    # here (fail-closed, same rule as the cascade).  The registry is just a directory, so it
+    # points at the SAME store the cascade + panel use — she runs what the toolsmith builds.
+    _otc = cfg.get("tools", {}).get("own_tools", {}) or {}
+    own_toolbox = None
+    _toolsmith = None
+    if _otc.get("enabled"):
+        try:
+            _tbmod = _load("toolbox")
+            if (not _otc.get("require_sandbox", True)) or _tbmod.available(_otc):
+                _ts_root = (_otc.get("dir") or "").strip() or str(
+                    Path(__file__).resolve().parent / "var" / "own_tools")
+                own_toolbox = _tbmod.Toolbox(_ts_root, cfg=_otc)
+                _toolsmith = _load("toolsmith")
+        except Exception as _e:
+            _log(f"own-tools registry unavailable in worker (continuing): {_e}")
 
     _ambient = _load("ambient")            # shared orientation refresh (weather/news/calendar)
     try:

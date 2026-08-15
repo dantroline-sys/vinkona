@@ -512,6 +512,13 @@
         <pre id="toolTestOut" class="mono" style="white-space:pre-wrap; margin-top:8px"></pre>
       </div>
     </div>
+
+    <h3 style="margin:22px 0 4px">Tool ideas <span class="muted">— designs not built yet (from the idle toolsmith, or jotted by you)</span></h3>
+    <div class="hint" id="toolsmithHint"></div>
+    <div class="bar">
+      <button class="btn secondary" onclick="addIdea()">+ Add idea</button>
+    </div>
+    <div id="toolIdeas" class="mem-list" style="max-width:640px"></div>
   </section>
 
   <!-- ── Research ─────────────────────────────────────────────────────────── -->
@@ -1274,6 +1281,13 @@ function renderEvent(e) {
     body = `<div class="body">💭 idle reflection${win} — ${e.learned||0} memory op(s), queued ${e.count||0}: ${ts}</div>`;
   } else if (e.kind === 'consolidate') {
     body = `<div class="body">🧹 consolidation — merged ${e.merged||0}, split ${e.split||0}, removed ${e.removed||0} (store ${e.store_size})</div>`;
+  } else if (e.kind === 'toolsmith') {
+    const icon = {built:'🔧', idea:'💡', failed:'🛠️'}[e.action] || '🛠️';
+    const what = e.name || e.title || '';
+    const verb = {built:'built a tool', idea:'noted a tool idea',
+                  failed:'couldn\'t build (kept as an idea)'}[e.action] || e.action;
+    body = `<div class="body">${icon} toolsmith — ${verb}${what?`: <b>${escHtml(what)}</b>`:''}${e.attempts?` <span class="pill">${e.attempts} attempt(s)</span>`:''}</div>`;
+    if (e.action === 'failed') cls += ' errored';
   } else if (e.kind === 'notify_scheduled') {
     body = `<div class="body">🔔 queued ${e.count||0} notification(s)${e.text?`: ${escHtml(e.text)}${e.when?` (${escHtml(e.when)})`:''}`:''}</div>`;
   } else if (e.kind === 'notify_spoken') {
@@ -2060,13 +2074,47 @@ async function loadTools() {
   else {
     list.innerHTML = items.map(t => {
       const active = toolSel === t.name ? ' active' : '';
+      const u = t.usage || {};
+      const use = u.calls ? `used ${u.calls}× (${u.ok || 0} ok)` : 'never used';
       return `<div class="mem-item${active}" onclick="openTool('${escAttr(t.name)}')">` +
         `<div class="t">${escHtml(t.name)}</div>` +
         `<div class="m">${escHtml(t.description || '')}</div>` +
         `<div class="m">${escHtml(t.author || '')}` +
-        `${t.created_at ? ' · ' + escHtml(t.created_at) : ''}</div></div>`;
+        `${t.created_at ? ' · ' + escHtml(t.created_at) : ''} · ${use}</div></div>`;
     }).join('');
   }
+  // toolsmith status + tool ideas (designs not built yet)
+  document.getElementById('toolsmithHint').innerHTML = d.toolsmith
+    ? 'The idle toolsmith is <strong>on</strong> — she may write herself a tool (or add an idea here) while idle.'
+    : 'The idle toolsmith is <strong>off</strong> (Settings → tools.own_tools.toolsmith.enabled). Ideas you add here stay as reminders.';
+  const ideas = d.ideas || [];
+  const il = document.getElementById('toolIdeas');
+  if (!ideas.length) { il.innerHTML = '<div class="mem-empty">No tool ideas.</div>'; }
+  else {
+    il.innerHTML = ideas.map(i =>
+      `<div class="mem-item">` +
+        `<div class="t">${escHtml(i.title || '')} ` +
+        `<span class="muted" style="font-weight:400">(${escHtml(i.source || '')})</span></div>` +
+        (i.rationale ? `<div class="m">${escHtml(i.rationale)}</div>` : '') +
+        `<div class="bar" style="margin-top:6px">` +
+        `<button class="btn secondary" onclick="removeIdea('${escAttr(i.id)}')">Remove</button>` +
+        `</div></div>`).join('');
+  }
+}
+
+async function addIdea() {
+  const title = prompt('Tool idea (short title):'); if (!title) return;
+  const rationale = prompt('Why would it help? (optional)') || '';
+  const d = await (await fetch('/api/own_tools/idea_add',
+        { method:'POST', body: JSON.stringify({ title, rationale }) })).json();
+  if (d.ok) loadTools();
+  else flash(document.getElementById('toolsStatus'), false, d.error || 'could not add');
+}
+
+async function removeIdea(id) {
+  const d = await (await fetch('/api/own_tools/idea_remove',
+        { method:'POST', body: JSON.stringify({ id }) })).json();
+  if (d.ok) loadTools();
 }
 
 async function openTool(name) {
