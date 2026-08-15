@@ -921,16 +921,23 @@ DEFAULTS: dict = {
         # Vinkona's OWN tools: small single-file programs she can run during a chat (and,
         # later, write for herself while idle).  The hard rule — read anywhere, write ONLY
         # inside her sandbox store — is enforced by the OS, not Python: each tool runs under
-        # a containment backend (Linux = bubblewrap; macOS/Windows backends planned).  With
-        # NO backend on the platform, this stays OFF (require_sandbox) unless you knowingly
-        # opt out.  See toolbox.py.
+        # a containment backend.  Default backend is a throwaway CONTAINER (podman/docker) —
+        # the platform-independent one (same on Linux/macOS/Windows, and works even where
+        # nested user namespaces are blocked, e.g. inside the distrobox); Linux bubblewrap
+        # is the lighter fallback.  Provision a backend with `./install.sh sandbox`.  With
+        # NO backend ready, this stays OFF (require_sandbox) unless you knowingly opt out.
+        # See toolbox.py.
         "own_tools": {
             "enabled": False,               # opt-in; needs a sandbox backend to actually run
             "require_sandbox": True,        # false = run uncontained (trusted single-user box ONLY)
+            "backend": "auto",             # auto | container | bwrap  (auto prefers container)
+            "runtime": "auto",             # container runtime: auto | podman | docker
+            "image": "docker.io/library/python:3.12-slim",  # the sandbox image (pull it once)
             "dir": "",                      # tools + store root; "" = <assistant>/var/own_tools
             "timeout_s": 10,                # wall-clock cap per tool call
             "max_output_kb": 64,            # tool stdout truncated to this before it re-enters the prompt
             "max_write_mb": 32,             # RLIMIT_FSIZE: no single file may exceed this
+            "max_mem_mb": 512,              # container memory cap per tool call
             "max_tools_offered": 12,        # how many of her tools to catalogue to the fast LM at once
         },
         # Connecting Vinkona to your tools on another computer (usually a Mac).
@@ -1451,10 +1458,14 @@ FIELD_LEVELS: dict[str, str] = {
     "tools.calculator": "basic",
     "tools.own_tools.enabled": "basic",
     "tools.own_tools.require_sandbox": "expert",
+    "tools.own_tools.backend": "advanced",
+    "tools.own_tools.runtime": "expert",
+    "tools.own_tools.image": "expert",
     "tools.own_tools.dir": "expert",
     "tools.own_tools.timeout_s": "expert",
     "tools.own_tools.max_output_kb": "expert",
     "tools.own_tools.max_write_mb": "expert",
+    "tools.own_tools.max_mem_mb": "expert",
     "tools.own_tools.max_tools_offered": "advanced",
     "music.enabled": "basic",
     "knowledge.enabled": "basic",

@@ -13,7 +13,8 @@
 #   ./install.sh tts chatterbox    # Chatterbox in its own venv (low-footprint)
 #   ./install.sh models            # download the default GGUFs into Models/
 #   ./install.sh llama             # build llama.cpp's llama-server into ./bin
-#   ./install.sh all               # core + tts orpheus_gguf + models (+ llama if absent)
+#   ./install.sh sandbox           # provision the own-tools sandbox (pull the container image)
+#   ./install.sh all               # core + tts orpheus_gguf + models (+ llama if absent) + sandbox
 #   ./install.sh status            # what's installed and how big it is
 #   ./install.sh uninstall         # remove everything generated (venvs, var/, bin/)
 #                 --with-models    #   also delete downloaded weights in Models/
@@ -342,6 +343,57 @@ step_llama() {
     ok "installed bin/llama-server @ $(cut -c1-12 bin/llama-server.commit 2>/dev/null || echo '?') (env.sh puts ./bin on PATH for all Vinkona services)"
 }
 
+step_sandbox() {
+    # Provision the containment backend for Vinkona's OWN tools (toolbox.py).  The
+    # default backend is a throwaway CONTAINER — the platform-independent one (same on
+    # Linux/macOS/Windows, and it works even where nested user namespaces are blocked,
+    # e.g. inside the distrobox) — so this pulls a minimal sandbox image with the
+    # container runtime (no sudo: rootless podman/docker).  bubblewrap is the lighter
+    # Linux-only fallback; we detect it but never sudo-install a system package (this
+    # installer's contract) — we print the one command if you want it.
+    local image rt
+    image="${VINKONA_SANDBOX_IMAGE:-}"
+    if [ -z "$image" ] && [ -f config/config.json ] && command -v python3 >/dev/null 2>&1; then
+        image="$(python3 -c 'import json,sys;print((json.load(open("config/config.json")).get("tools",{}).get("own_tools",{}) or {}).get("image",""))' 2>/dev/null)"
+    fi
+    [ -n "$image" ] || image="docker.io/library/python:3.12-slim"
+
+    rt=""
+    for c in podman docker; do command -v "$c" >/dev/null 2>&1 && { rt="$c"; break; }; done
+
+    if [ -n "$rt" ]; then
+        say "sandbox: using $rt — pulling the sandbox image ($image); this is a one-time download"
+        if "$rt" pull "$image"; then
+            ok "sandbox: image ready ($image) — own-tools run in a $rt container (read anywhere, write only in her store, no network)"
+            return 0
+        fi
+        warn "sandbox: '$rt pull $image' failed (offline? try again). Own-tools will stay off until an image is present."
+    else
+        warn "sandbox: no container runtime (podman/docker) found — that's the recommended, platform-independent backend."
+        case "$(uname -s)" in
+            Darwin) echo "         macOS:  brew install podman && podman machine init && podman machine start" ;;
+            Linux)  echo "         Fedora: sudo dnf install podman     Ubuntu: sudo apt install podman" ;;
+            *)      echo "         install Docker Desktop or Podman for your platform" ;;
+        esac
+    fi
+
+    # bubblewrap fallback status (Linux only) — report; don't sudo-install.
+    if [ "$(uname -s)" = Linux ]; then
+        if command -v bwrap >/dev/null 2>&1 || [ -x bin/bwrap ]; then
+            if bwrap --ro-bind / / --unshare-all --die-with-parent -- /bin/true >/dev/null 2>&1; then
+                ok "sandbox: bubblewrap present and WORKS here — usable as the fallback backend (set tools.own_tools.backend=bwrap)"
+            else
+                warn "sandbox: bubblewrap present but a trivial sandbox FAILED (nested user namespaces blocked here — common inside a container). Use the container backend."
+            fi
+        else
+            echo "         bubblewrap (Linux fallback):  Fedora: sudo dnf install bubblewrap    Ubuntu: sudo apt install bubblewrap"
+        fi
+    fi
+    # Not fatal: setup continues; own_tools simply stays off until a backend is ready
+    # (the doctor's 'tools sandbox' row and the config Tools tab both say so).
+    return 0
+}
+
 step_status() {
     echo "Vinkona assistant @ $SCRIPT_DIR"
     if [ "$(uname -s)" = Darwin ]; then
@@ -418,8 +470,10 @@ case "$cmd" in
     tts)        shift; step_tts "${1:-orpheus_gguf}" ;;
     models)     step_models ;;
     llama)      shift || true; step_llama "${1:-}" ;;
+    sandbox)    step_sandbox ;;
     all)        step_core; step_tts orpheus_gguf; step_models
-                { command -v llama-server >/dev/null 2>&1 || [ -x bin/llama-server ]; } || step_llama ;;
+                { command -v llama-server >/dev/null 2>&1 || [ -x bin/llama-server ]; } || step_llama
+                step_sandbox ;;
     status)     step_status ;;
     uninstall)  shift || true; step_uninstall "$@" ;;
     -h|--help|help) usage 0 ;;

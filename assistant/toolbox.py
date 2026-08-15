@@ -71,35 +71,151 @@ _TOOL_STDIN_LIMIT = 256 * 1024          # args JSON handed to a tool (generous; 
 
 
 # ── sandbox backends (the platform seam) ─────────────────────────────────────
-# A backend turns (store, tool_py, python) into the argv that runs the tool with
-# read-anywhere / write-only-in-store containment on ITS OS.  Add a platform by
-# adding a backend here; nothing above this line changes.
+# A backend turns (store, tool_dir, python, limits) into the argv that runs the tool
+# with read-anywhere / write-only-in-store containment.  Each also declares TOOL_ROOT:
+# the prefix a tool must prepend to an absolute host path it wants to READ.  It is ""
+# for a backend that sees real host paths (bwrap) and "/host" for one that mounts the
+# host tree elsewhere (a container) — so ONE tool body works under either:
+#     open(os.environ.get("TOOL_ROOT", "") + "/etc/hostname")
+# Add a platform/mechanism by adding a backend; nothing above this line changes.
 
 class _Backend:
     name = "none"
+    tool_root = ""
+    uses_preexec = False
 
     def available(self) -> bool:
         return False
 
-    def argv(self, store: Path, tool_py: Path, py: str) -> list:
+    def argv(self, store: Path, tool_dir: Path, py: str, limits: dict) -> list:
         raise NotImplementedError
 
 
-class _BwrapBackend(_Backend):
-    """Linux: bubblewrap namespaces.  Whole tree read-only, the store laid over it
-    writable, no network, PID/IPC/UTS/user isolation, dies with the parent."""
-    name = "bwrap"
+class _ContainerBackend(_Backend):
+    """The platform-independent mechanism: run each tool in a throwaway container.
+
+    podman (preferred) or docker, identically on Linux/macOS/Windows — the host tree
+    mounted READ-ONLY at /host (read anywhere), her store mounted read-write at /store
+    (the only writable place), no network, a read-only container rootfs, and pid/mem/
+    file-size caps.  This is the boundary even where unprivileged user namespaces are
+    blocked (e.g. nested inside a rootless-podman distrobox), which is why it's the
+    default.  When we ourselves run inside a container and `distrobox-host-exec` exists,
+    the run is dispatched to the host runtime (shared $HOME ⇒ the store path matches),
+    sidestepping podman-in-podman."""
+    name = "container"
+    tool_root = "/host"
+
+    def __init__(self, cfg: dict | None = None):
+        cfg = cfg or {}
+        self.image = str(cfg.get("image") or "docker.io/library/python:3.12-slim")
+        self.pref = str(cfg.get("runtime") or "auto").lower()
+
+    def runtime(self) -> str | None:
+        order = ([self.pref] if self.pref in ("podman", "docker")
+                 else ["podman", "docker"])
+        for rt in order:
+            if shutil.which(rt):
+                return rt
+        return None
+
+    def _prefix(self) -> list:
+        # Inside a container with a host bridge, run the runtime ON THE HOST (avoids
+        # nested podman); shared $HOME keeps the store path identical either side.
+        if os.path.exists("/run/.containerenv") and shutil.which("distrobox-host-exec"):
+            return ["distrobox-host-exec"]
+        return []
+
+    def image_present(self) -> bool:
+        rt = self.runtime()
+        if not rt:
+            return False
+        try:
+            r = subprocess.run(self._prefix() + [rt, "image", "exists", self.image],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                               timeout=15)
+            if r.returncode == 0:
+                return True
+            # docker has no `image exists`; fall back to inspect
+            r = subprocess.run(self._prefix() + [rt, "image", "inspect", self.image],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                               timeout=15)
+            return r.returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            return False
 
     def available(self) -> bool:
-        return sys.platform.startswith("linux") and bool(shutil.which("bwrap"))
+        # A runtime alone isn't enough — the image must be provisioned (install.sh
+        # sandbox / a one-time pull), because we never pull mid-conversation (egress
+        # belongs to the broker).  Absent image ⇒ not available ⇒ own_tools stay off
+        # with a note that names the fix.
+        return self.runtime() is not None and self.image_present()
 
-    def argv(self, store: Path, tool_py: Path, py: str) -> list:
-        # /tmp stays READ-ONLY (part of the whole-tree bind) so "read anywhere" really
-        # means anywhere, /tmp included; writable scratch is TMPDIR inside the store, so
-        # well-behaved tempfile use lands in the sandbox and a hard-coded /tmp write fails
-        # (correctly — that's outside the sandbox).
+    def argv(self, store: Path, tool_dir: Path, py: str, limits: dict) -> list:
+        rt = self.runtime()
+        fsize = max(1, int(limits.get("max_write_mb", 32))) * 1024 * 1024
+        mem = max(64, int(limits.get("max_mem_mb", 512)))
+        cpu = max(1, int(limits.get("cpu_s", 12)))
+        return self._prefix() + [
+            rt, "run", "--rm",
+            "--network", "none",                       # no network, full stop
+            "--read-only",                             # container rootfs read-only …
+            "--tmpfs", "/tmp:rw,size=64m",             # … with ephemeral scratch
+            "-v", f"/:/host:ro",                       # read anywhere (host tree, read-only)
+            "-v", f"{store}:/store:rw",                # write only here
+            "-v", f"{tool_dir}:/tool:ro",              # the tool's code, read-only
+            "-w", "/store",
+            "--security-opt", "no-new-privileges",
+            "--cap-drop", "ALL",
+            "--pids-limit", "128",
+            "--memory", f"{mem}m",
+            "--ulimit", f"fsize={fsize}:{fsize}",
+            "--ulimit", f"cpu={cpu}:{cpu + 1}",
+            "-e", "HOME=/store", "-e", "TOOL_ROOT=/host",
+            "-e", "PYTHONDONTWRITEBYTECODE=1", "-e", "TMPDIR=/tmp",
+            "-i",                                      # tool reads args JSON on stdin
+            self.image, "python3", "/tool/tool.py",
+        ]
+
+
+class _BwrapBackend(_Backend):
+    """Linux fallback: bubblewrap namespaces — lighter than a container (no image), but
+    needs unprivileged user namespaces, which a nested rootless-podman container often
+    forbids.  Whole tree read-only, the store laid over it writable, no network, dies
+    with the parent.  Sees real host paths, so TOOL_ROOT="" ."""
+    name = "bwrap"
+    tool_root = ""
+    uses_preexec = True
+
+    def available(self) -> bool:
+        return sys.platform.startswith("linux") and bool(self._bwrap()) and self._works()
+
+    def _bwrap(self) -> str | None:
+        # Prefer an in-tree ./bin/bwrap (install.sh can fetch a static one, no sudo),
+        # then a system one.
+        local = Path(__file__).resolve().parent / "bin" / "bwrap"
+        if local.is_file() and os.access(local, os.X_OK):
+            return str(local)
+        return shutil.which("bwrap")
+
+    def _works(self) -> bool:
+        # PRESENCE isn't capability: nested userns may be blocked.  Prove it once by
+        # running a trivial sandbox; cache the verdict.
+        if getattr(self, "_ok", None) is not None:
+            return self._ok
+        try:
+            r = subprocess.run([self._bwrap(), "--ro-bind", "/", "/", "--unshare-all",
+                                "--die-with-parent", "--", "/bin/true"],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                               timeout=15)
+            self._ok = (r.returncode == 0)
+        except (OSError, subprocess.TimeoutExpired):
+            self._ok = False
+        return self._ok
+
+    def argv(self, store: Path, tool_dir: Path, py: str, limits: dict) -> list:
+        tool_py = Path(tool_dir) / "tool.py"
         return [
-            shutil.which("bwrap"),
+            self._bwrap(),
             "--ro-bind", "/", "/",              # read anywhere (whole host tree, read-only) …
             "--proc", "/proc",
             "--dev", "/dev",
@@ -113,27 +229,38 @@ class _BwrapBackend(_Backend):
             "--setenv", "PATH", "/usr/bin:/bin",
             "--setenv", "PYTHONDONTWRITEBYTECODE", "1",
             "--setenv", "TMPDIR", str(store),
+            "--setenv", "TOOL_ROOT", "",
             "--", py, str(tool_py),
         ]
 
 
-# macOS (sandbox-exec, SBPL) and Windows (AppContainer / restricted token / WSL hop)
-# backends slot in here with the same .available()/.argv() shape.  Registered
-# most-specific-first; the first available one wins.
-_BACKENDS: list = [_BwrapBackend()]
+# macOS (sandbox-exec, SBPL) and Windows (AppContainer / restricted token) native
+# backends could slot in here too, but the container backend already covers all three
+# platforms uniformly, so it leads.  Order = preference; the first AVAILABLE one wins.
+def _backends(cfg: dict | None = None) -> list:
+    cfg = cfg or {}
+    pref = str(cfg.get("backend") or "auto").lower()
+    container = _ContainerBackend(cfg)
+    bwrap = _BwrapBackend()
+    if pref == "container":
+        return [container]
+    if pref == "bwrap":
+        return [bwrap]
+    return [container, bwrap]            # auto: prefer the platform-independent one
 
 
-def sandbox_backend() -> _Backend | None:
-    """The active containment backend for this OS, or None when none is available."""
-    for b in _BACKENDS:
+def sandbox_backend(cfg: dict | None = None) -> _Backend | None:
+    """The active containment backend, or None when none is available.  `cfg` is the
+    own_tools config block (backend/runtime/image); absent ⇒ auto with defaults."""
+    for b in _backends(cfg):
         if b.available():
             return b
     return None
 
 
-def available() -> bool:
-    """True when SOME sandbox backend can contain writes on this platform."""
-    return sandbox_backend() is not None
+def available(cfg: dict | None = None) -> bool:
+    """True when SOME sandbox backend can contain writes here."""
+    return sandbox_backend(cfg) is not None
 
 
 # ── the seed tools (materialised on first init) ──────────────────────────────
@@ -142,16 +269,19 @@ def available() -> bool:
 # P3's idle toolsmith will write new ones through the exact same install path.
 
 _SEED_READ_LINES = '''\
-import sys, json
+import sys, json, os
 a = json.load(sys.stdin)
 path = str(a.get("path") or "")
 start = max(1, int(a.get("start", 1)))
 count = min(2000, max(1, int(a.get("count", 200))))
 if not path:
     print(json.dumps({"error": "no path given"})); sys.exit(0)
+# TOOL_ROOT is the sandbox's prefix for reading host files: "" under bwrap (real
+# paths), "/host" under the container backend.  Prepend it to an absolute host path.
+read_path = os.environ.get("TOOL_ROOT", "") + path if path.startswith("/") else path
 lines, total = [], 0
 try:
-    with open(path, "r", errors="replace") as f:
+    with open(read_path, "r", errors="replace") as f:
         for i, line in enumerate(f, 1):
             total = i
             if i < start:
@@ -187,7 +317,7 @@ SEED_TOOLS = {
         "code": _SEED_READ_LINES,
         "manifest": {
             "description": "Read a slice of any text file on this machine (read-only). "
-                           "Give the path and optionally a starting line and how many lines.",
+                           "Give an absolute path and optionally a starting line and count.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -250,37 +380,43 @@ def run_tool(tool_dir: Path, args: dict, *, store: Path, cfg: dict | None = None
     require = bool(cfg.get("require_sandbox", True))
     timeout_s = float(cfg.get("timeout_s", 10))
     max_out = int(cfg.get("max_output_kb", 64)) * 1024
-    max_write_mb = int(cfg.get("max_write_mb", 32))
     py = cfg.get("python") or sys.executable or "python3"
-    tool_py = Path(tool_dir) / "tool.py"
-    if not tool_py.is_file():
+    tool_dir = Path(tool_dir)
+    if not (tool_dir / "tool.py").is_file():
         return {"ok": False, "error": f"tool has no tool.py ({tool_dir})"}
     store = Path(store)
     store.mkdir(parents=True, exist_ok=True)
+    limits = {"max_write_mb": int(cfg.get("max_write_mb", 32)),
+              "max_mem_mb": int(cfg.get("max_mem_mb", 512)),
+              "cpu_s": int(timeout_s) + 2}
 
-    backend = sandbox_backend()
-    contained = False
+    backend = sandbox_backend(cfg)
+    use_preexec = False
     if backend is not None:
-        argv = backend.argv(store, tool_py, py)
+        argv = backend.argv(store, tool_dir, py, limits)
+        use_preexec = backend.uses_preexec
         contained = True
     elif not require:
         # Explicit informed opt-out: NO write containment.  cwd=store is a courtesy, not
         # a boundary — the caller accepted this by setting require_sandbox=false.
-        argv = [py, str(tool_py)]
+        argv = [py, str(tool_dir / "tool.py")]
+        use_preexec = True
+        contained = False
     else:
         return {"ok": False, "error": "sandbox unavailable — no write-containment backend "
-                "on this platform (Linux needs bubblewrap installed), so the tool was not "
-                "run. Install the backend, or set own_tools.require_sandbox=false to accept "
-                "the risk on a trusted single-user box."}
+                "is ready here. The default is a container runtime (podman/docker) with the "
+                "sandbox image provisioned (`./install.sh sandbox`); on Linux a working "
+                "bubblewrap is the fallback. Provision one, or set "
+                "own_tools.require_sandbox=false to accept the risk on a trusted box."}
 
     payload = json.dumps(args or {})
     if len(payload) > _TOOL_STDIN_LIMIT:
         return {"ok": False, "error": "arguments too large"}
-    # preexec_fn is POSIX-only; a backend that builds its own env/cwd (bwrap --chdir)
-    # doesn't need our cwd, the uncontained fallback does.
+    # preexec rlimits are POSIX-only and only for backends that don't set their own
+    # (bwrap / uncontained).  The container backend passes --ulimit/--memory in argv.
     kw: dict = {}
-    if os.name == "posix":
-        kw["preexec_fn"] = _rlimits(max_write_mb, int(timeout_s) + 2)
+    if use_preexec and os.name == "posix":
+        kw["preexec_fn"] = _rlimits(limits["max_write_mb"], limits["cpu_s"])
     if not contained:
         kw["cwd"] = str(store)
     t0 = time.monotonic()
@@ -480,7 +616,8 @@ class Toolbox:
     def _seed(self) -> None:
         """Materialise the exemplar tools if the box has none yet.  Silent when they are
         already present or when the sandbox is unavailable (they'd fail their self-test)."""
-        if self.names() or not (available() or not self.cfg.get("require_sandbox", True)):
+        if self.names() or not (available(self.cfg)
+                                or not self.cfg.get("require_sandbox", True)):
             return
         for name, spec in SEED_TOOLS.items():
             try:

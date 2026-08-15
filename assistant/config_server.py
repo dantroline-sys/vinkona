@@ -974,7 +974,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 otc = (self._cfg().get("tools", {}) or {}).get("own_tools", {}) or {}
                 box = self._toolbox()
-                be = TOOLBOX.sandbox_backend()
+                be = TOOLBOX.sandbox_backend(otc)
                 return self._json(200, {
                     "enabled": bool(otc.get("enabled")),
                     "require_sandbox": bool(otc.get("require_sandbox", True)),

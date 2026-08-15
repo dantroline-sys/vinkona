@@ -277,16 +277,17 @@ class CascadeServer:
             _otc = {}
         if _otc.get("enabled"):
             require = bool(_otc.get("require_sandbox", True))
-            if require and not self._toolbox_mod.available():
-                print("[cascade] own_tools enabled but no sandbox backend on this platform "
-                      "(Linux needs bubblewrap) — leaving them OFF (write containment can't "
-                      "be guaranteed). Install the backend or set "
-                      "tools.own_tools.require_sandbox=false to accept the risk.", flush=True)
+            if require and not self._toolbox_mod.available(_otc):
+                print("[cascade] own_tools enabled but no sandbox backend is ready "
+                      "(container runtime + image via ./install.sh sandbox, or a working "
+                      "bubblewrap) — leaving them OFF (write containment can't be "
+                      "guaranteed). Provision one, or set tools.own_tools.require_sandbox="
+                      "false to accept the risk.", flush=True)
             else:
                 root = (_otc.get("dir") or "").strip() or str(
                     Path(__file__).resolve().parent / "var" / "own_tools")
                 self._toolbox = self._toolbox_mod.Toolbox(root, cfg=_otc)
-                _be = self._toolbox_mod.sandbox_backend()
+                _be = self._toolbox_mod.sandbox_backend(_otc)
                 print(f"[cascade] own_tools: {len(self._toolbox.names())} tool(s) at {root} "
                       f"(backend: {_be.name if _be else 'NONE — uncontained (opted in)'})",
                       flush=True)

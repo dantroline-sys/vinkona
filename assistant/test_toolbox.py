@@ -25,7 +25,11 @@ def _load(name):
 
 
 tb = _load("toolbox")
-HAVE_BWRAP = tb.available()
+# Force the bwrap backend for the deterministic containment tests: it works on a bare
+# Linux box (this CI), whereas the container backend needs an image we can't pull here.
+# The container backend gets its own availability-gated test below.
+BW = {"backend": "bwrap"}
+HAVE_BWRAP = tb._BwrapBackend().available()
 
 PASS = FAIL = SKIP = 0
 def check(name, cond):
@@ -41,7 +45,7 @@ def skip(name, why):
 
 
 def _box(td, **cfg):
-    return tb.Toolbox(Path(td) / "own", cfg=cfg, seed=False)
+    return tb.Toolbox(Path(td) / "own", cfg={**BW, **cfg}, seed=False)
 
 
 # ── registry + install + self-test ───────────────────────────────────────────
@@ -50,7 +54,7 @@ def test_seed_and_catalogue():
     if not HAVE_BWRAP:
         return skip("seed tools install + catalogue", "no bwrap")
     with tempfile.TemporaryDirectory() as td:
-        box = tb.Toolbox(Path(td) / "own", cfg={}, seed=True)
+        box = tb.Toolbox(Path(td) / "own", cfg=BW, seed=True)
         names = set(box.names())
         check("both seed tools installed", {"read_lines", "save_note"} <= names)
         cat = box.catalogue()
@@ -116,7 +120,7 @@ def test_read_anywhere():
     if not HAVE_BWRAP:
         return skip("read anywhere", "no bwrap")
     with tempfile.TemporaryDirectory() as td:
-        box = tb.Toolbox(Path(td) / "own", cfg={}, seed=True)
+        box = tb.Toolbox(Path(td) / "own", cfg=BW, seed=True)
         # a real file OUTSIDE the store, created before the run
         secret = Path(td) / "outside.txt"
         secret.write_text("line one\nline two\nline three\n")
@@ -129,7 +133,7 @@ def test_write_is_contained():
     if not HAVE_BWRAP:
         return skip("write containment (the guarantee)", "no bwrap")
     with tempfile.TemporaryDirectory() as td:
-        box = tb.Toolbox(Path(td) / "own", cfg={}, seed=True)
+        box = tb.Toolbox(Path(td) / "own", cfg=BW, seed=True)
         # 1) a normal write lands INSIDE the store
         r = box.call("save_note", {"name": "diary", "text": "kept"})
         check("a contained write succeeds", r["ok"] and r["result"]["saved"] == "diary.txt")
@@ -159,7 +163,7 @@ def test_escape_via_direct_run():
         (tdir / "tool.py").write_text(
             'import json; open(%r,"w").write("x"); print(json.dumps({"ok":1}))' % str(target))
         (tdir / "manifest.json").write_text('{"name":"raw"}')
-        r = tb.run_tool(tdir, {}, store=box.store, cfg={})
+        r = tb.run_tool(tdir, {}, store=box.store, cfg=BW)
         check("writing outside the store errors at runtime", not r["ok"])
         check("the outside file was never created", not target.exists())
 
@@ -179,7 +183,7 @@ def test_no_network():
             '  r="blocked"\n'
             'print(json.dumps({"net": r}))')
         (tdir / "manifest.json").write_text('{"name":"netcall"}')
-        r = tb.run_tool(tdir, {}, store=box.store, cfg={})
+        r = tb.run_tool(tdir, {}, store=box.store, cfg=BW)
         check("the sandbox has no network", r["ok"] and r["result"]["net"] == "blocked")
 
 
@@ -192,7 +196,7 @@ def test_timeout():
         tdir.mkdir(parents=True)
         (tdir / "tool.py").write_text("import time\nwhile True: time.sleep(0.1)")
         (tdir / "manifest.json").write_text('{"name":"spinner"}')
-        r = tb.run_tool(tdir, {}, store=box.store, cfg={"timeout_s": 1})
+        r = tb.run_tool(tdir, {}, store=box.store, cfg={**BW, "timeout_s": 1})
         check("a runaway tool is killed by the timeout",
               not r["ok"] and "timed out" in r["error"])
 
@@ -208,17 +212,17 @@ def test_require_sandbox_guard():
         if HAVE_BWRAP:
             # simulate a platform with no backend by neutralising the seam
             orig = tb.sandbox_backend
-            tb.sandbox_backend = lambda: None
+            tb.sandbox_backend = lambda *a, **k: None
             try:
-                r = tb.run_tool(tdir, {}, store=box.store, cfg={"require_sandbox": True})
+                r = tb.run_tool(tdir, {}, store=box.store, cfg={**BW, "require_sandbox": True})
                 check("no backend + require_sandbox → refuses to run",
                       not r["ok"] and "containment" in r["error"])
-                r2 = tb.run_tool(tdir, {}, store=box.store, cfg={"require_sandbox": False})
+                r2 = tb.run_tool(tdir, {}, store=box.store, cfg={**BW, "require_sandbox": False})
                 check("explicit opt-out runs uncontained", r2["ok"])
             finally:
                 tb.sandbox_backend = orig
         else:
-            r = tb.run_tool(tdir, {}, store=box.store, cfg={"require_sandbox": True})
+            r = tb.run_tool(tdir, {}, store=box.store, cfg={**BW, "require_sandbox": True})
             check("no backend + require_sandbox → refuses to run",
                   not r["ok"] and "containment" in r["error"])
 
@@ -237,7 +241,7 @@ def test_bridge_wiring():
         return skip("bridge catalogue + dispatch", "aiohttp not in this env")
     bridge = _load("llm_bridge")
     with tempfile.TemporaryDirectory() as td:
-        box = tb.Toolbox(Path(td) / "own", cfg={}, seed=True)
+        box = tb.Toolbox(Path(td) / "own", cfg=BW, seed=True)
         b = bridge.LLMBridge(server_state=types.SimpleNamespace(), fast_lm_url="http://f",
                              big_lm_url=None, inject_time=False, confirm_required=False,
                              own_toolbox=box, own_tools_max=12)
@@ -255,7 +259,50 @@ def test_bridge_wiring():
               "saved" in miss and (box.store / "x.txt").is_file())
 
 
+# ── container backend (the platform-independent default) ─────────────────────
+
+def test_container_backend():
+    """When a container runtime + the sandbox image are present, the container backend
+    contains writes exactly like bwrap — read anywhere (via /host), write only in the
+    store, no network.  Skips loudly when the image isn't provisioned (CI/sandboxes)."""
+    cb = tb._ContainerBackend({})
+    if not cb.runtime():
+        return skip("container backend", "no podman/docker")
+    if not cb.image_present():
+        return skip("container backend", f"image not pulled ({cb.image}) — ./install.sh sandbox")
+    with tempfile.TemporaryDirectory() as td:
+        box = tb.Toolbox(Path(td) / "own", cfg={"backend": "container"}, seed=True)
+        check("container: seed tools install", box.has("read_lines") and box.has("save_note"))
+        secret = Path(td) / "c_outside.txt"
+        secret.write_text("cA\ncB\ncC\n")
+        r = box.call("read_lines", {"path": str(secret), "count": 5})
+        check("container: reads a host file (via TOOL_ROOT)",
+              r["ok"] and "cB" in r["result"]["lines"])
+        r = box.call("save_note", {"name": "cnote", "text": "kept"})
+        check("container: contained write lands in the store",
+              r["ok"] and (box.store / "cnote.txt").is_file())
+        target = Path(td) / "c_escape.txt"
+        esc = ('import json; open(%r,"w").write("x"); print(json.dumps({"ok":1}))'
+               % str(target))
+        box.install("cescape", esc, {"description": "escape"}, {"input": {}})
+        check("container: an escaping write fails its self-test",
+              not box.has("cescape") and not target.exists())
+
+
+def test_backend_selection():
+    """auto prefers the container backend; explicit picks are honoured; TOOL_ROOT differs."""
+    check("bwrap backend advertises TOOL_ROOT=''", tb._BwrapBackend().tool_root == "")
+    check("container backend advertises TOOL_ROOT='/host'",
+          tb._ContainerBackend({}).tool_root == "/host")
+    order = [b.name for b in tb._backends({})]
+    check("auto prefers container over bwrap", order == ["container", "bwrap"])
+    check("explicit backend=bwrap is honoured",
+          [b.name for b in tb._backends({"backend": "bwrap"})] == ["bwrap"])
+
+
 def main():
+    test_backend_selection()
+    test_container_backend()
     test_seed_and_catalogue()
     test_install_validation()
     test_install_selftest_gate()

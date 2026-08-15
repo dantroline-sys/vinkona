@@ -125,6 +125,39 @@ def main() -> int:
     else:
         row(MEH, "config", "not yet — seeded from the example on first install")
 
+    # Own-tools sandbox — only load-bearing when the feature is enabled.  The probe is
+    # empirical: the bwrap backend actually RUNS a trivial sandbox (so a container that
+    # blocks nested user namespaces is caught here, not at first tool use), and the
+    # container backend checks the runtime AND that the image is pulled.
+    try:
+        cfg = json.loads((ROOT / "config" / "config.json").read_text())
+        otc = (cfg.get("tools") or {}).get("own_tools") or {}
+    except (OSError, ValueError):
+        otc = {}
+    if otc.get("enabled"):
+        try:
+            sys.path.insert(0, str(ROOT))
+            import toolbox as _tb
+            be = _tb.sandbox_backend(otc)
+            if be is not None:
+                row(GOOD, "tools sandbox", f"{be.name} — ready (read anywhere, "
+                    "write only in her store)")
+            else:
+                problems += 1
+                cb = _tb._ContainerBackend(otc)
+                if cb.runtime() and not cb.image_present():
+                    fix = f"./install.sh sandbox   (pull the image {cb.image})"
+                elif not cb.runtime():
+                    fix = "./install.sh sandbox   (installs/uses podman or docker)"
+                else:
+                    fix = "./install.sh sandbox"
+                row(BAD, "tools sandbox", "own_tools ON but no working sandbox backend",
+                    fix)
+        except Exception as e:
+            row(MEH, "tools sandbox", f"could not probe ({e})")
+    else:
+        row(MEH, "tools sandbox", "own_tools off (Tools tab / tools.own_tools.enabled)")
+
     chat = cfg_port(["server", "port"], 8998)
     panel = cfg_port(["config_server", "port"], 8090)
     print()
