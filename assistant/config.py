@@ -946,6 +946,19 @@ DEFAULTS: dict = {
             # (their content reads as empty), e.g. ["~/.ssh", "config/config.json"].
             "read_paths": [],               # [] = read anywhere; else the only folders exposed
             "read_denylist": [],            # paths hidden from tools even under read-anywhere
+            # Faculties: let one of her sandboxed tools call her OTHER tools (kb_search,
+            # wikipedia, calculate, …) mid-run.  The sandbox stays network-free — the tool asks
+            # the trusted host over a pipe, and the host runs ONLY the faculties in `allow`
+            # (never a self-modifying/recursive one, never another of her own tools).  Off by
+            # default.  The default allow-list is read-only knowledge/compute; add more names
+            # (e.g. a Mac tool) deliberately — a faculty that writes or sends is your call.
+            "faculties": {
+                "enabled": False,               # let her tools call her other tools
+                "allow": ["kb_search", "kb_ask", "library_search", "search_wikipedia",
+                          "calculate", "news_search", "weather"],
+                "max_calls": 8,                 # faculty calls per single tool run
+                "timeout_s": 20,                # per faculty call (bounded by the tool's overall timeout)
+            },
             # The idle toolsmith: between chats, the big LM reflects and either writes herself a
             # small sandboxed tool (self-tested before it's ever offered) or records a "tool idea"
             # it can't build.  Off by default; needs own_tools on and the big LM up.
@@ -1485,6 +1498,10 @@ FIELD_LEVELS: dict[str, str] = {
     "tools.own_tools.max_tools_offered": "advanced",
     "tools.own_tools.read_paths": "advanced",
     "tools.own_tools.read_denylist": "advanced",
+    "tools.own_tools.faculties.enabled": "basic",
+    "tools.own_tools.faculties.allow": "advanced",
+    "tools.own_tools.faculties.max_calls": "expert",
+    "tools.own_tools.faculties.timeout_s": "expert",
     "tools.own_tools.toolsmith.enabled": "basic",
     "tools.own_tools.toolsmith.min_interval_s": "expert",
     "tools.own_tools.toolsmith.max_repair": "expert",

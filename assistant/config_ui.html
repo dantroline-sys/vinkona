@@ -2053,8 +2053,12 @@ async function loadTools() {
       ? `container (<code>${escHtml(dg.runtime || 'podman/docker')}</code>` +
         `${dg.host_bridge ? ', via the host bridge' : ''}, image <code>${escHtml(dg.image || '')}</code>)`
       : `<code>${escHtml(d.backend)}</code>`;
+    const fac = d.faculties || {};
+    const facLine = fac.enabled
+      ? `<br>Faculties: her tools may call <code>${escHtml((fac.allow||[]).join(', ') || '(none listed)')}</code> (mediated, still no network).`
+      : '';
     sb.innerHTML = `Sandbox: ${how} ✓ — a tool may read anywhere but can only write inside ` +
-      `its store (<code>${escHtml(d.store)}</code>). No network.`;
+      `its store (<code>${escHtml(d.store)}</code>). No network.` + facLine;
     sb.className = 'hint';
   } else {
     const reason = dg.reason || 'no containment backend is ready';

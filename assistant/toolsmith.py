@@ -50,8 +50,30 @@ def _s(v: tp.Any, n: int = 4000) -> str:
     return str(v or "")[:n]
 
 
+def _faculties_block(fac_allow: list) -> str:
+    """The extra contract for a tool that calls Vinkona's OTHER tools, shown only when
+    faculties are enabled.  Empty string otherwise."""
+    if not fac_allow:
+        return ""
+    names = ", ".join(fac_allow)
+    return f"""
+OPTIONAL — calling your other tools.  If (and only if) the tool needs one of these
+faculties, it may call them (there is still no network; the host runs them for you):
+  {names}
+A faculties tool has a DIFFERENT shape — it uses the injected `faculties` helper instead of
+reading stdin / printing stdout directly, and it MUST set "uses_faculties": true:
+  import faculties
+  a = faculties.args()                       # the input arguments (a dict)
+  r = faculties.call("kb_search", {{"query": a["q"]}})   # -> that faculty's result
+  faculties.done({{"answer": r}})            # emit the final result and exit
+For the self-test, add "faculty_stubs" to the test giving a canned result per faculty you
+call (the self-test never hits the real tools), e.g.
+  "test": {{"input": {{"q":"x"}}, "faculty_stubs": {{"kb_search": {{"hits": []}}}}, "expect_keys": ["answer"]}}
+Write the tool to handle an empty/most-any faculty result."""
+
+
 def _decide_prompt(*, context: str, roster: list, ideas: list, faculties: list,
-                   usage: dict, logs: list, max_reached: bool) -> str:
+                   usage: dict, logs: list, max_reached: bool, fac_allow: list) -> str:
     have = "\n".join(f"- {t['name']}: {t.get('description','')}" for t in roster) \
         or "(none yet)"
     idea_lines = "\n".join(f"- {i.get('title','')}" for i in ideas) or "(none yet)"
@@ -63,6 +85,8 @@ def _decide_prompt(*, context: str, roster: list, ideas: list, faculties: list,
                    if unused else "")
     build_note = ("\nYou already have plenty of tools — DO NOT choose \"build\" this time; "
                   "only \"idea\" or \"none\"." if max_reached else "")
+    fac_note = (f"\nA tool you build MAY call these faculties of yours: {', '.join(fac_allow)}."
+                if fac_allow else "")
     return f"""{context}
 You can make small tools for yourself to use during conversations. Between chats you review
 how things have gone and decide whether a new one would help.
@@ -82,7 +106,7 @@ Recent interactions:
 {convo}
 
 Ask yourself: is there a small, safe, single-purpose tool that would have helped, or a
-problem you can see and a concrete fix for?{build_note}
+problem you can see and a concrete fix for?{fac_note}{build_note}
 
 Reply with ONE JSON object:
 - To build one now (only if it fits the rules above as a small Python script):
@@ -95,9 +119,10 @@ Reply with ONE JSON object:
 Choose exactly one. Prefer "none" over a weak or redundant tool."""
 
 
-def _code_prompt(*, name: str, description: str, plan: str,
+def _code_prompt(*, name: str, description: str, plan: str, fac_allow: list,
                  prev_code: str = "", error: str = "") -> str:
     base = f"""{_TOOL_CONTRACT}
+{_faculties_block(fac_allow)}
 
 Write the tool "{name}".
 What it should do: {description}
@@ -106,8 +131,10 @@ Plan: {plan}
 Reply with ONE JSON object:
 {{"code":"<the full Python file as a string>",
   "parameters":{{"type":"object","properties":{{...}},"required":[...]}},
+  "uses_faculties": false,
   "test":{{"input":{{...}},"expect_keys":["..."]}}}}
 - "parameters" is the JSON-schema of the stdin arguments (for the menu).
+- Set "uses_faculties": true ONLY if the code imports the faculties helper (see above).
 - "test.input" is a concrete arguments object that exercises the tool; "expect_keys" are
   keys that MUST appear in its output. The test runs in the sandbox and must pass, so pick
   an input that works there (e.g. read a file that exists like /etc/hostname)."""
@@ -130,10 +157,14 @@ async def run(toolbox, chat_json: tp.Callable, *, logs: list | None = None,
     faculties = faculties or []
     logs = logs or []
     at_cap = len(roster) >= int(max_tools)
+    # Faculties she may let a tool call (empty unless enabled) — teaches the LM what a tool
+    # can reach, so it can write a faculties tool when it helps.
+    _fc = (getattr(toolbox, "cfg", {}) or {}).get("faculties") or {}
+    fac_allow = list(_fc.get("allow") or []) if _fc.get("enabled") else []
 
     decision = await chat_json(_decide_prompt(
         context=context, roster=roster, ideas=ideas, faculties=faculties,
-        usage=usage, logs=logs, max_reached=at_cap), think=True)
+        usage=usage, logs=logs, max_reached=at_cap, fac_allow=fac_allow), think=True)
     if not isinstance(decision, dict):
         return {"action": "none", "reason": "no decision from the big LM"}
 
@@ -167,13 +198,14 @@ async def run(toolbox, chat_json: tp.Callable, *, logs: list | None = None,
     prev_code, last_err = "", ""
     for attempt in range(1, int(max_repair) + 2):        # first try + max_repair retries
         spec = await chat_json(_code_prompt(
-            name=name, description=description, plan=plan,
+            name=name, description=description, plan=plan, fac_allow=fac_allow,
             prev_code=prev_code, error=last_err), think=True)
         if not isinstance(spec, dict) or not isinstance(spec.get("code"), str):
             last_err = "the big LM did not return usable code"
             continue
         prev_code = spec["code"]
         manifest = {"description": description, "author": "toolsmith",
+                    "uses_faculties": bool(spec.get("uses_faculties")),
                     "parameters": spec.get("parameters")}
         test = spec.get("test")
         if not isinstance(test, dict) or not isinstance(test.get("input"), dict):

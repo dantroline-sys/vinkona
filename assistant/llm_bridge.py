@@ -859,6 +859,10 @@ class LLMBridge:
         # must not be silently executed as one.  Refreshed every turn when the catalogue
         # is built.
         self._own_offered: set = set()
+        # Faculties-RPC: a sandboxed tool may call her allow-listed faculties (kb_search,
+        # wikipedia, …) through the host.  Bound lazily on first own-tool use because it needs
+        # the running loop (the tool runs off-loop in a thread and calls back onto it).
+        self._faculty_bound = False
         # Durable orchestration-trace capture for the future skill-LoRA loop (or None).
         # _turn_tool_calls accumulates the tool calls the 9B made this turn, for the record.
         self.capture = capture
@@ -2198,6 +2202,7 @@ class LLMBridge:
         if (getattr(self, "own_tools_on", False)
                 and name in getattr(self, "_own_offered", set())
                 and self.own_tools.has(name)):
+            self._ensure_faculty_dispatch()      # let her tool reach her faculties (allow-listed)
             try:
                 res = await asyncio.to_thread(self.own_tools.call, name, args)
             except Exception as exc:
@@ -2214,6 +2219,46 @@ class LLMBridge:
         if self.tools:
             return await self.tools.call(name, args)
         return f"(no tool named {name} is available)"
+
+    # ── Faculties-RPC: a sandboxed tool calling her OTHER tools ────────────────
+    def _ensure_faculty_dispatch(self) -> None:
+        """Bind the toolbox's faculty executor once, capturing the running loop.  The tool
+        runs in a worker thread (asyncio.to_thread), so its faculty requests are marshalled
+        back onto this loop with run_coroutine_threadsafe — the loop is free to service them
+        because the tool itself isn't running on it."""
+        if self._faculty_bound or self.own_tools is None:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        fc = (getattr(self.own_tools, "cfg", {}) or {}).get("faculties") or {}
+        # bound by the tool's own wall-clock too; this just stops one call hanging forever
+        per_call = float(fc.get("timeout_s", 20)) + 5
+
+        def _dispatch(fname: str, fargs: dict) -> dict:
+            try:
+                fut = asyncio.run_coroutine_threadsafe(
+                    self._faculty_call(fname, fargs or {}), loop)
+                return fut.result(timeout=per_call)
+            except Exception as e:
+                return {"ok": False, "error": f"faculty '{fname}' failed: {e}"}
+
+        self.own_tools.set_faculty_dispatch(_dispatch)
+        self._faculty_bound = True
+
+    async def _faculty_call(self, name: str, args: dict) -> dict:
+        """Execute ONE faculty for a tool.  The allow-list is enforced in the sandbox runner
+        before we're ever called; here we add the re-entrancy guard (a tool may not call an
+        own-tool as a 'faculty') and route through the normal tool path, returning a plain
+        {ok, result} the tool can consume."""
+        if self.own_tools is not None and self.own_tools.has(name):
+            return {"ok": False, "error": f"'{name}' is one of her own tools, not a faculty"}
+        try:
+            out = await self._call_tool(name, args if isinstance(args, dict) else {})
+        except Exception as e:
+            return {"ok": False, "error": f"{name} failed: {e}"}
+        return {"ok": True, "result": out}
 
     # ── Self-determination (identity edits) ───────────────────────────────────
 

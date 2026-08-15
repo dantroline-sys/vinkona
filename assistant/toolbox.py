@@ -297,7 +297,7 @@ class _ContainerBackend(_Backend):
         return binds + self._deny_shadows()
 
     def argv(self, store: Path, tool_dir: Path, py: str, limits: dict,
-             name: str | None = None) -> list:
+             name: str | None = None, harness: Path | None = None) -> list:
         rt = self.runtime()
         fsize = max(1, int(limits.get("max_write_mb", 32))) * 1024 * 1024
         mem = max(64, int(limits.get("max_mem_mb", 512)))
@@ -308,6 +308,11 @@ class _ContainerBackend(_Backend):
         # otherwise leak a live container holding its memory reservation.  All names share
         # the CONTAINER_PREFIX so a crashed parent's leftovers can be reaped at startup.
         named = ["--name", name] if name else []
+        # The faculties helper (read-only) on PYTHONPATH, so a tool can `import faculties`.
+        harness_mount, pypath = [], []
+        if harness:
+            harness_mount = ["-v", f"{harness}:/harness:ro"]
+            pypath = ["-e", "PYTHONPATH=/harness"]
         return self._prefix() + [
             rt, "run", "--rm", *named,
             "--network", "none",                       # no network, full stop
@@ -315,6 +320,7 @@ class _ContainerBackend(_Backend):
             "--tmpfs", "/tmp:rw,size=64m",             # … with ephemeral scratch
             *self._ro_binds(),                         # read anywhere (host tree + every
                                                        # submount, all read-only)
+            *harness_mount,
             "-v", f"{store}:/store:rw",                # write only here
             "-v", f"{tool_dir}:/tool:ro",              # the tool's code, read-only
             "-w", "/store",
@@ -333,6 +339,7 @@ class _ContainerBackend(_Backend):
             "--ulimit", f"cpu={cpu}:{cpu + 1}",
             "-e", "HOME=/store", "-e", "TOOL_ROOT=/host",
             "-e", "PYTHONDONTWRITEBYTECODE=1", "-e", "TMPDIR=/tmp",
+            *pypath,
             "-i",                                      # tool reads args JSON on stdin
             self.image, "python3", "/tool/tool.py",
         ]
@@ -424,11 +431,21 @@ class _BwrapBackend(_Backend):
         return out
 
     def argv(self, store: Path, tool_dir: Path, py: str, limits: dict,
-             name: str | None = None) -> list:      # name unused: bwrap dies with us
+             name: str | None = None, harness: Path | None = None) -> list:  # name unused
         tool_py = Path(tool_dir) / "tool.py"
+        # The faculties helper on PYTHONPATH, so a tool can `import faculties`.  In
+        # read-anywhere mode the whole tree is ro-bound, so the harness is ALREADY visible at
+        # its real path — binding it again to a fresh /harness would fail ("can't mkdir on a
+        # read-only root").  Only when read_paths narrows the view do we bind it in.
+        harness_bind, pypath = [], ["--setenv", "PYTHONDONTWRITEBYTECODE", "1"]
+        if harness:
+            if self.read_paths:
+                harness_bind = ["--ro-bind", str(harness), str(harness)]
+            pypath += ["--setenv", "PYTHONPATH", str(harness)]
         return [
             self._bwrap(),
             *self._read_binds(),                # read anywhere / the share list, read-only …
+            *harness_bind,
             "--proc", "/proc",
             "--dev", "/dev",
             "--bind", str(store), str(store),   # … write only here (laid over the ro tree)
@@ -439,7 +456,7 @@ class _BwrapBackend(_Backend):
             "--clearenv",
             "--setenv", "HOME", str(store),
             "--setenv", "PATH", "/usr/bin:/bin",
-            "--setenv", "PYTHONDONTWRITEBYTECODE", "1",
+            *pypath,
             "--setenv", "TMPDIR", str(store),
             "--setenv", "TOOL_ROOT", "",
             "--", py, str(tool_py),
@@ -613,6 +630,96 @@ SEED_TOOLS = {
 }
 
 
+# ── faculties: a tool calling Vinkona's OTHER tools (mediated, allow-listed) ──
+# A sandboxed tool has no network (that's the whole point), so it can't reach the broker /
+# Mac host directly.  When a tool needs one of her real faculties (kb_search, wikipedia,
+# calculate, …) it asks the trusted HOST over a tiny line protocol on its own stdout/stdin,
+# and the host runs the call for it — but ONLY faculties on the allow-list, never a
+# self-modifying or recursive one, and never another own-tool.  Network stays severed; the
+# only thing that crosses the sandbox is a vetted request and its result.
+#
+# The tool speaks this protocol through the injected `faculties` helper below (import it,
+# call faculties.call(...), finish with faculties.done(...)).  A tool declares it needs the
+# channel with "uses_faculties": true in its manifest — that (and only that) switches the
+# runner from the plain one-shot mode to the streaming loop, so every existing one-shot tool
+# is completely unaffected.
+
+# Built-ins a tool may NEVER call, whatever the config says: they modify the self, recurse
+# into the big LM, or write memory.  The allow-list is the primary gate; this is the backstop.
+_FACULTY_HARD_DENY = frozenset({"revise_self", "deliberate", "note_person"})
+
+
+def faculty_permitted(name: str, cfg: dict) -> tuple[bool, str]:
+    """Is `name` a faculty this tool may call?  Enforced in the trusted runner, not the tool.
+    Returns (ok, reason-if-not)."""
+    fc = (cfg or {}).get("faculties") or {}
+    if not fc.get("enabled"):
+        return False, "faculties are turned off (tools.own_tools.faculties.enabled)"
+    if name in _FACULTY_HARD_DENY:
+        return False, f"'{name}' can never be called from a tool"
+    allow = fc.get("allow") or []
+    if name not in allow:
+        return False, f"'{name}' is not in the faculties allow-list"
+    return True, ""
+
+
+# The helper injected (read-only, on PYTHONPATH) into a faculty-using tool.  Kept here so it
+# is versioned with the protocol and covered by the tests.
+_FACULTIES_HARNESS = '''\
+"""faculties — the bridge a sandboxed tool uses to call Vinkona's other tools.
+
+The sandbox has no network; this speaks a tiny line protocol on stdin/stdout that the
+trusted host mediates.  Only faculties the host allows will answer.
+
+    import faculties
+    a = faculties.args()                       # this tool's input arguments (a dict)
+    hits = faculties.call("kb_search", {"query": a["q"]})   # -> the faculty's result
+    faculties.done({"answer": hits})           # emit the final result and exit
+"""
+import json, sys
+
+# The host writes the argument object as the FIRST line; read it once, up front, so it is
+# never mistaken for a faculty response later.
+def _read_args():
+    line = sys.stdin.readline()
+    try:
+        return json.loads(line) if line.strip() else {}
+    except ValueError:
+        return {}
+
+_ARGS = _read_args()
+_seq = 0
+
+
+def args():
+    return _ARGS
+
+
+def call(tool, arguments=None):
+    """Ask the host to run one of Vinkona's faculties. Returns its result (JSON-decoded if
+    possible, else the raw string). Raises RuntimeError if the host refuses or it fails."""
+    global _seq
+    _seq += 1
+    sys.stdout.write(json.dumps({"__rpc__": {"id": _seq, "tool": str(tool),
+                                             "args": arguments or {}}}) + "\\n")
+    sys.stdout.flush()
+    line = sys.stdin.readline()
+    if not line:
+        raise RuntimeError("faculty channel closed")
+    resp = json.loads(line)
+    if not resp.get("ok"):
+        raise RuntimeError(resp.get("error") or "faculty call failed")
+    return resp.get("result")
+
+
+def done(result):
+    """Emit the tool's final result and exit."""
+    sys.stdout.write(json.dumps({"__result__": result}) + "\\n")
+    sys.stdout.flush()
+    sys.exit(0)
+'''
+
+
 # ── the sandboxed runner ─────────────────────────────────────────────────────
 
 def _rlimits(max_write_mb: int, cpu_s: int):
@@ -632,11 +739,157 @@ def _rlimits(max_write_mb: int, cpu_s: int):
     return _apply
 
 
-def run_tool(tool_dir: Path, args: dict, *, store: Path, cfg: dict | None = None) -> dict:
+_MISSING = object()
+
+
+def _selftest_dispatch(stubs: dict | None):
+    """The faculty dispatcher used during a self-test: it never touches the real host (a
+    dream must not fire off calendar/kb calls), it just hands back a canned result per
+    faculty (from the test's optional `faculty_stubs`, else None) so a faculty-using tool
+    can be proven to RUN and follow the protocol.  The allow-list is still enforced by the
+    runner, so a tool asking for a disallowed faculty still fails its self-test."""
+    stubs = stubs or {}
+
+    def _d(name: str, args: dict) -> dict:
+        return {"ok": True, "result": stubs.get(name)}
+    return _d
+
+
+def _handle_rpc(rpc: dict, dispatch, cfg: dict, calls: int, max_calls: int) -> dict:
+    """Vet ONE faculty request from a tool and (if allowed) run it via `dispatch`.  All
+    gating is here in the trusted host, never in the tool."""
+    name = str(rpc.get("tool") or "")
+    fargs = rpc.get("args") if isinstance(rpc.get("args"), dict) else {}
+    if max_calls and calls >= max_calls:
+        return {"ok": False, "error": f"faculty call limit reached ({max_calls})"}
+    ok, why = faculty_permitted(name, cfg)
+    if not ok:
+        return {"ok": False, "error": why}
+    if dispatch is None:
+        return {"ok": False, "error": "no faculty dispatcher is available here"}
+    try:
+        r = dispatch(name, fargs)
+    except Exception as e:                       # a dispatcher fault must not crash the run
+        return {"ok": False, "error": f"faculty '{name}' failed: {e}"}
+    return r if isinstance(r, dict) else {"ok": True, "result": r}
+
+
+def _run_stream(argv: list, args_payload: dict, *, dispatch, cfg: dict, backend,
+                run_name: str | None, timeout_s: float, max_out: int, kw: dict) -> dict:
+    """Streaming runner for a faculty-using tool: send the arguments, then pump the tool's
+    stdout — dispatching each ``__rpc__`` request back through the host and returning on
+    ``__result__``.  A background thread drains stderr (so a chatty tool can't deadlock on a
+    full stderr pipe), and a wall-clock timer kills + reaps the sandbox if it overruns."""
+    import threading
+    fc = (cfg or {}).get("faculties") or {}
+    max_calls = max(0, int(fc.get("max_calls", 8)))
+    t0 = time.monotonic()
+    try:
+        proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, **kw)
+    except OSError as e:
+        return {"ok": False, "error": f"could not launch the sandbox: {e}"}
+
+    stderr_buf: list = []
+
+    def _drain():
+        try:
+            for chunk in iter(lambda: proc.stderr.read(4096), b""):
+                if sum(len(c) for c in stderr_buf) < 65536:
+                    stderr_buf.append(chunk)
+        except Exception:
+            pass
+
+    drainer = threading.Thread(target=_drain, daemon=True)
+    drainer.start()
+
+    killed = {"v": False}
+
+    def _kill():
+        killed["v"] = True
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+    timer = threading.Timer(timeout_s, _kill)
+    timer.start()
+
+    result = _MISSING
+    calls = 0
+    try:
+        try:
+            proc.stdin.write((json.dumps(args_payload) + "\n").encode("utf-8"))
+            proc.stdin.flush()
+        except (BrokenPipeError, OSError):
+            pass
+        for raw in proc.stdout:                  # blocks per line; ends at EOF / on kill
+            try:
+                msg = json.loads(raw.decode("utf-8", "replace"))
+            except ValueError:
+                continue                         # a stray print — ignore
+            if not isinstance(msg, dict):
+                continue
+            if "__result__" in msg:
+                result = msg["__result__"]
+                break
+            rpc = msg.get("__rpc__")
+            if isinstance(rpc, dict):
+                resp = _handle_rpc(rpc, dispatch, cfg, calls, max_calls)
+                calls += 1
+                try:
+                    proc.stdin.write((json.dumps(resp) + "\n").encode("utf-8"))
+                    proc.stdin.flush()
+                except (BrokenPipeError, OSError):
+                    break
+    finally:
+        timer.cancel()
+        if proc.poll() is None:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        try:
+            proc.wait(timeout=5)
+        except Exception:
+            pass
+        drainer.join(timeout=1)
+
+    elapsed = round(time.monotonic() - t0, 2)
+    if killed["v"]:
+        if backend is not None and run_name:
+            try:
+                backend.cleanup(run_name)
+            except Exception:
+                pass
+        return {"ok": False, "error": f"tool timed out after {timeout_s:.0f}s",
+                "elapsed_s": elapsed}
+    if result is _MISSING:
+        err = b"".join(stderr_buf).decode("utf-8", "replace").strip()
+        rc = proc.returncode
+        if err:
+            return {"ok": False, "error": f"tool exited {rc}: {err[:400]}", "elapsed_s": elapsed}
+        return {"ok": False, "error": "tool produced no result "
+                "(a faculties tool must finish with faculties.done(...))", "elapsed_s": elapsed}
+    res = {"ok": True, "result": result, "elapsed_s": elapsed}
+    if len(json.dumps(result, default=str)) > max_out:
+        res["truncated"] = True
+    return res
+
+
+def run_tool(tool_dir: Path, args: dict, *, store: Path, cfg: dict | None = None,
+             dispatch=None, harness: Path | None = None,
+             faculty_stubs: dict | None = None) -> dict:
     """Run one tool under the sandbox.  `store` is the writable directory to expose (the
     live shared store, or a throwaway dir for a self-test).  Returns a normalised dict:
     {ok, result|error, [truncated], elapsed_s}.  Never raises for a tool-level failure —
-    a crash, a timeout, a non-JSON stdout all come back as {ok:false, error:…}."""
+    a crash, a timeout, a non-JSON stdout all come back as {ok:false, error:…}.
+
+    A tool whose manifest sets ``uses_faculties`` runs in the STREAMING mode (it may call
+    Vinkona's allow-listed faculties via `dispatch`); every other tool runs one-shot exactly
+    as before.  `dispatch(name, args)->dict` is the trusted faculty executor (the caller
+    binds it); `harness` is the read-only dir holding faculties.py; `faculty_stubs` supplies
+    canned faculty results for a self-test."""
     cfg = cfg or {}
     require = bool(cfg.get("require_sandbox", True))
     timeout_s = float(cfg.get("timeout_s", 10))
@@ -645,6 +898,14 @@ def run_tool(tool_dir: Path, args: dict, *, store: Path, cfg: dict | None = None
     tool_dir = Path(tool_dir)
     if not (tool_dir / "tool.py").is_file():
         return {"ok": False, "error": f"tool has no tool.py ({tool_dir})"}
+    # Streaming (faculties) mode is opt-in per tool via the manifest flag, so every existing
+    # one-shot tool is untouched.
+    streaming = False
+    try:
+        _m = json.loads((tool_dir / "manifest.json").read_text())
+        streaming = bool(isinstance(_m, dict) and _m.get("uses_faculties"))
+    except (OSError, ValueError):
+        pass
     store = Path(store)
     store.mkdir(parents=True, exist_ok=True)
     limits = {"max_write_mb": int(cfg.get("max_write_mb", 32)),
@@ -657,7 +918,7 @@ def run_tool(tool_dir: Path, args: dict, *, store: Path, cfg: dict | None = None
     if backend is not None:
         if backend.wants_name:
             run_name = _next_run_name()
-        argv = backend.argv(store, tool_dir, py, limits, name=run_name)
+        argv = backend.argv(store, tool_dir, py, limits, name=run_name, harness=harness)
         use_preexec = backend.uses_preexec
         contained = True
     elif not require:
@@ -683,6 +944,16 @@ def run_tool(tool_dir: Path, args: dict, *, store: Path, cfg: dict | None = None
         kw["preexec_fn"] = _rlimits(limits["max_write_mb"], limits["cpu_s"])
     if not contained:
         kw["cwd"] = str(store)
+        if streaming and harness:               # uncontained: put the harness on PYTHONPATH
+            env = os.environ.copy()
+            env["PYTHONPATH"] = str(harness) + os.pathsep + env.get("PYTHONPATH", "")
+            kw["env"] = env
+
+    if streaming:
+        disp = dispatch if dispatch is not None else _selftest_dispatch(faculty_stubs)
+        return _run_stream(argv, args or {}, dispatch=disp, cfg=cfg, backend=backend,
+                           run_name=run_name, timeout_s=timeout_s, max_out=max_out, kw=kw)
+
     t0 = time.monotonic()
     try:
         proc = subprocess.run(
@@ -732,10 +1003,30 @@ class Toolbox:
         self.root = Path(root).expanduser()
         self.tools_dir = self.root / "tools"
         self.store = self.root / "store"
+        self.harness = self.root / "harness"
         self.tools_dir.mkdir(parents=True, exist_ok=True)
         self.store.mkdir(parents=True, exist_ok=True)
+        self._materialise_harness()
+        # The trusted faculty executor, set by the cascade at call time (a tool may call her
+        # allow-listed faculties through it).  None here ⇒ faculty calls are refused, which is
+        # exactly right for the panel and the self-test path (which never touch the real host).
+        self._faculty_dispatch = None
         if seed:
             self._seed()
+
+    def set_faculty_dispatch(self, dispatch) -> None:
+        """Install the callable that runs a faculty for a tool: dispatch(name, args)->dict.
+        The cascade binds this (bridging to its async tool dispatch); enforcement of the
+        allow-list still happens in the runner, not here."""
+        self._faculty_dispatch = dispatch
+
+    def _materialise_harness(self) -> None:
+        # Keep faculties.py current with the shipped protocol (overwrite each start).
+        try:
+            self.harness.mkdir(parents=True, exist_ok=True)
+            (self.harness / "faculties.py").write_text(_FACULTIES_HARNESS)
+        except OSError:
+            pass
 
     # -- discovery --
     def _tool_dir(self, name: str) -> Path:
@@ -811,7 +1102,8 @@ class Toolbox:
     def call(self, name: str, args: dict) -> dict:
         if not self.has(name):
             return {"ok": False, "error": f"no such tool: {name}"}
-        res = run_tool(self._tool_dir(name), args or {}, store=self.store, cfg=self.cfg)
+        res = run_tool(self._tool_dir(name), args or {}, store=self.store, cfg=self.cfg,
+                       dispatch=self._faculty_dispatch, harness=self.harness)
         self._record_call(name, res)             # real usage only (self-tests go via install)
         return res
 
@@ -958,16 +1250,21 @@ class Toolbox:
             man = {"name": name, "author": str(manifest.get("author") or author),
                    "created_at": str(manifest.get("created_at") or _man_time(self.cfg)),
                    "description": str(manifest.get("description") or name),
+                   "uses_faculties": bool(manifest.get("uses_faculties")),
                    "parameters": params or {"type": "object", "properties": {}}}
             (staging / "manifest.json").write_text(json.dumps(man, indent=2))
             (staging / "test.json").write_text(json.dumps(test, indent=2))
 
-            # self-test: a throwaway writable store, so save-style tools don't touch
-            # the live sandbox and a failing tool leaves nothing behind.
+            # self-test: a throwaway writable store, so save-style tools don't touch the live
+            # sandbox and a failing tool leaves nothing behind.  Faculty calls hit the stub
+            # dispatcher (never the real host) with any canned results the test supplies, so a
+            # dream can validate a faculties tool without firing off real calendar/kb calls.
             probe_store = self.tools_dir.parent / f".probe-{name}-{os.getpid()}"
             probe_store.mkdir(parents=True, exist_ok=True)
             try:
-                res = run_tool(staging, test["input"], store=probe_store, cfg=self.cfg)
+                res = run_tool(staging, test["input"], store=probe_store, cfg=self.cfg,
+                               harness=self.harness,
+                               faculty_stubs=test.get("faculty_stubs"))
             finally:
                 shutil.rmtree(probe_store, ignore_errors=True)
             if not res.get("ok"):

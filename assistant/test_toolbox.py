@@ -412,6 +412,96 @@ def test_read_paths_allowlist():
         check("a denylisted file reads empty", denied.get("read") and denied.get("n") == 0)
 
 
+_FAC_TOOL = ("import faculties\n"
+             "a = faculties.args()\n"
+             "try:\n"
+             "    r = faculties.call(a['tool'], a.get('args', {}))\n"
+             "    faculties.done({'got': r})\n"
+             "except Exception as e:\n"
+             "    faculties.done({'err': str(e)})\n")
+
+
+def _fac_box(td, backend, **fac):
+    cfg = {"backend": backend, "faculties": {"enabled": True, **fac}}
+    return tb.Toolbox(Path(td) / "own", cfg=cfg, seed=False)
+
+
+def test_faculties_rpc():
+    """A faculties tool can call an allow-listed faculty (mediated by the host), is refused a
+    faculty not on the list or hard-denied, is capped, and — crucially — still has NO network.
+    Runs on whichever backend is live."""
+    if tb._ContainerBackend({}).available():
+        backend = "container"
+    elif HAVE_BWRAP:
+        backend = "bwrap"
+    else:
+        return skip("faculties RPC", "no sandbox backend")
+    with tempfile.TemporaryDirectory() as td:
+        box = _fac_box(td, backend, allow=["calculate", "kb_search"], max_calls=3)
+        box.install("caller", _FAC_TOOL,
+                    {"description": "calls a faculty", "uses_faculties": True},
+                    {"input": {"tool": "calculate", "args": {}},
+                     "faculty_stubs": {"calculate": {"v": 4}}, "expect_keys": ["got"]})
+        # real dispatch just echoes the faculty name+args back
+        box.set_faculty_dispatch(lambda n, a: {"ok": True, "result": {"echo": n}})
+        allowed = box.call("caller", {"tool": "calculate"}).get("result")
+        check("an allow-listed faculty is dispatched",
+              allowed == {"got": {"echo": "calculate"}})
+        denied = box.call("caller", {"tool": "weather"}).get("result")
+        check("a faculty not on the allow-list is refused",
+              "err" in denied and "allow-list" in denied["err"])
+        hard = box.call("caller", {"tool": "revise_self"}).get("result")
+        check("a hard-denied faculty is refused even if listed",
+              "err" in hard and "never" in hard["err"])
+
+
+def test_faculties_selftest_and_network():
+    """install() self-tests a faculties tool hermetically (stubbed faculties, never the real
+    host), and the faculties channel does NOT reopen the network."""
+    if not tb._ContainerBackend({}).available():
+        return skip("faculties self-test + network", "no container image")
+    with tempfile.TemporaryDirectory() as td:
+        box = _fac_box(td, "container", allow=["kb_search"])
+        # self-test uses the stub → passes without a live host
+        r = box.install("kb_tool",
+                        "import faculties\n"
+                        "h = faculties.call('kb_search', {'query': faculties.args().get('q','')})\n"
+                        "faculties.done({'n': len(h or [])})\n",
+                        {"description": "kb", "uses_faculties": True},
+                        {"input": {"q": "x"}, "faculty_stubs": {"kb_search": [1, 2, 3]},
+                         "expect_keys": ["n"]})
+        check("a faculties tool self-tests against stubs", r.get("ok"))
+        box.set_faculty_dispatch(lambda n, a: {"ok": True, "result": [1, 2, 3]})
+        check("the stubbed faculty result is real at call time",
+              box.call("kb_tool", {"q": "x"}).get("result") == {"n": 3})
+        # network stays severed even in streaming mode
+        box.install("neter",
+                    "import faculties, socket\n"
+                    "try:\n  socket.create_connection(('1.1.1.1', 53), timeout=2); net=True\n"
+                    "except Exception:\n  net=False\n"
+                    "faculties.done({'net': net})\n",
+                    {"description": "n", "uses_faculties": True},
+                    {"input": {}, "expect_keys": ["net"]})
+        check("a faculties tool still has no network",
+              box.call("neter", {}).get("result") == {"net": False})
+
+
+def test_faculties_disabled_blocks():
+    """With faculties off, a faculty call is refused (and such a tool fails its self-test)."""
+    if not (tb._ContainerBackend({}).available() or HAVE_BWRAP):
+        return skip("faculties disabled", "no sandbox backend")
+    backend = "container" if tb._ContainerBackend({}).available() else "bwrap"
+    with tempfile.TemporaryDirectory() as td:
+        cfg = {"backend": backend, "faculties": {"enabled": False, "allow": ["calculate"]}}
+        box = tb.Toolbox(Path(td) / "own", cfg=cfg, seed=False)
+        r = box.install("caller", _FAC_TOOL,
+                        {"description": "x", "uses_faculties": True},
+                        {"input": {"tool": "calculate"}, "expect_keys": ["got"]})
+        check("a faculties tool fails self-test when faculties are off", not r.get("ok"))
+        ok, _why = tb.faculty_permitted("calculate", cfg)     # cfg = the own_tools block
+        check("faculty_permitted says off", not ok)
+
+
 def test_backend_selection():
     """auto prefers the container backend; explicit picks are honoured; TOOL_ROOT differs."""
     check("bwrap backend advertises TOOL_ROOT=''", tb._BwrapBackend().tool_root == "")
@@ -447,6 +537,9 @@ def main():
     test_ideas_store()
     test_usage_ledger()
     test_read_paths_allowlist()
+    test_faculties_rpc()
+    test_faculties_selftest_and_network()
+    test_faculties_disabled_blocks()
     test_seed_and_catalogue()
     test_install_validation()
     test_install_selftest_gate()

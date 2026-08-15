@@ -979,10 +979,13 @@ class Handler(BaseHTTPRequestHandler):
                 roster = box.roster()
                 for t in roster:                # fold usage into each tool row for the panel
                     t["usage"] = usage.get(t["name"], {})
+                _fac = otc.get("faculties") or {}
                 return self._json(200, {
                     "enabled": bool(otc.get("enabled")),
                     "require_sandbox": bool(otc.get("require_sandbox", True)),
                     "toolsmith": bool((otc.get("toolsmith") or {}).get("enabled")),
+                    "faculties": {"enabled": bool(_fac.get("enabled")),
+                                  "allow": list(_fac.get("allow") or [])},
                     "backend": diag.get("backend"),
                     "sandboxed": bool(diag.get("ready")),
                     "diag": diag,               # runtime/image/bridge + reason + one-line fix
