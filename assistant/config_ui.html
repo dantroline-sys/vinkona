@@ -59,6 +59,8 @@
   .muted { color:#8b93a1; font-size:12px; }
   .hint { background:#13161c; border:1px dashed #333a46; border-radius:6px; padding:10px;
     font-size:12px; color:#9aa3b1; margin-top:10px; }
+  .hint.err { border-color:#7a2230; color:#e0a0a8; }
+  label.lbl { display:block; font-size:12px; color:#8b93a1; margin:12px 0 4px; }
   code { background:#0f1116; padding:1px 5px; border-radius:4px; font-size:12px; }
   /* live feed */
   .ev { border-left:3px solid #333a46; padding:8px 12px; margin:8px 0; background:#1b1e25; border-radius:0 8px 8px 0; }
@@ -248,6 +250,7 @@
   <button data-tab="wgraph">Working memory</button>
   <button data-tab="memory">Memory</button>
   <button data-tab="self">Self</button>
+  <button data-tab="tools">Tools</button>
   <button data-tab="research">Research</button>
   <button data-tab="plans">Plans</button>
   <button data-tab="network">Network</button>
@@ -478,6 +481,39 @@
     <div id="selfMems"></div>
   </section>
 
+  <!-- ── Tools (her own sandboxed tools) ──────────────────────────────────── -->
+  <section id="tab-tools" class="tab">
+    <h2>Tools <span class="muted">— small programs Vinkona can run in a conversation</span></h2>
+    <div class="hint" id="toolsHint"></div>
+    <div id="toolsSandbox" class="hint"></div>
+    <div class="bar">
+      <button class="btn secondary" onclick="loadTools()">Refresh</button>
+      <button class="btn secondary" onclick="newTool()">+ New tool</button>
+      <span id="toolsStatus" class="status"></span>
+    </div>
+    <div style="display:flex; gap:16px; align-items:flex-start">
+      <div id="toolsList" class="mem-list" style="flex:0 0 240px"></div>
+      <div id="toolsEditor" style="flex:1; display:none">
+        <div class="bar">
+          <strong id="toolEditName" style="font-size:15px"></strong>
+          <span class="muted" id="toolEditMeta"></span>
+        </div>
+        <label class="lbl">Description &amp; parameters <span class="muted">(manifest.json — what she sees when choosing this tool)</span></label>
+        <textarea id="toolManifest" rows="8" spellcheck="false" style="width:100%; font-family:monospace; font-size:12px"></textarea>
+        <label class="lbl">Code <span class="muted">(tool.py — reads a JSON args object on stdin, prints a JSON result on stdout; may read anywhere, may write only in the sandbox store)</span></label>
+        <textarea id="toolCode" rows="16" spellcheck="false" style="width:100%; font-family:monospace; font-size:12px"></textarea>
+        <label class="lbl">Self-test <span class="muted">(test.json — {"input": {...}, "expect_keys": [...]}; run in a throwaway sandbox before a save is accepted)</span></label>
+        <textarea id="toolTest" rows="4" spellcheck="false" style="width:100%; font-family:monospace; font-size:12px"></textarea>
+        <div class="bar" style="margin-top:10px">
+          <button class="btn" onclick="saveTool()">Save &amp; self-test</button>
+          <button class="btn danger" onclick="removeTool()">Delete</button>
+          <span id="toolSaveStatus" class="status"></span>
+        </div>
+        <pre id="toolTestOut" class="mono" style="white-space:pre-wrap; margin-top:8px"></pre>
+      </div>
+    </div>
+  </section>
+
   <!-- ── Research ─────────────────────────────────────────────────────────── -->
   <section id="tab-research" class="tab">
     <h2>Research <span class="muted">— Tier-3 background learning &amp; the prompts that drive it</span></h2>
@@ -643,7 +679,7 @@
 
 <script>
 // ── Tabs ────────────────────────────────────────────────────────────────────
-const loaders = { profiles: loadProfiles, models: loadModels, tuning: loadTuning, services: startServices, live: startLive, wgraph: startWGraph, memory: loadMemory, self: loadSelf, research: loadResearch, plans: loadPlans, network: loadNetwork, settings: loadConfig };
+const loaders = { profiles: loadProfiles, models: loadModels, tuning: loadTuning, services: startServices, live: startLive, wgraph: startWGraph, memory: loadMemory, self: loadSelf, tools: loadTools, research: loadResearch, plans: loadPlans, network: loadNetwork, settings: loadConfig };
 
 let planFilter = 'open';
 function setPlanFilter(f) { planFilter = f; loadPlans(); }
@@ -1961,6 +1997,138 @@ async function deleteProfile(name) {
   const d = await (await fetch('/api/profiles/delete', {method:'POST', body: JSON.stringify({name})})).json();
   if (d.ok) { flash(document.getElementById('prstatus'), true, `deleted "${name}"`); loadProfiles(); }
   else flash(document.getElementById('prstatus'), false, 'error: ' + (d.error||''));
+}
+
+// ── Tools (her own sandboxed tools) ──────────────────────────────────────────
+let toolsData = { tools: [] }, toolSel = null;
+const TOOL_NEW_CODE =
+`import sys, json
+a = json.load(sys.stdin)          # your arguments (matches manifest.parameters)
+# read anywhere; write only inside this sandbox (the current directory)
+print(json.dumps({"result": "hello"}))
+`;
+const TOOL_NEW_MANIFEST =
+`{
+  "description": "one line — what this tool does, as Vinkona will read it",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "example": {"type": "string", "description": "an argument"}
+    }
+  }
+}`;
+const TOOL_NEW_TEST =
+`{
+  "input": {"example": "value"},
+  "expect_keys": ["result"]
+}`;
+
+async function loadTools() {
+  const list = document.getElementById('toolsList');
+  let d;
+  try { d = await (await fetch('/api/own_tools')).json(); }
+  catch (e) { list.innerHTML = '<div class="status err">fetch failed</div>'; return; }
+  if (d.error) { list.innerHTML = '<div class="status err">' + escHtml(d.error) + '</div>'; return; }
+  toolsData = d;
+  // sandbox / enablement banner — the containment story, stated plainly
+  const sb = document.getElementById('toolsSandbox');
+  if (d.sandboxed) {
+    sb.innerHTML = `Sandbox: <strong>${escHtml(d.backend)}</strong> ✓ — a tool may read anywhere but ` +
+      `can only write inside its store (<code>${escHtml(d.store)}</code>). No network.`;
+    sb.className = 'hint';
+  } else {
+    sb.innerHTML = `⚠ No sandbox backend on this machine — writes cannot be contained, so ` +
+      `saving a tool will fail its self-test${d.require_sandbox ? '' : ' unless run uncontained'}. ` +
+      `On Linux, install <code>bubblewrap</code>.`;
+    sb.className = 'hint err';
+  }
+  document.getElementById('toolsHint').innerHTML = d.enabled
+    ? 'Vinkona may use these during a conversation.'
+    : '⚠ Own-tools are currently <strong>off</strong> (Settings → tools.own_tools.enabled). ' +
+      'You can still curate them here; she won\'t call them until it\'s on.';
+  const items = d.tools || [];
+  if (!items.length) { list.innerHTML = '<div class="mem-empty">No tools yet.</div>'; }
+  else {
+    list.innerHTML = items.map(t => {
+      const active = toolSel === t.name ? ' active' : '';
+      return `<div class="mem-item${active}" onclick="openTool('${escAttr(t.name)}')">` +
+        `<div class="t">${escHtml(t.name)}</div>` +
+        `<div class="m">${escHtml(t.description || '')}</div>` +
+        `<div class="m">${escHtml(t.author || '')}` +
+        `${t.created_at ? ' · ' + escHtml(t.created_at) : ''}</div></div>`;
+    }).join('');
+  }
+}
+
+async function openTool(name) {
+  const d = await (await fetch('/api/own_tools/get?name=' + encodeURIComponent(name))).json();
+  if (d.error) { flash(document.getElementById('toolsStatus'), false, d.error); return; }
+  toolSel = name;
+  document.getElementById('toolsEditor').style.display = '';
+  document.getElementById('toolEditName').textContent = name;
+  document.getElementById('toolEditMeta').textContent = '(editing an existing tool)';
+  document.getElementById('toolCode').value = d.code || '';
+  document.getElementById('toolManifest').value = d.manifest || '';
+  document.getElementById('toolTest').value = d.test || '';
+  document.getElementById('toolTestOut').textContent = '';
+  document.querySelector('#toolTest').dataset.name = name;
+  loadTools();  // re-highlight the list row
+}
+
+function newTool() {
+  toolSel = null;
+  document.getElementById('toolsEditor').style.display = '';
+  document.getElementById('toolEditName').textContent = 'New tool';
+  document.getElementById('toolEditMeta').textContent =
+    '(name comes from the "name" line you add, or set it in the manifest)';
+  document.getElementById('toolCode').value = TOOL_NEW_CODE;
+  document.getElementById('toolManifest').value = TOOL_NEW_MANIFEST;
+  document.getElementById('toolTest').value = TOOL_NEW_TEST;
+  document.getElementById('toolTestOut').textContent = '';
+  delete document.querySelector('#toolTest').dataset.name;
+}
+
+async function saveTool() {
+  const status = document.getElementById('toolSaveStatus');
+  const out = document.getElementById('toolTestOut');
+  let manifest, name;
+  try { manifest = JSON.parse(document.getElementById('toolManifest').value || '{}'); }
+  catch (e) { flash(status, false, 'manifest is not valid JSON'); return; }
+  // an existing tool keeps its name; a new one needs one (from the manifest or a prompt)
+  name = toolSel || manifest.name || prompt('Tool name (lower_snake_case):') || '';
+  name = name.trim();
+  if (!name) { flash(status, false, 'a name is required'); return; }
+  status.textContent = 'self-testing…'; status.className = 'status';
+  out.textContent = '';
+  const body = { name, code: document.getElementById('toolCode').value,
+                 manifest: document.getElementById('toolManifest').value,
+                 test: document.getElementById('toolTest').value };
+  let d;
+  try { d = await (await fetch('/api/own_tools/save',
+        { method:'POST', body: JSON.stringify(body) })).json(); }
+  catch (e) { flash(status, false, 'request failed'); return; }
+  if (d.ok) {
+    flash(status, true, 'saved — self-test passed ✓');
+    toolSel = d.name;
+    out.textContent = 'Self-test result:\n' + JSON.stringify((d.test||{}).result, null, 2);
+    loadTools();
+  } else {
+    flash(status, false, 'not saved');
+    out.textContent = '✗ ' + (d.error || 'unknown error') +
+      (d.test && d.test.error ? '\n\n' + d.test.error : '');
+  }
+}
+
+async function removeTool() {
+  if (!toolSel) { document.getElementById('toolsEditor').style.display = 'none'; return; }
+  if (!confirm('Delete tool "' + toolSel + '"? This removes its files.')) return;
+  const d = await (await fetch('/api/own_tools/remove',
+        { method:'POST', body: JSON.stringify({ name: toolSel }) })).json();
+  if (d.ok) {
+    toolSel = null;
+    document.getElementById('toolsEditor').style.display = 'none';
+    loadTools();
+  } else flash(document.getElementById('toolSaveStatus'), false, d.error || 'error');
 }
 
 // ── Research (Tier-3 toggles + prompts) ──────────────────────────────────────

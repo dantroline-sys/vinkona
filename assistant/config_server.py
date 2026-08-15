@@ -81,6 +81,7 @@ PEOPLE = _load_mod("people")           # for the Self tab (Vinkona's self-author
 IDLECTL = _load_mod("idle_control")    # idle pause/resume + quiet-hours math
 HELPMOD = _load_mod("confighelp")      # /api/help — extracted config.py comments + help.json
 WACT = _load_mod("worker_activity")    # /api/activity — what she's doing (worker + session)
+TOOLBOX = _load_mod("toolbox")         # her own sandboxed tools (view/edit on the Tools tab)
 UI_PATH = Path(__file__).parent / "config_ui.html"
 LOGS_DIR = Path(__file__).parent / "logs"            # written by vinkona.sh (shared filesystem)
 ASSIST_DIR = Path(__file__).resolve().parent         # where the venvs + install.sh live
@@ -854,6 +855,16 @@ class Handler(BaseHTTPRequestHandler):
     def _cfg(self):
         return CFGMOD.load_config(self.config_path)
 
+    def _toolbox(self):
+        """Her own-tools registry, resolved exactly as cascade_server does so the panel
+        edits the same files she runs.  Built regardless of the `enabled` flag (you can
+        curate tools while the feature is off); a save still self-tests, which needs a
+        sandbox backend — so a save on a backend-less box fails honestly at that gate."""
+        otc = (self._cfg().get("tools", {}) or {}).get("own_tools", {}) or {}
+        root = (otc.get("dir") or "").strip() or str(
+            Path(__file__).resolve().parent / "var" / "own_tools")
+        return TOOLBOX.Toolbox(root, cfg=otc)
+
     def _personas_path(self):
         return self._cfg().get("personas_path", "config/personas.json")
 
@@ -958,6 +969,28 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, {"ok": False, "error": f"{type(e).__name__}: {e}"})
         if path == "/api/personas":
             return self._send(200, CFGMOD.resolve_read(self._personas_path()).read_text())
+        if path == "/api/own_tools":
+            # Her sandboxed tools + the platform's containment status, for the Tools tab.
+            try:
+                otc = (self._cfg().get("tools", {}) or {}).get("own_tools", {}) or {}
+                box = self._toolbox()
+                be = TOOLBOX.sandbox_backend()
+                return self._json(200, {
+                    "enabled": bool(otc.get("enabled")),
+                    "require_sandbox": bool(otc.get("require_sandbox", True)),
+                    "backend": be.name if be else None,
+                    "sandboxed": be is not None,
+                    "store": str(box.store),
+                    "tools": box.roster()})
+            except Exception as e:
+                return self._json(500, {"error": str(e)})
+        if path == "/api/own_tools/get":
+            try:
+                name = self._query().get("name", [""])[0]
+                tool = self._toolbox().read(name)
+                return self._json(200 if tool else 404, tool or {"error": "no such tool"})
+            except Exception as e:
+                return self._json(500, {"error": str(e)})
         if path == "/api/models":
             return self._get_models()
         if path == "/api/lm_endpoints":               # live LM servers, so a tier is picked not typed
@@ -1309,6 +1342,38 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/personas":
             _atomic_json(Path(self._personas_path()), obj)
             return self._json(200, {"ok": True})
+        if path == "/api/own_tools/save":
+            # Save an edited/new tool THROUGH install(): it validates the name+manifest and
+            # runs the self-test in a throwaway sandbox, so a user edit that would crash or
+            # try to write outside the store is REFUSED here, never promoted.  manifest/test
+            # may arrive as objects or as JSON text from the editor.
+            def _asobj(v, what):
+                if isinstance(v, dict):
+                    return v
+                try:
+                    return json.loads(v or "{}")
+                except ValueError as ex:
+                    raise ValueError(f"{what} is not valid JSON: {ex}")
+            try:
+                name = str(obj.get("name") or "").strip()
+                code = obj.get("code")
+                if not isinstance(code, str) or not code.strip():
+                    return self._json(400, {"ok": False, "error": "the tool has no code"})
+                manifest = _asobj(obj.get("manifest"), "manifest")
+                test = _asobj(obj.get("test"), "test")
+            except ValueError as e:
+                return self._json(400, {"ok": False, "error": str(e)})
+            try:
+                res = self._toolbox().install(name, code, manifest, test,
+                                              author=str(manifest.get("author") or "user"))
+                return self._json(200 if res.get("ok") else 400, res)
+            except Exception as e:
+                return self._json(500, {"ok": False, "error": str(e)})
+        if path == "/api/own_tools/remove":
+            try:
+                return self._json(200, self._toolbox().remove(str(obj.get("name") or "")))
+            except Exception as e:
+                return self._json(500, {"ok": False, "error": str(e)})
         if path == "/api/memory":
             try:
                 return self._json(200, MemoryAdmin(self._cfg()).upsert(obj))

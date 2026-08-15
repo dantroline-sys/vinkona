@@ -375,6 +375,31 @@ class Toolbox:
         return [{"name": n, "description": str((self._read_manifest(n) or {}).get(
                  "description") or "")[:200]} for n in self.names()]
 
+    def roster(self) -> list:
+        """Fuller per-tool metadata for the config panel's list view."""
+        out = []
+        for n in self.names():
+            m = self._read_manifest(n) or {}
+            out.append({"name": n, "description": str(m.get("description") or "")[:300],
+                        "author": str(m.get("author") or ""),
+                        "created_at": str(m.get("created_at") or "")})
+        return out
+
+    def read(self, name: str) -> dict | None:
+        """An installed tool's three source files, for the panel's viewer/editor.
+        None when the tool doesn't exist."""
+        if not self.has(name):
+            return None
+        d = self._tool_dir(name)
+
+        def _r(fn):
+            try:
+                return (d / fn).read_text()
+            except OSError:
+                return ""
+        return {"name": name, "code": _r("tool.py"),
+                "manifest": _r("manifest.json"), "test": _r("test.json")}
+
     # -- execution --
     def call(self, name: str, args: dict) -> dict:
         if not self.has(name):
@@ -410,8 +435,8 @@ class Toolbox:
         staging.mkdir(parents=True)
         try:
             (staging / "tool.py").write_text(code)
-            man = {"name": name, "author": author,
-                   "created_at": _man_time(self.cfg),
+            man = {"name": name, "author": str(manifest.get("author") or author),
+                   "created_at": str(manifest.get("created_at") or _man_time(self.cfg)),
                    "description": str(manifest.get("description") or name),
                    "parameters": params or {"type": "object", "properties": {}}}
             (staging / "manifest.json").write_text(json.dumps(man, indent=2))
