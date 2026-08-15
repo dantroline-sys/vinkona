@@ -22,7 +22,9 @@ feed; the text-chat path passes a sink that emits text frames instead).
 
 import asyncio
 import datetime
+import itertools
 import json
+import os
 import re
 import time
 import typing as tp
@@ -43,6 +45,8 @@ except Exception:                       # file-path-loaded context: bootstrap it
 _safety = localmod.use("safety")        # untrusted-content defenses (prompt injection)
 sanitize_external, wrap_untrusted = _safety.sanitize_external, _safety.wrap_untrusted
 lm_lease = localmod.use("lm_lease")     # per-LM busy leases (yield the big LM downward)
+_LEASE_SEQ = itertools.count(1)         # per-call holder ids: overlapping big-LM streams
+                                        # must never share a lease file (see lm_lease.py)
 timesense = localmod.use("timesense")   # time-sense Phase 1: the semantic clock
 spoken_time = localmod.use("spoken_time")        # TTS-friendly spoken date/time
 pronouns_mod = localmod.use("pronouns")          # persona pronouns (she/he/it)
@@ -2876,8 +2880,9 @@ class LLMBridge:
         # so a long stream doesn't let it lapse; released in finally.  Fast LM never holds.
         big_hold = self.lease_big and bool(self.big_url) and base_url == self.big_url
         _lease_next = 0.0
+        _hold = f"bridge-{os.getpid()}-{next(_LEASE_SEQ)}"
         if big_hold:
-            lm_lease.acquire(lm_lease.BIG, ttl=self.lease_ttl)
+            lm_lease.acquire(lm_lease.BIG, ttl=self.lease_ttl, holder=_hold)
             _lease_next = time.monotonic() + self.lease_ttl / 3
         # NO total cap: a hard total=60 here silently guillotined every reply that thought
         # or streamed past a minute, defeating the deliberation budgets (stall 75s / total
@@ -2898,7 +2903,7 @@ class LLMBridge:
                     return
                 async for raw_line in resp.content:
                     if big_hold and time.monotonic() >= _lease_next:
-                        lm_lease.acquire(lm_lease.BIG, ttl=self.lease_ttl)
+                        lm_lease.acquire(lm_lease.BIG, ttl=self.lease_ttl, holder=_hold)
                         _lease_next = time.monotonic() + self.lease_ttl / 3
                     line = raw_line.strip()
                     if not line or not line.startswith(b"data:"):
@@ -2980,7 +2985,7 @@ class LLMBridge:
             return
         finally:
             if big_hold:
-                lm_lease.release(lm_lease.BIG)
+                lm_lease.release(lm_lease.BIG, holder=_hold)
         if saw_reasoning and not yielded:
             _log("warning", f"LM {model} returned only reasoning, empty content — it's in "
                             "thinking mode. Disable it, e.g. add ['--reasoning-budget','0'] to "

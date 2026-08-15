@@ -14,7 +14,10 @@ import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-FILES = ["supervisor.py", "llm_server.py", "config.py"]
+FILES = ["supervisor.py", "llm_server.py", "config.py", "localmod.py"]
+# Sibling modules on the same system-python path: importing them is fine
+# PROVIDED they are gated here too (localmod is llm_server's shared loader).
+LOCAL_OK = {"localmod"}
 FAILED = []
 
 
@@ -46,7 +49,7 @@ def gate(fname):
     runtime_unions = [n.lineno for n in ast.walk(tree)
                       if isinstance(n, ast.BinOp) and isinstance(n.op, ast.BitOr)
                       and id(n) not in ann_spans
-                      and not isinstance(n.left, (ast.Constant, ast.Num))
+                      and not isinstance(n.left, ast.Constant)
                       and any(isinstance(x, ast.Name) and x.id in
                               ("int", "str", "float", "dict", "list", "None",
                                "Path", "bool") for x in ast.walk(n))]
@@ -61,7 +64,8 @@ def gate(fname):
         elif isinstance(n, ast.ImportFrom) and n.level == 0 and n.module:
             roots.add(n.module.split(".")[0])
     foreign = sorted(r for r in roots
-                     if r != "__future__" and stdlib and r not in stdlib)
+                     if r != "__future__" and r not in LOCAL_OK
+                     and stdlib and r not in stdlib)
     check(f"{fname}: imports stdlib only (runs before/without any env)",
           not stdlib or foreign == [])
     if foreign:

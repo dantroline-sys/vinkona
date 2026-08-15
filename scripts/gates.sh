@@ -41,6 +41,8 @@ run "local-kb compile"  ""     "$PY" -W error::SyntaxWarning -m py_compile \
                                    assistant/local_kb.py assistant/test_local_kb.py
 run "local-kb battery"  ""     "$PY" assistant/test_local_kb.py
 run "debug trace"       ""     "$PY" assistant/test_debug_trace.py
+run "lease battery"     ""     "$PY" assistant/test_lm_lease.py
+run "supervisor life"   ""     "$PY" assistant/test_supervisor_lifecycle.py
 run "G-8 broker size"   ""     "$PY" - <<'EOF'
 import pathlib, sys
 n = sum(len(p.read_text().splitlines())

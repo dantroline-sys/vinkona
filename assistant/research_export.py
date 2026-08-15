@@ -7,8 +7,10 @@ Turns Vinkona's research hoard (the `documents` table — see memory.store_docum
 own cadence (research_loop_spec.md §1).
 
 What is exported: only NON-PERSONAL world knowledge — documents whose `kind` is research/plan.  The
-user's own crawled mail/files (`kind='crawl'`, and any legacy row whose topic matches a configured
-crawl source) are NEVER exported, so nothing personal leaks into the general knowledge base.
+user's own crawled mail/files (`kind='crawl'`, and any legacy row whose topic matches a crawl source
+EVER configured — the set is persisted in memory state, so renaming or removing a source can never
+re-expose its old pre-`kind` rows) are NEVER exported, so nothing personal leaks into the general
+knowledge base.
 
 Idempotent: one file per normalised question (filename = its hash).  A byte-identical file is left
 untouched (a host no-op).  Incremental runs export only questions touched since a rowid watermark;
@@ -34,7 +36,29 @@ except Exception:                       # file-path-loaded context — see local
     sanitize_external = _lm.use("safety").sanitize_external
 
 _WM_KEY = "research.export_watermark"
+_SEEN_KEY = "research.crawl_sources_seen"
 _WS = re.compile(r"\s+")
+
+
+def _crawl_denylist(memory, current: tp.Iterable[str]) -> list:
+    """The topic denylist for legacy (pre-`kind`) rows: every crawl source EVER
+    configured, not just today's.  The list used to derive from the CURRENT config
+    alone, so renaming or removing a source re-exposed the personal rows it wrote
+    before `kind` existed.  Merges `current` into a persisted set (memory state)
+    and returns the union — the set only ever grows, which can only ever exclude
+    MORE, never leak."""
+    cur = {str(s) for s in (current or ()) if s}
+    seen: set = set()
+    try:
+        seen = {str(s) for s in json.loads(memory.get_state(_SEEN_KEY) or "[]") if s}
+    except Exception:
+        pass                                  # unreadable state → rebuild from current
+    if cur - seen:
+        try:
+            memory.set_state(_SEEN_KEY, json.dumps(sorted(seen | cur)))
+        except Exception:
+            pass                              # persistence is best-effort; the union still applies
+    return sorted(seen | cur)
 
 
 def _norm_question(q: str) -> str:
@@ -58,8 +82,9 @@ def _doc_question(row: dict) -> str:
 
 def _exportable_where(crawl_sources: tp.Iterable[str]) -> tuple[str, list]:
     """WHERE fragment + params for export-eligible documents: non-personal (kind not
-    'crawl') and whose topic is not a configured crawl source (catches legacy rows
-    written before `kind` existed)."""
+    'crawl') and whose topic is not a known crawl source (catches legacy rows written
+    before `kind` existed).  Callers that have the memory store pass the persisted
+    ever-configured union — see _crawl_denylist — not just today's config."""
     deny = [s for s in (crawl_sources or []) if s]
     where = "COALESCE(kind,'research') <> 'crawl'"
     params: list = []
@@ -373,7 +398,7 @@ def export_research(memory, folder: str, crawl_sources: tp.Iterable[str] = (), *
     # Light scan first (no `text`): group every eligible doc by question, then pull the
     # heavy full rows only for questions actually touched this run — the hourly
     # incremental would otherwise load the whole lifetime hoard for a no-op.
-    where, params = _exportable_where(crawl_sources)
+    where, params = _exportable_where(_crawl_denylist(memory, crawl_sources))
     light = _fetch(memory.db, "rowid AS rowid, title, topic", where, params)
 
     groups: dict[str, dict] = {}

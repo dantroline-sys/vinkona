@@ -45,6 +45,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -256,8 +257,14 @@ def spawn(svc: dict) -> subprocess.Popen:
                             stdin=subprocess.DEVNULL, start_new_session=True)
 
 
-def kill_group(pid: int) -> None:
-    """TERM the process group, wait up to GRACE_S, then KILL stragglers."""
+def kill_group(pid: int, proc: subprocess.Popen | None = None) -> None:
+    """TERM the process group, wait up to GRACE_S, then KILL stragglers.
+
+    Pass the Popen whenever the pid is our OWN child: only poll() reaps it, and
+    os.kill(pid, 0) keeps answering for the unreaped zombie — so without the
+    reap every stop sat out the full grace period and ended in a pointless
+    SIGKILL.  Without a Popen (a stale run's foreign pids) init has already
+    adopted and reaps them, so the signal-0 probe is accurate."""
     try:
         pgid = os.getpgid(pid)
     except (OSError, ProcessLookupError):
@@ -266,14 +273,21 @@ def kill_group(pid: int) -> None:
         os.killpg(pgid, signal.SIGTERM)
     except (OSError, ProcessLookupError):
         return
-    for _ in range(GRACE_S):
-        if not pid_alive(pid):
+    deadline = time.time() + GRACE_S
+    while time.time() < deadline:
+        gone = (proc.poll() is not None) if proc is not None else (not pid_alive(pid))
+        if gone:
             return
-        time.sleep(1)
+        time.sleep(0.25)
     try:
         os.killpg(pgid, signal.SIGKILL)
     except (OSError, ProcessLookupError):
         pass
+    if proc is not None:
+        try:
+            proc.wait(2)                       # reap, so status shows the exit
+        except (OSError, subprocess.TimeoutExpired):
+            pass
 
 
 def bracket(pat: str) -> str:
@@ -333,6 +347,35 @@ def rss_mb_for_port(port: int) -> int:
 
 # ── the supervisor process ────────────────────────────────────────────────────
 
+def _claim_pidfile():
+    """Exclusive single-supervisor claim: flock the pidfile and write our pid.
+
+    The old check-then-write (cmd_start reads supervisor_pid(), _run later
+    writes it) let two racing starts both pass the read and boot two whole
+    stacks onto the same GPUs.  The kernel lock is the authority now — held for
+    the process lifetime and dropped automatically on ANY death, so there is no
+    stale-lock state to clean up.  Returns (open file to keep alive, "") on
+    success, or (None, other pid text) when another supervisor holds it."""
+    import fcntl                               # POSIX-only, like the rest of process control
+    CTRL.mkdir(parents=True, exist_ok=True)
+    f = open(PIDFILE, "a+")
+    try:
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        try:
+            f.seek(0)
+            other = f.read().strip()
+        except OSError:
+            other = ""
+        f.close()
+        return None, other
+    f.seek(0)
+    f.truncate()
+    f.write(str(os.getpid()))
+    f.flush()
+    return f, ""
+
+
 class Supervisor:
     def __init__(self):
         self.children: dict[str, subprocess.Popen] = {}
@@ -383,7 +426,7 @@ class Supervisor:
         svc = self._svc(name)
         child = self.children.pop(name, None)
         if child is not None and child.poll() is None:
-            kill_group(child.pid)
+            kill_group(child.pid, child)
         if svc["where"] == "box":
             reap_box_pattern(svc["killpat"])   # orphans holding VRAM
         if svc["where"] == "kb":
@@ -398,15 +441,23 @@ class Supervisor:
                 os.killpg(os.getpgid(c.pid), signal.SIGTERM)
             except (OSError, ProcessLookupError):
                 pass
+        # poll(), not a signal-0 probe: poll() reaps, and an unreaped zombie
+        # answers signal 0 — the old loop waited the whole grace on already-dead
+        # children, then "killed" their zombies.
         deadline = time.time() + GRACE_S
-        while time.time() < deadline and any(pid_alive(c.pid) for c in live.values()):
-            time.sleep(0.5)
+        while time.time() < deadline and any(c.poll() is None for c in live.values()):
+            time.sleep(0.25)
         for c in live.values():
-            if pid_alive(c.pid):
+            if c.poll() is None:
                 try:
                     os.killpg(os.getpgid(c.pid), signal.SIGKILL)
                 except (OSError, ProcessLookupError):
                     pass
+        for c in live.values():
+            try:
+                c.wait(2)                      # reap the KILLed stragglers
+            except (OSError, subprocess.TimeoutExpired):
+                pass
         pats = [s["killpat"] for s in self.svcs
                 if s["where"] == "box" and s["killpat"] and s["name"] in self.children]
         if pats:
@@ -475,8 +526,13 @@ class Supervisor:
                     self.restart_one(name)
 
     def run(self):
-        CTRL.mkdir(parents=True, exist_ok=True)
-        PIDFILE.write_text(str(os.getpid()))
+        claim, other = _claim_pidfile()
+        if claim is None:
+            who = f" (pid {other})" if other else ""
+            log(f"another supervisor already holds {PIDFILE.name}{who} — "
+                "exiting without touching its services")
+            return
+        self._pidfile_claim = claim            # keep the fd (and its lock) alive
         for sig in (signal.SIGTERM, signal.SIGINT):
             signal.signal(sig, lambda *_: setattr(self, "stopping", True))
         log(f"supervisor up (pid {os.getpid()}, mode {read_mode()}, box "
@@ -803,9 +859,19 @@ def _kb_port(kb_dir: str) -> int:
     return 8771
 
 
+def _url_port(url, default: int) -> int:
+    try:
+        return int(urllib.parse.urlsplit(str(url or "")).port or default)
+    except ValueError:
+        return default
+
+
 def svc_check(name: str, cfg: dict, topo: dict, child_alive: bool) -> str:
-    def tier_port(tier, default):
-        return int((cfg.get(tier) or {}).get("port") or default)
+    def tier_port(svc, default):
+        # The port lives in the tier's URL (what llm_server binds via lm_bind) —
+        # no tier block has ever had a "port" key, so the old cfg[tier]["port"]
+        # read silently probed the defaults and called a re-ported LM dead.
+        return _url_port(lm_block(cfg, _SVC_TIER.get(svc, svc)).get("url"), default)
     health = {"fast_lm": 11435, "big_lm": 11438, "big_lm2": 11440,
               "embed": 11437, "tts_lm": 11439}
     if name in health:

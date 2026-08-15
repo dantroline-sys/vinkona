@@ -196,6 +196,40 @@ def test_malformed_hint_and_old_db_stay_unhinted():
     assert res["questions"] == 1
 
 
+# ── persisted crawl-source denylist (July #11) ───────────────────────────────
+
+def test_renamed_crawl_source_still_denied():
+    """THE July #11 bug: the denylist derived from the CURRENT config, so renaming
+    a crawl source re-exposed the personal rows it wrote before `kind` existed."""
+    m = FakeMem()
+    m.add("research topic", "world knowledge")
+    m.add("mail-old", "PRIVATE PRE-KIND MAIL", kind=None)     # legacy row: kind NULL
+    folder = _tmp()
+    rx.export_research(m, folder, ["mail-old"], full=True)    # source still configured
+    assert len(_files(folder)) == 1
+    # Dan renames the source: "mail-old" leaves the config entirely…
+    folder2 = _tmp()
+    rx.export_research(m, folder2, ["mail-new"], full=True)
+    files = _files(folder2)
+    assert len(files) == 1, f"legacy personal row leaked: {files}"
+    body = open(os.path.join(folder2, files[0])).read()
+    assert "PRIVATE PRE-KIND MAIL" not in body
+
+
+def test_denylist_state_accumulates():
+    m = FakeMem()
+    rx.export_research(m, _tmp(), ["mail-a"], full=True)
+    rx.export_research(m, _tmp(), ["files-b"], full=True)
+    import json as _json
+    seen = _json.loads(m.get_state("research.crawl_sources_seen"))
+    assert seen == ["files-b", "mail-a"]
+    # unreadable state never breaks an export — it rebuilds from current config
+    m.set_state("research.crawl_sources_seen", "{corrupt")
+    res = rx.export_research(m, _tmp(), ["mail-c"], full=True)
+    assert res["ok"]
+    assert "mail-c" in _json.loads(m.get_state("research.crawl_sources_seen"))
+
+
 def main():
     import types
     passed = failed = 0

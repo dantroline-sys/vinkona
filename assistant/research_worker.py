@@ -1117,19 +1117,22 @@ async def main():
     lease_cfg = cfg.get("lm_lease", {})
     lease_on = bool(lease_cfg.get("enabled", True))
     lease_ttl = float(lease_cfg.get("ttl_s", 15))
+    # Own holder id: the bridge holds lm_big per-stream in this same process, and a
+    # shared file let whichever finished first delete the other's live hold.
+    lease_holder = f"worker-{os.getpid()}"
     _busy = {"working": False}
 
     async def run_big(coro):
         """Run a big-LM work phase holding the lm_big lease for its duration."""
         if not lease_on:
             return await coro
-        lm_lease.acquire(lm_lease.BIG, ttl=lease_ttl)
+        lm_lease.acquire(lm_lease.BIG, ttl=lease_ttl, holder=lease_holder)
         _busy["working"] = True
         try:
             return await coro
         finally:
             _busy["working"] = False
-            lm_lease.release(lm_lease.BIG)
+            lm_lease.release(lm_lease.BIG, holder=lease_holder)
 
     async def big_lease_keepalive():
         """Refresh lm_big while a work phase is running, so a long pass can't let it lapse."""
@@ -1138,7 +1141,7 @@ async def main():
         try:
             while True:
                 if _busy["working"]:
-                    lm_lease.acquire(lm_lease.BIG, ttl=lease_ttl)
+                    lm_lease.acquire(lm_lease.BIG, ttl=lease_ttl, holder=lease_holder)
                 await asyncio.sleep(max(2.0, lease_ttl / 3))
         except asyncio.CancelledError:
             pass

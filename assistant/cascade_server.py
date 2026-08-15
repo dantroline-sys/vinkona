@@ -263,6 +263,9 @@ class CascadeServer:
             _lease_cfg = {}
         self._lease_on = bool(_lease_cfg.get("enabled", True))
         self._lease_ttl = float(_lease_cfg.get("ttl_s", 15))
+        # Own holder id so no other lm_fast writer can clobber/drop this hold
+        # (per-holder lease files — see lm_lease.py).
+        self._lease_holder = f"cascade-{os.getpid()}"
         # Ephemeral ambient cache: wipe stale rows from a previous run at startup unless
         # the user wants it persisted across restarts.
         try:
@@ -282,9 +285,10 @@ class CascadeServer:
         keeps it warm through quiet stretches; close releases it."""
         if self._lease_on:
             if open:
-                self._lease_mod.acquire(self._lease_mod.FAST, ttl=self._lease_ttl)
+                self._lease_mod.acquire(self._lease_mod.FAST, ttl=self._lease_ttl,
+                                        holder=self._lease_holder)
             else:
-                self._lease_mod.release(self._lease_mod.FAST)
+                self._lease_mod.release(self._lease_mod.FAST, holder=self._lease_holder)
         if not self._activity_path:
             return
         try:
@@ -1207,7 +1211,7 @@ class _Session:
         lease, ttl = self.s._lease_mod, self.s._lease_ttl
         try:
             while True:
-                lease.acquire(lease.FAST, ttl=ttl)
+                lease.acquire(lease.FAST, ttl=ttl, holder=self.s._lease_holder)
                 await asyncio.sleep(max(2.0, ttl / 3))
         except asyncio.CancelledError:
             pass
