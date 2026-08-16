@@ -703,6 +703,69 @@ class WorkingActivation:
         return self.act.get(mid, 0.0)
 
 
+async def _lm_stream_collect(base_url: str, model: str, payload: dict, *,
+                             timeout_s: float, tag: str, cid: str) -> tuple:
+    """POST a chat completion with streaming ON and collect the deltas, pushing the
+    accumulated output to the live LM feed (~every 0.7s) so long generations are
+    watchable while they run — not a black box that resolves minutes later.  Returns
+    (content, thinking) — thinking is the side-channel reasoning, "" when none.  Falls
+    back to a plain non-streamed body when the transport has no SSE (test fakes, or a
+    server that ignores the stream flag).  Raises on transport errors (callers tap the
+    error event).  Module-level on purpose: _chat_json/_chat_text stay callable unbound
+    (no instance state)."""
+    import aiohttp
+    payload = dict(payload)
+    payload["stream"] = True
+    content: list = []
+    thinking: list = []
+    last_push = 0.0
+
+    def _partial() -> str:
+        t = "".join(thinking)
+        return (("[thinking]\n" + t + "\n\n") if t else "") + "".join(content)
+
+    async with aiohttp.ClientSession() as s:
+        async with s.post(f"{base_url.rstrip('/')}/v1/chat/completions",
+                          json=payload,
+                          timeout=aiohttp.ClientTimeout(total=timeout_s)) as r:
+            if r.status != 200:
+                raise RuntimeError(f"HTTP {r.status}")
+            saw_sse = False
+            it = getattr(r, "content", None)
+            if it is not None:
+                try:
+                    async for raw in it:
+                        line = raw.strip()
+                        if not line.startswith(b"data:"):
+                            continue
+                        saw_sse = True
+                        data = line[5:].strip()
+                        if data == b"[DONE]":
+                            break
+                        try:
+                            obj = json.loads(data)
+                        except ValueError:
+                            continue
+                        delta = ((obj.get("choices") or [{}])[0].get("delta")) or {}
+                        if delta.get("reasoning_content"):
+                            thinking.append(delta["reasoning_content"])
+                        if delta.get("content"):
+                            content.append(delta["content"])
+                        now = time.monotonic()
+                        if now - last_push >= 0.7:
+                            last_push = now
+                            _lm_tap.stream("big", cid, _partial(), lane=tag, model=model)
+                except (TypeError, AttributeError):
+                    saw_sse = False                 # not an SSE transport — fall back
+            if not saw_sse:
+                body = await r.json()
+                msg = ((body.get("choices") or [{}])[0].get("message")) or {}
+                content = [msg.get("content") or ""]
+                thinking = ([msg["reasoning_content"]]
+                            if msg.get("reasoning_content") else [])
+    return "".join(content), "".join(thinking)
+
+
 class MemoryStore:
     def __init__(self, cfg: dict):
         self.db_path = cfg["memory"]["db_path"]
@@ -2585,14 +2648,14 @@ class MemoryStore:
     async def _chat_json(self, base_url: str, model: str, prompt: str,
                          think: bool = True, timeout_s: float | None = None,
                          tag: str = "") -> dict | None:
-        import aiohttp
         # Background work (reflection/research/ingest) wants the big LM's reasoning —
         # it's latency-insensitive and the extra thinking improves the JSON it returns.
         # `think` is sent two ways since llama.cpp accepts either spelling depending on
         # the model's chat template; harmless when ignored.  `timeout_s` overrides the
         # reflect default for callers with a different latency shape (e.g. the mind-graph
-        # extraction lane).  `tag` labels the call in the panel's live LM feed.
-        payload = {"model": model, "stream": False,
+        # extraction lane).  `tag` labels the call in the panel's live LM feed, which sees
+        # the output STREAM while the model writes it.
+        payload = {"model": model,
                    "response_format": {"type": "json_object"},
                    "temperature": 0.2,
                    "chat_template_kwargs": {"enable_thinking": bool(think)},
@@ -2603,23 +2666,16 @@ class MemoryStore:
                       meta={"json": True, "think": bool(think)})
         t0 = time.monotonic()
         try:
-            async with aiohttp.ClientSession() as s:
-                async with s.post(f"{base_url.rstrip('/')}/v1/chat/completions",
-                                  json=payload,
-                                  timeout=aiohttp.ClientTimeout(
-                                      total=timeout_s or getattr(self, "ctx", {})
-                                      .get("reflect_timeout_s", 120))) as r:
-                    if r.status != 200:
-                        _lm_tap.write("big", "error", f"HTTP {r.status}", call_id=cid,
-                                      lane=tag, model=model,
-                                      elapsed_s=time.monotonic() - t0)
-                        return None
-                    choices = (await r.json()).get("choices") or [{}]
-                    content = (choices[0].get("message") or {}).get("content", "")
-            _lm_tap.write("big", "response", content, call_id=cid, lane=tag, model=model,
+            content, thinking = await _lm_stream_collect(
+                base_url, model, payload, tag=tag, cid=cid,
+                timeout_s=timeout_s or getattr(self, "ctx", {})
+                .get("reflect_timeout_s", 120))
+            _lm_tap.write("big", "response",
+                          (f"[thinking]\n{thinking}\n\n" if thinking else "") + content,
+                          call_id=cid, lane=tag, model=model,
                           elapsed_s=time.monotonic() - t0)
-            # A thinking model may leak <think>…</think> into content despite JSON mode;
-            # strip it, then fall back to the first {...} span if there's still chatter.
+            # Any leaked <think>…</think> in content is dropped, then parse; fall back to
+            # the first {...} span if there's still chatter.
             content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
             try:
                 return json.loads(content)
@@ -2630,6 +2686,8 @@ class MemoryStore:
             _lm_tap.write("big", "error", f"{type(e).__name__}: {e}", call_id=cid,
                           lane=tag, model=model, elapsed_s=time.monotonic() - t0)
             return None
+        finally:
+            _lm_tap.live_clear("big")
 
     async def _chat_text(self, base_url: str, model: str, prompt: str,
                          think: bool = False, timeout_s: float | None = None,
@@ -2637,9 +2695,9 @@ class MemoryStore:
         """Like _chat_json but returns plain prose (for the document digest, and the
         toolsmith's code generation — which needs a LONGER timeout than the reflect
         default, hence timeout_s).  No JSON mode; <think> leakage is stripped.  `tag`
-        labels the call in the panel's live LM feed."""
-        import aiohttp
-        payload = {"model": model, "stream": False, "temperature": 0.3,
+        labels the call in the panel's live LM feed, which sees the output STREAM while
+        the model writes it."""
+        payload = {"model": model, "temperature": 0.3,
                    "chat_template_kwargs": {"enable_thinking": bool(think)},
                    "reasoning_budget": -1 if think else 0,
                    "messages": [{"role": "user", "content": prompt}]}
@@ -2648,26 +2706,21 @@ class MemoryStore:
                       meta={"think": bool(think)})
         t0 = time.monotonic()
         try:
-            async with aiohttp.ClientSession() as s:
-                async with s.post(f"{base_url.rstrip('/')}/v1/chat/completions",
-                                  json=payload,
-                                  timeout=aiohttp.ClientTimeout(
-                                      total=timeout_s or getattr(self, "ctx", {})
-                                      .get("reflect_timeout_s", 120))) as r:
-                    if r.status != 200:
-                        _lm_tap.write("big", "error", f"HTTP {r.status}", call_id=cid,
-                                      lane=tag, model=model,
-                                      elapsed_s=time.monotonic() - t0)
-                        return None
-                    choices = (await r.json()).get("choices") or [{}]
-                    content = (choices[0].get("message") or {}).get("content", "")
-            _lm_tap.write("big", "response", content, call_id=cid, lane=tag, model=model,
+            content, thinking = await _lm_stream_collect(
+                base_url, model, payload, tag=tag, cid=cid,
+                timeout_s=timeout_s or getattr(self, "ctx", {})
+                .get("reflect_timeout_s", 120))
+            _lm_tap.write("big", "response",
+                          (f"[thinking]\n{thinking}\n\n" if thinking else "") + content,
+                          call_id=cid, lane=tag, model=model,
                           elapsed_s=time.monotonic() - t0)
             return re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
         except Exception as e:
             _lm_tap.write("big", "error", f"{type(e).__name__}: {e}", call_id=cid,
                           lane=tag, model=model, elapsed_s=time.monotonic() - t0)
             return None
+        finally:
+            _lm_tap.live_clear("big")
 
     def close(self):
         self.db.close()

@@ -52,25 +52,62 @@ def main():
               and len(tap.read(src="fast")) == 1)
         check("n limits from the tail", [e["kind"] for e in tap.read(n=1)] == ["request"])
 
-        # a huge prompt is clipped head+tail, never stored whole
+        # a normal-large prompt (say 100KB) is stored WHOLE — "all of it"
         tap.clear()
-        tap.write("big", "request", "H" * 20000 + "TAILMARK")
+        tap.write("big", "request", "W" * 100_000 + "END")
+        check("a large event is stored in full", tap.read()[0]["text"].endswith("END")
+              and len(tap.read()[0]["text"]) == 100_003)
+
+        # only a pathological event is clipped (head+tail kept, honestly marked)
+        tap.clear()
+        tap.write("big", "request", "H" * 400_000 + "TAILMARK")
         e = tap.read()[0]
-        check("a huge event is clipped with head and tail kept",
-              len(e["text"]) < 13000 and "chars clipped" in e["text"]
+        check("a pathological event is clipped with head and tail kept",
+              len(e["text"]) < tap.EVENT_HEAD + tap.EVENT_TAIL + 100
+              and "chars clipped" in e["text"]
               and e["text"].startswith("H") and e["text"].endswith("TAILMARK"))
 
+        # the live slot: what's streaming right now
+        tap.stream("big", "c9", "partial out so f", lane="toolsmith", model="qwen")
+        lv = tap.live_read("big")
+        check("the live slot round-trips",
+              lv and lv["id"] == "c9" and lv["text"] == "partial out so f"
+              and lv["lane"] == "toolsmith")
+        check("the live slot is per-source", tap.live_read("fast") is None)
+        tap.stream("big", "c9", "partial out so far, longer now")
+        check("the live slot overwrites in place",
+              tap.live_read("big")["text"].endswith("longer now"))
+        tap.live_clear("big")
+        check("live_clear empties the slot", tap.live_read("big") is None)
+        # a stale slot (crashed writer) is ignored
+        with open(tap.live_path("big"), "w") as f:
+            json.dump({"ts": 1000.0, "id": "old", "text": "stale"}, f)
+        check("a stale live slot is ignored", tap.live_read("big") is None)
+        tap.live_clear("big")
+
+        # find_event returns the FULL stored text by id+kind
+        tap.clear()
+        tap.write("big", "request", "prompt body", call_id="cf")
+        tap.write("big", "response", "the whole answer " * 10, call_id="cf")
+        fe = tap.find_event("cf", "response")
+        check("find_event returns the full stored event",
+              fe and fe["text"].startswith("the whole answer")
+              and tap.find_event("cf", "request")["text"] == "prompt body"
+              and tap.find_event("nope", "response") is None)
+
         # a torn/garbage line is skipped, not fatal
+        tap.clear()
+        tap.write("big", "request", "before garbage")
         with open(tap.feed_path(), "a") as f:
             f.write("{not json at all\n")
         tap.write("fast", "response", "after garbage")
         kinds = [e["kind"] for e in tap.read()]
-        check("garbage lines are skipped", kinds[-1] == "response" and len(kinds) == 2)
+        check("garbage lines are skipped", kinds == ["request", "response"])
 
         # the ring trims itself and stays readable
         tap.clear()
         for i in range(400):
-            tap.write("big", "response", f"event {i} " + "x" * 8000)
+            tap.write("big", "response", f"event {i} " + "x" * 60_000)
         size = os.path.getsize(tap.feed_path())
         check("the feed trims itself under the cap", size <= tap.MAX_BYTES)
         evs = tap.read(n=5)

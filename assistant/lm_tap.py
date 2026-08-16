@@ -24,10 +24,15 @@ import os
 import tempfile
 import time
 
-EVENT_HEAD = 9000        # per-event text: keep this much of the head…
-EVENT_TAIL = 2500        # …and this much of the tail (prompts end with the question)
-MAX_BYTES = 1_500_000    # trim the feed once it passes this…
-TRIM_TO = 1_000_000      # …keeping roughly this much tail
+# "All of it, so it can be inspected": the caps exist only to stop a pathological event
+# from eating the ring — real prompts and outputs fit whole.  It's RAM (tmpfs), so a few
+# MB is nothing.
+EVENT_HEAD = 200_000     # per-event text: keep this much of the head…
+EVENT_TAIL = 50_000      # …and this much of the tail (prompts end with the question)
+MAX_BYTES = 12_000_000   # trim the feed once it passes this…
+TRIM_TO = 8_000_000      # …keeping roughly this much tail
+
+LIVE_STALE_S = 300       # a live slot older than this is a crashed writer — ignore it
 
 PATH_OVERRIDE: str | None = None       # tests point this at a temp file
 
@@ -109,8 +114,64 @@ def read(n: int = 120, src: str | None = None) -> list:
     return out[-max(1, int(n)):]
 
 
+def find_event(call_id: str, kind: str) -> dict | None:
+    """One full stored event by id+kind — the panel's 'show all' fetch."""
+    for ev in reversed(read(n=1000)):
+        if ev.get("id") == call_id and ev.get("kind") == kind:
+            return ev
+    return None
+
+
+# ── the live slot: the call that is streaming RIGHT NOW ──────────────────────
+# One slot per source, overwritten in place as tokens arrive, so the panel can show output
+# WHILE the model writes it (a 3-minute code generation is watchable, not a black box).
+# The final response event supersedes it; a crashed writer's slot goes stale and is ignored.
+
+def live_path(src: str) -> str:
+    p = feed_path()
+    return os.path.join(os.path.dirname(p),
+                        os.path.basename(p).replace(".jsonl", "") + f"-live-{src}.json")
+
+
+def stream(src: str, call_id: str, text: str, *, lane: str = "", model: str = "") -> None:
+    """Overwrite the live slot with the output accumulated so far.  Callers throttle;
+    best-effort by contract — never raises."""
+    try:
+        p = live_path(src)
+        tmp = p + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"ts": round(time.time(), 3), "id": call_id,
+                                "lane": lane, "model": model, "text": _clip(text)},
+                               ensure_ascii=False))
+        os.replace(tmp, p)                          # readers never see a torn write
+    except Exception:
+        pass
+
+
+def live_read(src: str) -> dict | None:
+    try:
+        with open(live_path(src), encoding="utf-8") as f:
+            ev = json.load(f)
+        if not (isinstance(ev, dict) and ev.get("text")):
+            return None
+        if time.time() - float(ev.get("ts") or 0) > LIVE_STALE_S:
+            return None                             # a crashed writer left it behind
+        return ev
+    except Exception:
+        return None
+
+
+def live_clear(src: str) -> None:
+    try:
+        os.remove(live_path(src))
+    except OSError:
+        pass
+
+
 def clear() -> None:
     try:
         os.remove(feed_path())
     except OSError:
         pass
+    for src in ("big", "fast"):
+        live_clear(src)

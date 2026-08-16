@@ -1084,24 +1084,54 @@ async function loadLMFeed(src) {
   document.getElementById('lmFeedPath').textContent = d.path || '';
   const evs = (d.events || []).slice().reverse();       // newest first
   const list = document.getElementById('lmFeedList');
-  if (!evs.length) {
-    list.innerHTML = `<div class="mem-empty">No ${src} LM traffic yet — this fills as calls happen (chat, dreaming, the toolsmith…).</div>`;
-    return;
-  }
   const col = { request: '#7aa2f7', response: '#9ece6a', error: '#f7768e' };
   const arrow = { request: '→ context in', response: '← output', error: '✗ error' };
-  list.innerHTML = evs.map(e => {
+  const blocks = [];
+  // The call streaming RIGHT NOW: pinned on top, auto-scrolled to its tail so you can
+  // watch the model write.  Superseded the moment its response event lands.
+  const live = d.live;
+  if (live && live.text && !evs.some(e => e.id === live.id && e.kind === 'response')) {
+    const lm = [live.lane, live.model].filter(Boolean).join(' · ');
+    blocks.push(`<div style="border-left:3px solid #e0af68;padding:6px 10px;margin:8px 0;background:rgba(224,175,104,.07)">` +
+      `<div style="font-size:12px;margin-bottom:4px"><b style="color:#e0af68">● streaming now</b>` +
+      ` <span class="muted">· ${ts(live.ts)}${lm ? ' · ' + escHtml(lm) : ''} · #${escHtml(live.id || '')}</span></div>` +
+      `<pre id="lmLivePre" class="mono" style="white-space:pre-wrap;margin:0;max-height:340px;overflow:auto;font-size:12px">${escHtml(live.text)}</pre></div>`);
+  }
+  evs.forEach((e, ix) => {
     const meta = [];
     if (e.lane) meta.push(e.lane);
     if (e.model) meta.push(e.model);
     if (e.meta && e.meta.tools) meta.push(`${e.meta.tools} tools offered`);
     if (e.meta && e.meta.think) meta.push('thinking');
     if (e.elapsed_s != null) meta.push(`${e.elapsed_s}s`);
-    return `<div style="border-left:3px solid ${col[e.kind] || '#888'};padding:6px 10px;margin:8px 0;background:rgba(127,127,127,.05)">` +
+    const more = e.clipped_chars
+      ? `<div style="margin-top:4px"><a href="#" style="font-size:12px" ` +
+        `onclick="return lmShowAll('${escAttr(e.id)}','${escAttr(e.kind)}','lmev-${ix}')">` +
+        `… show all (${e.clipped_chars} more chars)</a></div>` : '';
+    blocks.push(`<div style="border-left:3px solid ${col[e.kind] || '#888'};padding:6px 10px;margin:8px 0;background:rgba(127,127,127,.05)">` +
       `<div style="font-size:12px;margin-bottom:4px"><b style="color:${col[e.kind] || '#888'}">${arrow[e.kind] || e.kind}</b>` +
       ` <span class="muted">· ${ts(e.ts)}${meta.length ? ' · ' + escHtml(meta.join(' · ')) : ''}${e.id ? ' · #' + escHtml(e.id) : ''}</span></div>` +
-      `<pre class="mono" style="white-space:pre-wrap;margin:0;max-height:340px;overflow:auto;font-size:12px">${escHtml(e.text || '')}</pre></div>`;
-  }).join('');
+      `<pre id="lmev-${ix}" class="mono" style="white-space:pre-wrap;margin:0;max-height:340px;overflow:auto;font-size:12px">${escHtml(e.text || '')}</pre>${more}</div>`);
+  });
+  list.innerHTML = blocks.join('') ||
+    `<div class="mem-empty">No ${src} LM traffic yet — this fills as calls happen (chat, dreaming, the toolsmith…).</div>`;
+  const lp = document.getElementById('lmLivePre');
+  if (lp) lp.scrollTop = lp.scrollHeight;               // follow the tail as it writes
+}
+
+async function lmShowAll(id, kind, preId) {
+  try {
+    const d = await (await fetch('/api/lm_feed/full?id=' + encodeURIComponent(id) +
+                                 '&kind=' + encodeURIComponent(kind))).json();
+    const pre = document.getElementById(preId);
+    if (pre && d.text) {
+      pre.textContent = d.text;
+      pre.style.maxHeight = 'none';
+      const link = pre.parentElement.querySelector('a');
+      if (link) link.parentElement.remove();
+    }
+  } catch (e) {}
+  return false;
 }
 
 // ── Working memory (VIN-WM-02 conversational graph) ─────────────────────────

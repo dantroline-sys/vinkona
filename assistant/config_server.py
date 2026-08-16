@@ -985,13 +985,35 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, CFGMOD.resolve_read(self._personas_path()).read_text())
         if path == "/api/lm_feed":
             # The live LM feed (Live tab sub-tabs): recent context/output events for one
-            # model source.  Backed by a RAM file (/dev/shm) — never persisted to disk.
+            # model source, plus the call streaming RIGHT NOW (the live slot).  Backed by
+            # a RAM file (/dev/shm) — never persisted to disk.  Event text is PREVIEW-
+            # clipped here so the 2s poll stays light; the full stored text of any event
+            # comes from /api/lm_feed/full (nothing is lost, "all of it" is one click).
+            _PREVIEW = 6000
             try:
                 q = self._query()
                 src = (q.get("src", [""])[0] or "").strip() or None
                 n = max(1, min(400, int(q.get("n", ["120"])[0])))
-                return self._json(200, {"events": LMTAP.read(n=n, src=src),
+                evs = []
+                for e in LMTAP.read(n=n, src=src):
+                    t = e.get("text") or ""
+                    if len(t) > _PREVIEW:
+                        e = dict(e)
+                        e["text"] = t[:_PREVIEW]
+                        e["clipped_chars"] = len(t) - _PREVIEW
+                    evs.append(e)
+                return self._json(200, {"events": evs,
+                                        "live": LMTAP.live_read(src) if src else None,
                                         "path": LMTAP.feed_path()})
+            except Exception as e:
+                return self._json(500, {"error": str(e)})
+        if path == "/api/lm_feed/full":
+            # One event's COMPLETE stored text (the list view sends a preview).
+            try:
+                q = self._query()
+                ev = LMTAP.find_event(q.get("id", [""])[0], q.get("kind", [""])[0])
+                return self._json(200 if ev else 404, ev or {"error": "event gone "
+                                  "(the RAM ring trimmed past it)"})
             except Exception as e:
                 return self._json(500, {"error": str(e)})
         if path == "/api/own_tools":

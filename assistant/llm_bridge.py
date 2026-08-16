@@ -2986,6 +2986,11 @@ class LLMBridge:
         _tap_t0 = time.monotonic()
         _tap_out: list = []                    # raw content deltas, pre-strip
         _tap_think: list = []                  # reasoning_content deltas
+        _tap_push = 0.0                        # last live-slot push (throttled ~0.7s)
+
+        def _tap_partial() -> str:
+            t = "".join(_tap_think)
+            return (("[thinking]\n" + t + "\n\n") if t else "") + "".join(_tap_out)
         lm_tap.write(_tap_src, "request",
                      "\n\n".join(f"[{m.get('role', '?')}]\n{m.get('content', '')}"
                                  for m in messages),
@@ -3051,6 +3056,10 @@ class LLMBridge:
                         if piece:
                             yielded = True
                             yield piece
+                    if (_tap_out or _tap_think) \
+                            and time.monotonic() - _tap_push >= 0.7:
+                        _tap_push = time.monotonic()    # the live slot: watch it write
+                        lm_tap.stream(_tap_src, _tap_cid, _tap_partial(), model=model)
                     if choices[0].get("finish_reason"):
                         break
                 tail = aside_cap.feed(stripper.flush()) + aside_cap.flush()
@@ -3111,6 +3120,7 @@ class LLMBridge:
                 lm_tap.write(_tap_src, "response", "\n\n".join(parts) or "(no output)",
                              call_id=_tap_cid, model=model,
                              elapsed_s=time.monotonic() - _tap_t0)
+                lm_tap.live_clear(_tap_src)     # the response event supersedes the slot
             except Exception:
                 pass
         if saw_reasoning and not yielded:
