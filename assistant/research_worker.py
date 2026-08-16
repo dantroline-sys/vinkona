@@ -1359,60 +1359,11 @@ async def main():
         # plain-language spec; (2) is there a queued spec to build, or a failed one to
         # re-analyse (with kb_ask guidance) and re-test? → attempt exactly one.  Interval-
         # gated (persisted; not on every tick or every boot), under the big-LM lease already
-        # held for this cycle, and preemptible like the rest.
+        # held for this cycle, and preemptible like the rest.  (Body shared with the panel's
+        # manual Run-now — see toolsmith_pass below idle_cycle.)
         if _stand_down():
             return
-        _tsc = _otc.get("toolsmith", {}) or {}
-        if own_toolbox is not None and _toolsmith and _tsc.get("enabled") and big.get("url"):
-            _ts_last = float(memory.get_state("toolsmith_ran_at") or 0)
-            if time.time() - _ts_last >= float(_tsc.get("min_interval_s", 21600)):
-                set_activity("toolsmith")
-                try:
-                    async def _ts_chat(prompt, think=True):
-                        return await memory._chat_json(big["url"], big["model"], prompt,
-                                                       think=think)
-
-                    async def _ts_guidance(question):
-                        # kb_ask (falling back to kb_search passages) as build guidance.
-                        r = await kb_source(tools, question, max_chars=2500, max_items=4)
-                        return r[0] if r else None
-                    _facs = []
-                    try:
-                        if tools.active:
-                            _facs = [f"{t['function']['name']}: "
-                                     f"{t['function'].get('description', '')}"
-                                     for t in (await tools.catalogue()) if t.get("function")]
-                    except Exception:
-                        pass
-                    st = await _toolsmith.run(
-                        own_toolbox, _ts_chat, logs=memory.recent_logs(24),
-                        faculties=_facs, context=memory._voice_anchor(),
-                        guidance=(_ts_guidance if _tsc.get("kb_guidance", True) else None),
-                        max_repair=int(_tsc.get("max_repair", 2)),
-                        max_tools=int(_tsc.get("max_tools", 24)),
-                        max_attempts=int(_tsc.get("max_attempts", 3)),
-                        max_queue=int(_tsc.get("max_queue", 10)))
-                    memory.set_state("toolsmith_ran_at", str(time.time()))
-                    ident, build = st.get("identified") or {}, st.get("build") or {}
-                    if ident.get("action") == "proposed":
-                        _log(f"toolsmith: queued a tool spec — {ident.get('title')}")
-                    if build.get("action") not in (None, "none"):
-                        _log("toolsmith: " + build.get("action", "?") + " "
-                             + str(build.get("name") or build.get("title") or "")
-                             + (f" (attempt {build['attempts']})" if build.get("attempts") else ""))
-                    if (ident.get("action") == "proposed"
-                            or build.get("action") not in (None, "none")):
-                        trace.write(kind="toolsmith",
-                                    identified=ident.get("title") if ident.get("action")
-                                    == "proposed" else None,
-                                    action=build.get("action"),
-                                    name=build.get("name"), title=build.get("title"),
-                                    attempts=build.get("attempts"),
-                                    reason=(build.get("reason") or "")[:200],
-                                    store_size=len(memory.entries))
-                except Exception as e:
-                    _log(f"toolsmith failed (continuing): {e}")
-                    memory.set_state("toolsmith_ran_at", str(time.time()))  # don't hammer on error
+        await toolsmith_pass()
         if _task_on("perspective_audit") and idle_cfg.get("perspective_audit", True):
             try:
                 pstats = await memory.audit_perspective(
@@ -1566,6 +1517,69 @@ async def main():
         # above (previously an empty window returned early and starved the plans).
         if _task_on("plans") and plans_on:
             await work_plan_questions(plans_cfg.get("work_per_cycle", 3))
+
+    async def toolsmith_pass(force: bool = False):
+        """One toolsmith pass: identify a missing tool (→ a queued plain-language spec) and
+        build/re-analyse one spec from the queue.  Shared by the idle cycle (interval-gated)
+        and the Tools tab's Run-now button (force=True: the user asked, so the interval is
+        bypassed and a trace line is written even when nothing came of it)."""
+        _tsc = _otc.get("toolsmith", {}) or {}
+        if not (own_toolbox is not None and _toolsmith and _tsc.get("enabled")
+                and big.get("url")):
+            return
+        if not force:
+            _ts_last = float(memory.get_state("toolsmith_ran_at") or 0)
+            if time.time() - _ts_last < float(_tsc.get("min_interval_s", 21600)):
+                return
+        set_activity("toolsmith", interruptible=not force)
+        try:
+            async def _ts_chat(prompt, think=True):
+                return await memory._chat_json(big["url"], big["model"], prompt,
+                                               think=think)
+
+            async def _ts_guidance(question):
+                # kb_ask (falling back to kb_search passages) as build guidance.
+                r = await kb_source(tools, question, max_chars=2500, max_items=4)
+                return r[0] if r else None
+            _facs = []
+            try:
+                if tools.active:
+                    _facs = [f"{t['function']['name']}: "
+                             f"{t['function'].get('description', '')}"
+                             for t in (await tools.catalogue()) if t.get("function")]
+            except Exception:
+                pass
+            st = await _toolsmith.run(
+                own_toolbox, _ts_chat, logs=memory.recent_logs(24),
+                faculties=_facs, context=memory._voice_anchor(),
+                guidance=(_ts_guidance if _tsc.get("kb_guidance", True) else None),
+                max_repair=int(_tsc.get("max_repair", 2)),
+                max_tools=int(_tsc.get("max_tools", 24)),
+                max_attempts=int(_tsc.get("max_attempts", 3)),
+                max_queue=int(_tsc.get("max_queue", 10)))
+            memory.set_state("toolsmith_ran_at", str(time.time()))
+            ident, build = st.get("identified") or {}, st.get("build") or {}
+            if ident.get("action") == "proposed":
+                _log(f"toolsmith: queued a tool spec — {ident.get('title')}")
+            if build.get("action") not in (None, "none"):
+                _log("toolsmith: " + build.get("action", "?") + " "
+                     + str(build.get("name") or build.get("title") or "")
+                     + (f" (attempt {build['attempts']})" if build.get("attempts") else ""))
+            # A quiet pass still leaves a line when the user pressed the button — silence
+            # there would read as "the button did nothing".
+            if (force or ident.get("action") == "proposed"
+                    or build.get("action") not in (None, "none")):
+                trace.write(kind="toolsmith", forced=bool(force),
+                            identified=ident.get("title")
+                            if ident.get("action") == "proposed" else None,
+                            action=build.get("action"),
+                            name=build.get("name"), title=build.get("title"),
+                            attempts=build.get("attempts"),
+                            reason=(build.get("reason") or "")[:200],
+                            store_size=len(memory.entries))
+        except Exception as e:
+            _log(f"toolsmith failed (continuing): {e}")
+            memory.set_state("toolsmith_ran_at", str(time.time()))  # don't hammer on error
 
     def garden():
         stats = memory.garden()
@@ -1952,6 +1966,28 @@ async def main():
                 except Exception as e:
                     _log(f"manual export failed (continuing): {e}")
                 memory.set_state("export_handled", ereq)
+                continue
+            # Manual "Run the toolsmith now" from the Tools tab: one identify+build pass on
+            # demand, bypassing the ~6h idle interval.  Waits politely if the user is mid-chat
+            # (big-LM work), then runs under the lease like any idle pass.
+            treq = memory.get_state("toolsmith_request")
+            if treq and treq != memory.get_state("toolsmith_handled"):
+                _tsc0 = cfg.get("tools", {}).get("own_tools", {}).get("toolsmith", {}) or {}
+                if own_toolbox is not None and _toolsmith and _tsc0.get("enabled") \
+                        and big.get("url"):
+                    if should_yield():
+                        set_activity("idle")
+                        await asyncio.sleep(poll)
+                        continue
+                    try:
+                        await run_big(toolsmith_pass(force=True))
+                    except Exception as e:
+                        _log(f"manual toolsmith failed (continuing): {e}")
+                    memory.set_state("toolsmith_handled", treq)
+                else:
+                    _log("toolsmith run requested but own_tools/toolsmith is off (or no "
+                         "sandbox / big LM) — skipping")
+                    memory.set_state("toolsmith_handled", treq)
                 continue
             # Manual "Distill chat history now" from the Memory tab: fold new USER turns into the
             # durable mind-graph on demand.  Honoured regardless of idle gating — the user asked —

@@ -679,6 +679,19 @@ class MemoryAdmin:
             c.commit()
         return {"ok": True, "override": override}
 
+    def request_toolsmith(self) -> dict:
+        """Queue ONE toolsmith pass (spot a missing tool + build from the spec queue) for the
+        worker — the Tools tab's Run-now button.  Bypasses the ~6h idle interval; the worker
+        answers it within its poll tick (or right after the current chat ends)."""
+        if not Path(self.path).exists():
+            return {"ok": False, "error": "no memory db yet"}
+        with self._conn(ensure=True) as c:
+            c.execute("CREATE TABLE IF NOT EXISTS worker_state (key TEXT PRIMARY KEY, value TEXT)")
+            c.execute("INSERT INTO worker_state(key,value) VALUES('toolsmith_request',?) "
+                      "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str(time.time()),))
+            c.commit()
+        return {"ok": True, "queued": True}
+
     def request_export(self) -> dict:
         """Queue a FULL research export (documents -> solved/*.md) for the worker — it polls
         worker_state and rebuilds every drop, repairing anything removed from the folder."""
@@ -1401,6 +1414,12 @@ class Handler(BaseHTTPRequestHandler):
             # Put a failed/parked spec back in the build queue with a fresh attempt budget.
             try:
                 return self._json(200, self._toolbox().requeue_idea(str(obj.get("id") or "")))
+            except Exception as e:
+                return self._json(500, {"ok": False, "error": str(e)})
+        if path == "/api/own_tools/toolsmith_now":
+            # Run one toolsmith pass on demand (the worker picks it up within its poll tick).
+            try:
+                return self._json(200, MemoryAdmin(self._cfg()).request_toolsmith())
             except Exception as e:
                 return self._json(500, {"ok": False, "error": str(e)})
         if path == "/api/memory":

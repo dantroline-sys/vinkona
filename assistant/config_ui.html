@@ -517,6 +517,8 @@
     <div class="hint" id="toolsmithHint"></div>
     <div class="bar">
       <button class="btn secondary" onclick="addIdea()">+ Add idea</button>
+      <button class="btn secondary" onclick="runToolsmith()" id="toolsmithRun" style="display:none">Run toolsmith now</button>
+      <span id="toolsmithRunStatus" class="status"></span>
     </div>
     <div id="toolIdeas" class="mem-list" style="max-width:640px"></div>
   </section>
@@ -2090,6 +2092,7 @@ async function loadTools() {
     }).join('');
   }
   // toolsmith status + tool ideas (the spec queue she works through while idle)
+  document.getElementById('toolsmithRun').style.display = d.toolsmith ? '' : 'none';
   document.getElementById('toolsmithHint').innerHTML = d.toolsmith
     ? 'The idle toolsmith is <strong>on</strong>: it queues plain-language specs for missing tools, ' +
       'builds them one at a time, and re-analyses failures. Ideas you add here get attempted too.'
@@ -2123,6 +2126,15 @@ async function requeueIdea(id) {
   const d = await (await fetch('/api/own_tools/idea_requeue',
         { method:'POST', body: JSON.stringify({ id }) })).json();
   if (d.ok) loadTools();
+}
+
+async function runToolsmith() {
+  const st = document.getElementById('toolsmithRunStatus');
+  let d;
+  try { d = await (await fetch('/api/own_tools/toolsmith_now', { method:'POST', body:'{}' })).json(); }
+  catch (e) { flash(st, false, 'request failed'); return; }
+  if (d.ok) flash(st, true, 'queued — the worker runs it within ~a minute; watch the Live tab');
+  else flash(st, false, d.error || 'could not queue');
 }
 
 async function addIdea() {
