@@ -135,6 +135,10 @@ async def _main():
               r["action"] == "failed" and i["status"] == "failed"
               and i["attempts"] == 1 and BAD.strip() in i["last_code"]
               and "self-test failed" in i["last_error"])
+        check("the WHOLE attempt is banked for the panel's inspector",
+              i.get("name") == "doubler"
+              and (i.get("last_manifest") or {}).get("name") == "doubler"
+              and (i.get("last_test") or {}).get("input") == {"n": 3})
         asked = []
 
         async def guide(q):

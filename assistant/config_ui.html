@@ -2018,7 +2018,7 @@ async function deleteProfile(name) {
 }
 
 // ── Tools (her own sandboxed tools) ──────────────────────────────────────────
-let toolsData = { tools: [] }, toolSel = null;
+let toolsData = { tools: [] }, toolSel = null, toolIdeaSel = null;
 const TOOL_NEW_CODE =
 `import sys, json
 a = json.load(sys.stdin)          # your arguments (matches manifest.parameters)
@@ -2111,9 +2111,12 @@ async function loadTools() {
         `<div class="t">${escHtml(i.title || '')} ` +
         `<span class="muted" style="font-weight:400">(${escHtml(i.source || '')})</span> ` +
         `<span style="color:${col};font-weight:400;font-size:12px">● ${escHtml(label)}${att}</span></div>` +
+        (i.sketch ? `<div class="m">${escHtml(String(i.sketch).slice(0, 240))}</div>` : '') +
         (i.rationale ? `<div class="m">${escHtml(i.rationale)}</div>` : '') +
         (i.last_error ? `<div class="m" style="color:#f7768e">last error: ${escHtml(String(i.last_error).slice(0, 160))}</div>` : '') +
         `<div class="bar" style="margin-top:6px">` +
+        (i.last_code
+          ? `<button class="btn secondary" onclick="openAttempt('${escAttr(i.id)}')">Inspect attempt</button>` : '') +
         (i.status !== 'proposed'
           ? `<button class="btn secondary" onclick="requeueIdea('${escAttr(i.id)}')">Try again</button>` : '') +
         `<button class="btn secondary" onclick="removeIdea('${escAttr(i.id)}')">Remove</button>` +
@@ -2152,10 +2155,31 @@ async function removeIdea(id) {
   if (d.ok) loadTools();
 }
 
+function openAttempt(id) {
+  // Open a failed/parked build attempt in the editor — the LM's actual code, manifest and
+  // test, with the full error it died on — so it can be inspected, fixed by hand, and
+  // saved (which self-tests it and, on success, resolves the queue entry).
+  const i = (toolsData.ideas || []).find(x => x.id === id);
+  if (!i) return;
+  toolSel = null; toolIdeaSel = id;
+  document.getElementById('toolsEditor').style.display = '';
+  document.getElementById('toolEditName').textContent = i.name || i.title || 'attempt';
+  document.getElementById('toolEditMeta').textContent =
+    '(inspecting a failed build attempt — fix it and Save to install; that resolves the queue entry)';
+  document.getElementById('toolCode').value = i.last_code || '';
+  const manifest = i.last_manifest ||
+    { name: i.name || '', description: i.title || '', parameters: { type: 'object', properties: {} } };
+  document.getElementById('toolManifest').value = JSON.stringify(manifest, null, 2);
+  document.getElementById('toolTest').value = JSON.stringify(i.last_test || { input: {} }, null, 2);
+  document.getElementById('toolTestOut').textContent =
+    i.last_error ? ('Why the last attempt failed:\n' + i.last_error) : '';
+  loadTools();  // re-render (clears any tool-row highlight)
+}
+
 async function openTool(name) {
   const d = await (await fetch('/api/own_tools/get?name=' + encodeURIComponent(name))).json();
   if (d.error) { flash(document.getElementById('toolsStatus'), false, d.error); return; }
-  toolSel = name;
+  toolSel = name; toolIdeaSel = null;
   document.getElementById('toolsEditor').style.display = '';
   document.getElementById('toolEditName').textContent = name;
   document.getElementById('toolEditMeta').textContent = '(editing an existing tool)';
@@ -2168,7 +2192,7 @@ async function openTool(name) {
 }
 
 function newTool() {
-  toolSel = null;
+  toolSel = null; toolIdeaSel = null;
   document.getElementById('toolsEditor').style.display = '';
   document.getElementById('toolEditName').textContent = 'New tool';
   document.getElementById('toolEditMeta').textContent =
@@ -2194,14 +2218,16 @@ async function saveTool() {
   out.textContent = '';
   const body = { name, code: document.getElementById('toolCode').value,
                  manifest: document.getElementById('toolManifest').value,
-                 test: document.getElementById('toolTest').value };
+                 test: document.getElementById('toolTest').value,
+                 idea: toolIdeaSel || undefined };   // a repaired attempt resolves its queue entry
   let d;
   try { d = await (await fetch('/api/own_tools/save',
         { method:'POST', body: JSON.stringify(body) })).json(); }
   catch (e) { flash(status, false, 'request failed'); return; }
   if (d.ok) {
-    flash(status, true, 'saved — self-test passed ✓');
-    toolSel = d.name;
+    flash(status, true, d.resolved_idea ? 'saved — self-test passed ✓ (queue entry resolved)'
+                                        : 'saved — self-test passed ✓');
+    toolSel = d.name; toolIdeaSel = null;
     out.textContent = 'Self-test result:\n' + JSON.stringify((d.test||{}).result, null, 2);
     loadTools();
   } else {

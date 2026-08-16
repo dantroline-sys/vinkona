@@ -267,6 +267,10 @@ async def build_next(toolbox, chat_json: tp.Callable, *, guidance: tp.Callable |
     fac = _fac_allow(toolbox)
     prev_code = _s(idea.get("last_code"), 4000) if idea.get("status") == "failed" else ""
     last_err = ""
+    # The WHOLE last attempt is banked on failure (not just the code) so the panel can open
+    # it in the editor for inspection and repair by hand.
+    last_name = str(idea.get("name") or "")
+    last_manifest = last_test = None
     for _ in range(1, int(max_repair) + 2):              # first try + max_repair retries
         spec = await chat_json(_code_prompt(
             idea=idea, fac_allow=fac, adjustment=adjustment, guidance=kb_text,
@@ -284,18 +288,22 @@ async def build_next(toolbox, chat_json: tp.Callable, *, guidance: tp.Callable |
             continue
         prev_code = spec["code"]
         name = str(spec.get("name") or idea.get("name") or "").strip().lower()
+        last_name = name or last_name
+        test = spec.get("test")
+        if not isinstance(test, dict) or not isinstance(test.get("input"), dict):
+            test = {"input": {}}
+        last_test = test
+        manifest = {"name": name, "description": _s(idea.get("title"), 300),
+                    "author": "toolsmith",
+                    "uses_faculties": bool(spec.get("uses_faculties")),
+                    "parameters": spec.get("parameters")}
+        last_manifest = manifest
         if not _NAME_RE.match(name):
             last_err = f"'{name}' is not a valid tool name (lower_snake_case, 3-40 chars)"
             continue
         if toolbox.has(name):
             last_err = f"the name '{name}' is already taken by another tool — pick a new one"
             continue
-        test = spec.get("test")
-        if not isinstance(test, dict) or not isinstance(test.get("input"), dict):
-            test = {"input": {}}
-        manifest = {"description": _s(idea.get("title"), 300), "author": "toolsmith",
-                    "uses_faculties": bool(spec.get("uses_faculties")),
-                    "parameters": spec.get("parameters")}
         res = toolbox.install(name, prev_code, manifest, test,
                               author="toolsmith", overwrite=False)
         if res.get("ok"):
@@ -306,10 +314,14 @@ async def build_next(toolbox, chat_json: tp.Callable, *, guidance: tp.Callable |
 
     # -- session over: bank the failure for a later analyse-and-retry, or park --
     exhausted = session >= int(max_attempts)
-    toolbox.update_idea(idea["id"], status="parked" if exhausted else "failed",
-                        attempts=session, last_error=last_err,
-                        last_code=_s(prev_code, 8000),
-                        name=str(idea.get("name") or ""))
+    patch = {"status": "parked" if exhausted else "failed", "attempts": session,
+             "last_error": last_err, "last_code": _s(prev_code, 8000),
+             "name": _s(last_name, 60)}
+    if last_manifest is not None:                        # keep an older banked one otherwise
+        patch["last_manifest"] = last_manifest
+    if last_test is not None:
+        patch["last_test"] = last_test
+    toolbox.update_idea(idea["id"], **patch)
     return {"action": "parked" if exhausted else "failed", "title": idea.get("title"),
             "attempts": session, "reason": last_err}
 

@@ -1387,8 +1387,15 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError as e:
                 return self._json(400, {"ok": False, "error": str(e)})
             try:
-                res = self._toolbox().install(name, code, manifest, test,
-                                              author=str(manifest.get("author") or "user"))
+                box = self._toolbox()
+                res = box.install(name, code, manifest, test,
+                                  author=str(manifest.get("author") or "user"))
+                # Saving a repaired ATTEMPT (opened from a failed/parked idea): once it
+                # installs, the queue entry is resolved — the tool itself is the record.
+                idea_id = str(obj.get("idea") or "")
+                if res.get("ok") and idea_id:
+                    box.remove_idea(idea_id)
+                    res["resolved_idea"] = idea_id
                 return self._json(200 if res.get("ok") else 400, res)
             except Exception as e:
                 return self._json(500, {"ok": False, "error": str(e)})
