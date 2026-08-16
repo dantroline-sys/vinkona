@@ -1397,6 +1397,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, self._toolbox().remove_idea(str(obj.get("id") or "")))
             except Exception as e:
                 return self._json(500, {"ok": False, "error": str(e)})
+        if path == "/api/own_tools/idea_requeue":
+            # Put a failed/parked spec back in the build queue with a fresh attempt budget.
+            try:
+                return self._json(200, self._toolbox().requeue_idea(str(obj.get("id") or "")))
+            except Exception as e:
+                return self._json(500, {"ok": False, "error": str(e)})
         if path == "/api/memory":
             try:
                 return self._json(200, MemoryAdmin(self._cfg()).upsert(obj))

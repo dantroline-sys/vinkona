@@ -962,11 +962,17 @@ DEFAULTS: dict = {
             # The idle toolsmith: between chats, the big LM reflects and either writes herself a
             # small sandboxed tool (self-tested before it's ever offered) or records a "tool idea"
             # it can't build.  Off by default; needs own_tools on and the big LM up.
+            # Each pass asks two questions: (1) is a tool missing? → queue a PLAIN-LANGUAGE
+            # spec (visible under Tool ideas at once); (2) is there a queued spec to build,
+            # or a failed one to re-analyse and re-test? → attempt exactly one.
             "toolsmith": {
                 "enabled": False,           # let her write her own tools while idle
                 "min_interval_s": 21600,    # at most once every ~6h (persisted; not every boot)
                 "max_repair": 2,            # self-test failed? feed the traceback back this many times
-                "max_tools": 24,            # once she has this many, she only records ideas
+                "max_tools": 24,            # once she has this many, she only queues specs
+                "max_attempts": 3,          # build sessions per spec (across idle cycles) before parking
+                "max_queue": 10,            # open specs (proposed+failed) before the deficit scan pauses
+                "kb_guidance": True,        # consult kb_ask when re-analysing a failed build
             },
         },
         # Connecting Vinkona to your tools on another computer (usually a Mac).
@@ -1506,6 +1512,9 @@ FIELD_LEVELS: dict[str, str] = {
     "tools.own_tools.toolsmith.min_interval_s": "expert",
     "tools.own_tools.toolsmith.max_repair": "expert",
     "tools.own_tools.toolsmith.max_tools": "advanced",
+    "tools.own_tools.toolsmith.max_attempts": "expert",
+    "tools.own_tools.toolsmith.max_queue": "expert",
+    "tools.own_tools.toolsmith.kb_guidance": "advanced",
     "music.enabled": "basic",
     "knowledge.enabled": "basic",
     "knowledge_host.enabled": "basic",

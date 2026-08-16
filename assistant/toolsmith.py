@@ -1,34 +1,39 @@
 """
-toolsmith.py — Vinkona's idle tool-maker.
+toolsmith.py — Vinkona's idle tool-maker: a two-phase pipeline over a durable spec queue.
 
-Between conversations, she asks herself a simple question: *looking at how things have
-been going, is there a small tool that would help — or a problem I can see a fix for?*
-Two outcomes, both surfaced in the same Tools panel section:
+Between conversations she asks herself two separate questions:
 
-  * **build** — if it's a small, safe Python script, she writes it (``tool.py`` +
-    manifest + a self-test), and it goes in through ``Toolbox.install()``, which runs the
-    self-test in a throwaway sandbox and only promotes a tool that actually runs.  If the
-    self-test fails she gets the traceback back and tries again, up to a small cap — a
-    bounded repair loop, not open-ended flailing.
-  * **idea** — if it's worth having but she can't code it (needs a capability she doesn't
-    have yet, or it's simply too big), she records it as a *tool idea* so you can see it and
-    finish it.  A build that never passes its self-test degrades to an idea too, so the
-    effort is never lost.
+  1. **Is a tool missing?**  (``identify``) — look at the current tooling and the recent
+     conversations and spot a deficit.  The answer is deliberately NOT code: it's a
+     plain-language spec ("what the tool should do"), queued as a *tool idea* with status
+     ``proposed``.  Cheap, reviewable, and visible in the Tools panel immediately.
+
+  2. **Is there a queued spec to build?**  (``build_next``) — take one spec from the queue
+     and attempt it: write the code, self-test it in the throwaway sandbox, and pass or
+     fail it.  A failure is BANKED on the idea (status ``failed``, with the code and the
+     traceback), and a LATER idle cycle re-opens it: an analysis step reads the spec, the
+     previous code and the error, diagnoses what went wrong — optionally asking the
+     knowledge host (kb_ask) for guidance — and tries again with the adjustment.  After
+     the attempt budget is spent (or the LM judges it unbuildable) the idea is ``parked``:
+     still visible, waiting for you.  A successful build removes the idea — the tool
+     itself now stands in the roster.
+
+The user's jotted ideas enter the same queue (status ``proposed``), so "I wish she had a
+tool that…" typed into the panel gets attempted on the next idle cycle — user specs are
+picked first.
 
 The security story is unchanged: whatever she writes runs in the same sandbox as every
 other own-tool — read anywhere (or the shared folders), write only in her store, no
-network, killed on timeout.  The big LM only produces *text*; nothing it writes runs
-outside that box, and nothing is offered to her mid-conversation until it has passed a
-self-test.
+network, killed on timeout — and nothing is offered mid-conversation until it has passed
+a self-test.  The big LM only produces text.
 
-This module is deliberately HTTP-agnostic: it takes a ``chat_json`` callable (the caller
-binds the big-LM URL + model), so it has no aiohttp dependency and is trivial to unit-test
-with a stub LM.  One tool is built (or one idea recorded) per invocation — cheap, bounded,
-and easy to review in the panel afterwards.
+This module is deliberately HTTP-agnostic: it takes ``chat_json`` (the big LM) and an
+optional ``guidance`` callable (kb_ask), both bound by the caller — so it has no aiohttp
+dependency and unit-tests with stubs.
 """
 from __future__ import annotations
 
-import json
+import re
 import typing as tp
 
 # The rules the generated tool must obey — same contract the seed tools follow, stated so
@@ -45,9 +50,17 @@ A tool is ONE Python 3 file. Rules it MUST follow:
 - Catch errors and RETURN them, e.g. print(json.dumps({"error": str(e)})); don't crash.
 - Keep it small, single-purpose, and deterministic."""
 
+_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{2,39}$")
+
 
 def _s(v: tp.Any, n: int = 4000) -> str:
     return str(v or "")[:n]
+
+
+def _fac_allow(toolbox) -> list:
+    """Faculties a tool may call (empty unless the feature is enabled)."""
+    fc = (getattr(toolbox, "cfg", {}) or {}).get("faculties") or {}
+    return list(fc.get("allow") or []) if fc.get("enabled") else []
 
 
 def _faculties_block(fac_allow: list) -> str:
@@ -72,72 +85,130 @@ call (the self-test never hits the real tools), e.g.
 Write the tool to handle an empty/most-any faculty result."""
 
 
-def _decide_prompt(*, context: str, roster: list, ideas: list, faculties: list,
-                   usage: dict, logs: list, max_reached: bool, fac_allow: list) -> str:
+# ── phase 1: identify a deficit ───────────────────────────────────────────────
+
+def _identify_prompt(*, context: str, roster: list, queue: list, faculties: list,
+                     usage: dict, logs: list) -> str:
     have = "\n".join(f"- {t['name']}: {t.get('description','')}" for t in roster) \
         or "(none yet)"
-    idea_lines = "\n".join(f"- {i.get('title','')}" for i in ideas) or "(none yet)"
+    queued = "\n".join(f"- {i.get('title','')}" for i in queue) or "(none)"
     fac = "\n".join(f"- {f}" for f in faculties[:40]) or "(none)"
     convo = "\n".join(f"{r.get('role','?').upper()}: {_s(r.get('text'), 500)}"
                       for r in logs[-24:]) or "(no recent interactions)"
     unused = [n for t in roster if (n := t["name"]) and usage.get(n, {}).get("calls", 0) == 0]
-    unused_note = (f"\nTools you built but have never used: {', '.join(unused)}."
-                   if unused else "")
-    build_note = ("\nYou already have plenty of tools — DO NOT choose \"build\" this time; "
-                  "only \"idea\" or \"none\"." if max_reached else "")
-    fac_note = (f"\nA tool you build MAY call these faculties of yours: {', '.join(fac_allow)}."
-                if fac_allow else "")
+    unused_note = (f"\nTools you built but have never used (a caution against piling up "
+                   f"more like them): {', '.join(unused)}." if unused else "")
     return f"""{context}
-You can make small tools for yourself to use during conversations. Between chats you review
-how things have gone and decide whether a new one would help.
+You can make small tools for yourself (single-file Python scripts that run in your sandbox:
+read files anywhere, write only in your store, no network). Between chats you look for a
+GAP: given the recent conversations, is a tool needed that does not exist?
 
-{_TOOL_CONTRACT}
-
-Tools you have already (do NOT duplicate these):
+Tools you already have (not a gap if one of these covers it):
 {have}
 
-Things you can already do with your other faculties (do NOT rebuild these):
+Things you can already do with your other faculties (not a gap either):
 {fac}
 
-Tool ideas already noted (do NOT repeat these):
-{idea_lines}{unused_note}
+Specs already in your build queue (do NOT repeat these):
+{queued}{unused_note}
 
 Recent interactions:
 {convo}
 
-Ask yourself: is there a small, safe, single-purpose tool that would have helped, or a
-problem you can see and a concrete fix for?{fac_note}{build_note}
+If you see a real deficit, describe the tool IN PLAIN LANGUAGE ONLY — no code, no schema:
+what it would be called informally, what problem it solves, what it takes in and what it
+should return.  Someone (you, later) will implement it from this description alone.
 
 Reply with ONE JSON object:
-- To build one now (only if it fits the rules above as a small Python script):
-  {{"decision":"build","name":"snake_case_name","description":"one line for the menu",
-    "rationale":"why it helps","plan":"inputs, what it does, the JSON it returns"}}
-- To note a good idea you can't build yourself (needs a capability you lack, or too big):
-  {{"decision":"idea","title":"short title","rationale":"why it would help, and what it needs"}}
-- If nothing is worth adding right now:
-  {{"decision":"none"}}
-Choose exactly one. Prefer "none" over a weak or redundant tool."""
+  {{"deficit": true, "title": "short informal title",
+    "purpose": "2-5 plain sentences: the problem, inputs, and what it returns",
+    "rationale": "why the recent conversations show it's needed"}}
+or, if the current tooling covers what actually came up:
+  {{"deficit": false}}
+Prefer "false" over a weak, redundant, or speculative tool."""
 
 
-def _code_prompt(*, name: str, description: str, plan: str, fac_allow: list,
-                 prev_code: str = "", error: str = "") -> str:
+async def identify(toolbox, chat_json: tp.Callable, *, logs: list | None = None,
+                   faculties: list | None = None, context: str = "",
+                   max_queue: int = 10) -> dict:
+    """Phase 1: spot a missing tool and queue a plain-language spec for it.
+    Returns {action: proposed|none, title?, reason?}."""
+    ideas = toolbox.ideas()
+    open_specs = [i for i in ideas if i.get("status") in ("proposed", "failed")]
+    if len(open_specs) >= int(max_queue):
+        return {"action": "none", "reason": f"queue is full ({len(open_specs)})"}
+    out = await chat_json(_identify_prompt(
+        context=context, roster=toolbox.describe(), queue=ideas,
+        faculties=faculties or [], usage=toolbox.usage(), logs=logs or []), think=True)
+    if not isinstance(out, dict) or not out.get("deficit"):
+        return {"action": "none"}
+    title = _s(out.get("title"), 120).strip()
+    if not title:
+        return {"action": "none", "reason": "deficit reported but no title"}
+    r = toolbox.add_idea(title, rationale=_s(out.get("rationale"), 2000),
+                         sketch=_s(out.get("purpose"), 4000), source="toolsmith",
+                         status="proposed")
+    if not r.get("ok"):
+        return {"action": "none", "reason": r.get("error")}
+    return {"action": "proposed", "title": title}
+
+
+# ── phase 2: build (or re-analyse and re-test) one queued spec ───────────────
+
+def _analysis_prompt(idea: dict) -> str:
+    return f"""You tried to build yourself this tool and the attempt FAILED. Diagnose why and
+decide how to fix it (or whether it simply can't be built under the rules).
+
+{_TOOL_CONTRACT}
+
+The spec: {_s(idea.get('title'), 120)}
+Purpose: {_s(idea.get('sketch'), 2000)}
+
+The failing code:
+{_s(idea.get('last_code'), 5000)}
+
+The error it failed with:
+{_s(idea.get('last_error'), 1200)}
+
+Reply with ONE JSON object:
+  {{"diagnosis": "what actually went wrong, in a sentence or two",
+    "adjustment": "what to do differently this time",
+    "kb_question": "a short question for your knowledge base if guidance would help, else \"\"",
+    "unbuildable": false}}
+Set "unbuildable": true (with the diagnosis saying why) only if the spec cannot be met
+under the rules — needs the network, a package, or a capability you don't have."""
+
+
+def _code_prompt(*, idea: dict, fac_allow: list, adjustment: str = "",
+                 guidance: str = "", prev_code: str = "", error: str = "") -> str:
     base = f"""{_TOOL_CONTRACT}
 {_faculties_block(fac_allow)}
 
-Write the tool "{name}".
-What it should do: {description}
-Plan: {plan}
+Implement this tool of yours from its plain-language spec.
+Spec: {_s(idea.get('title'), 120)}
+Purpose: {_s(idea.get('sketch'), 3000)}
+Why it's wanted: {_s(idea.get('rationale'), 1000)}"""
+    if adjustment:
+        base += f"\nThis is a RETRY. Apply this adjustment: {_s(adjustment, 1000)}"
+    if guidance:
+        base += f"\n\nGuidance from your knowledge base:\n{_s(guidance, 2500)}"
+    base += """
 
 Reply with ONE JSON object:
-{{"code":"<the full Python file as a string>",
-  "parameters":{{"type":"object","properties":{{...}},"required":[...]}},
+{"name": "snake_case_name",
+  "code": "<the full Python file as a string>",
+  "parameters": {"type":"object","properties":{...},"required":[...]},
   "uses_faculties": false,
-  "test":{{"input":{{...}},"expect_keys":["..."]}}}}
+  "test": {"input":{...},"expect_keys":["..."]},
+  "unbuildable": false}
+- "name" is the tool's menu name (lower_snake_case, 3-40 chars).
 - "parameters" is the JSON-schema of the stdin arguments (for the menu).
 - Set "uses_faculties": true ONLY if the code imports the faculties helper (see above).
 - "test.input" is a concrete arguments object that exercises the tool; "expect_keys" are
   keys that MUST appear in its output. The test runs in the sandbox and must pass, so pick
-  an input that works there (e.g. read a file that exists like /etc/hostname)."""
+  an input that works there (e.g. read a file that exists like /etc/hostname).
+- If while writing it you realise it CANNOT be built under the rules, reply
+  {"unbuildable": true, "reason": "why"} instead."""
     if error:
         base += (f"\n\nYour previous attempt FAILED its self-test with:\n{_s(error, 1200)}\n\n"
                  f"Previous code:\n{_s(prev_code, 4000)}\n\nFix it and return the full "
@@ -145,81 +216,117 @@ Reply with ONE JSON object:
     return base
 
 
-async def run(toolbox, chat_json: tp.Callable, *, logs: list | None = None,
-              faculties: list | None = None, context: str = "",
-              max_repair: int = 2, max_tools: int = 24) -> dict:
-    """One toolsmith pass.  ``chat_json`` is ``async (prompt, think=True) -> dict|None``.
-    Returns a status dict describing what happened (for logging / the trace feed):
-    {action: built|idea|failed|none|error, name?/title?, attempts?, reason?}."""
-    roster = toolbox.describe()
-    ideas = toolbox.ideas()
-    usage = toolbox.usage()
-    faculties = faculties or []
-    logs = logs or []
-    at_cap = len(roster) >= int(max_tools)
-    # Faculties she may let a tool call (empty unless enabled) — teaches the LM what a tool
-    # can reach, so it can write a faculties tool when it helps.
-    _fc = (getattr(toolbox, "cfg", {}) or {}).get("faculties") or {}
-    fac_allow = list(_fc.get("allow") or []) if _fc.get("enabled") else []
+def _pick(ideas: list, max_attempts: int) -> dict | None:
+    """The next spec to work: user-jotted first (they asked), then proposed, then failed
+    awaiting re-analysis — oldest first within each band; parked never."""
+    def band(i):
+        if i.get("status") == "proposed":
+            return 0 if i.get("source") == "user" else 1
+        return 2
+    open_specs = [i for i in ideas
+                  if i.get("status") in ("proposed", "failed")
+                  and int(i.get("attempts", 0)) < int(max_attempts)]
+    return sorted(open_specs, key=lambda i: (band(i), str(i.get("created_at", ""))))[0] \
+        if open_specs else None
 
-    decision = await chat_json(_decide_prompt(
-        context=context, roster=roster, ideas=ideas, faculties=faculties,
-        usage=usage, logs=logs, max_reached=at_cap, fac_allow=fac_allow), think=True)
-    if not isinstance(decision, dict):
-        return {"action": "none", "reason": "no decision from the big LM"}
 
-    kind = str(decision.get("decision") or "none").lower()
+async def build_next(toolbox, chat_json: tp.Callable, *, guidance: tp.Callable | None = None,
+                     max_repair: int = 2, max_tools: int = 24,
+                     max_attempts: int = 3) -> dict:
+    """Phase 2: take one queued spec and attempt it — code, self-test, pass or fail.  A
+    failed spec is banked (code + error) and re-analysed on a later cycle; `guidance` is an
+    optional ``async (question) -> str|None`` (kb_ask) consulted when the analysis asks for
+    it.  Returns {action: built|failed|parked|none, title?/name?, attempts?, reason?}."""
+    if len(toolbox.names()) >= int(max_tools):
+        return {"action": "none", "reason": "tool cap reached — build later"}
+    idea = _pick(toolbox.ideas(), max_attempts)
+    if idea is None:
+        return {"action": "none", "reason": "queue empty"}
+    session = int(idea.get("attempts", 0)) + 1
 
-    # --- an idea she can't build herself ---
-    if kind == "idea" or (kind == "build" and at_cap):
-        title = _s(decision.get("title") or decision.get("name")
-                   or decision.get("description"), 120)
-        if not title:
-            return {"action": "none", "reason": "idea had no title"}
-        r = toolbox.add_idea(title, rationale=_s(decision.get("rationale"), 2000),
-                             sketch=_s(decision.get("plan"), 4000), source="toolsmith")
-        return ({"action": "idea", "title": title} if r.get("ok")
-                else {"action": "none", "reason": r.get("error")})
+    # -- re-analysis of a previously failed attempt (Dan's step 2b) --
+    adjustment, kb_text = "", ""
+    if idea.get("status") == "failed":
+        ana = await chat_json(_analysis_prompt(idea), think=True)
+        if isinstance(ana, dict):
+            if ana.get("unbuildable"):
+                toolbox.update_idea(idea["id"], status="parked",
+                                    last_error=_s(ana.get("diagnosis"), 400)
+                                    or "judged unbuildable")
+                return {"action": "parked", "title": idea.get("title"),
+                        "reason": _s(ana.get("diagnosis"), 200)}
+            adjustment = _s(ana.get("adjustment"), 1000)
+            q = _s(ana.get("kb_question"), 300).strip()
+            if q and guidance is not None:
+                try:
+                    kb_text = _s(await guidance(q), 2500)
+                except Exception:
+                    kb_text = ""
 
-    if kind != "build":
-        return {"action": "none"}
-
-    name = str(decision.get("name") or "").strip().lower()
-    description = _s(decision.get("description") or name, 300)
-    plan = _s(decision.get("plan"), 4000)
-    if toolbox.has(name):
-        # collides with an existing tool — bank it as an idea rather than clobber a
-        # working tool (install would refuse the overwrite anyway).
-        toolbox.add_idea(name, rationale="(the name collided with an existing tool) "
-                         + _s(decision.get("rationale"), 1800), sketch=plan)
-        return {"action": "idea", "title": name, "reason": "name collision"}
-
-    # --- build it, with a bounded repair loop ---
-    prev_code, last_err = "", ""
-    for attempt in range(1, int(max_repair) + 2):        # first try + max_repair retries
+    # -- code it, with the in-session repair loop --
+    fac = _fac_allow(toolbox)
+    prev_code = _s(idea.get("last_code"), 4000) if idea.get("status") == "failed" else ""
+    last_err = ""
+    for _ in range(1, int(max_repair) + 2):              # first try + max_repair retries
         spec = await chat_json(_code_prompt(
-            name=name, description=description, plan=plan, fac_allow=fac_allow,
+            idea=idea, fac_allow=fac, adjustment=adjustment, guidance=kb_text,
             prev_code=prev_code, error=last_err), think=True)
-        if not isinstance(spec, dict) or not isinstance(spec.get("code"), str):
+        if not isinstance(spec, dict):
+            last_err = "the big LM did not return usable code"
+            continue
+        if spec.get("unbuildable"):
+            toolbox.update_idea(idea["id"], status="parked",
+                                last_error=_s(spec.get("reason"), 400) or "judged unbuildable")
+            return {"action": "parked", "title": idea.get("title"),
+                    "reason": _s(spec.get("reason"), 200)}
+        if not isinstance(spec.get("code"), str) or not spec["code"].strip():
             last_err = "the big LM did not return usable code"
             continue
         prev_code = spec["code"]
-        manifest = {"description": description, "author": "toolsmith",
-                    "uses_faculties": bool(spec.get("uses_faculties")),
-                    "parameters": spec.get("parameters")}
+        name = str(spec.get("name") or idea.get("name") or "").strip().lower()
+        if not _NAME_RE.match(name):
+            last_err = f"'{name}' is not a valid tool name (lower_snake_case, 3-40 chars)"
+            continue
+        if toolbox.has(name):
+            last_err = f"the name '{name}' is already taken by another tool — pick a new one"
+            continue
         test = spec.get("test")
         if not isinstance(test, dict) or not isinstance(test.get("input"), dict):
             test = {"input": {}}
+        manifest = {"description": _s(idea.get("title"), 300), "author": "toolsmith",
+                    "uses_faculties": bool(spec.get("uses_faculties")),
+                    "parameters": spec.get("parameters")}
         res = toolbox.install(name, prev_code, manifest, test,
                               author="toolsmith", overwrite=False)
         if res.get("ok"):
-            return {"action": "built", "name": name, "attempts": attempt}
+            toolbox.remove_idea(idea["id"])              # the tool itself is the record now
+            return {"action": "built", "name": name, "title": idea.get("title"),
+                    "attempts": session}
         last_err = _s(res.get("error"), 1200)
 
-    # exhausted repairs → keep the effort as an idea with the sketch + the last error
-    toolbox.add_idea(description or name,
-                     rationale=_s(decision.get("rationale"), 1600)
-                     + f"  (tried to build '{name}' but it kept failing its self-test: {last_err})",
-                     sketch=prev_code, source="toolsmith")
-    return {"action": "failed", "name": name, "attempts": int(max_repair) + 1,
-            "reason": last_err}
+    # -- session over: bank the failure for a later analyse-and-retry, or park --
+    exhausted = session >= int(max_attempts)
+    toolbox.update_idea(idea["id"], status="parked" if exhausted else "failed",
+                        attempts=session, last_error=last_err,
+                        last_code=_s(prev_code, 8000),
+                        name=str(idea.get("name") or ""))
+    return {"action": "parked" if exhausted else "failed", "title": idea.get("title"),
+            "attempts": session, "reason": last_err}
+
+
+# ── the idle entry point: both questions, in order ───────────────────────────
+
+async def run(toolbox, chat_json: tp.Callable, *, logs: list | None = None,
+              faculties: list | None = None, context: str = "",
+              guidance: tp.Callable | None = None, max_repair: int = 2,
+              max_tools: int = 24, max_attempts: int = 3, max_queue: int = 10) -> dict:
+    """One toolsmith pass = the two questions Dan specified: (1) is a tool missing? →
+    queue a plain-language spec; (2) is there a queued spec to build (or a failed one to
+    re-analyse and re-test)? → attempt exactly one.  Returns
+    {identified: {...}, build: {...}} for the log/trace."""
+    identified = await identify(toolbox, chat_json, logs=logs, faculties=faculties,
+                                context=context, max_queue=max_queue)
+    build = await build_next(toolbox, chat_json, guidance=guidance,
+                             max_repair=max_repair, max_tools=max_tools,
+                             max_attempts=max_attempts)
+    return {"identified": identified, "build": build}

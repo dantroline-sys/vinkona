@@ -1282,12 +1282,14 @@ function renderEvent(e) {
   } else if (e.kind === 'consolidate') {
     body = `<div class="body">🧹 consolidation — merged ${e.merged||0}, split ${e.split||0}, removed ${e.removed||0} (store ${e.store_size})</div>`;
   } else if (e.kind === 'toolsmith') {
-    const icon = {built:'🔧', idea:'💡', failed:'🛠️'}[e.action] || '🛠️';
+    const parts = [];
+    if (e.identified) parts.push(`💡 queued a tool spec: <b>${escHtml(e.identified)}</b>`);
     const what = e.name || e.title || '';
-    const verb = {built:'built a tool', idea:'noted a tool idea',
-                  failed:'couldn\'t build (kept as an idea)'}[e.action] || e.action;
-    body = `<div class="body">${icon} toolsmith — ${verb}${what?`: <b>${escHtml(what)}</b>`:''}${e.attempts?` <span class="pill">${e.attempts} attempt(s)</span>`:''}</div>`;
-    if (e.action === 'failed') cls += ' errored';
+    const verb = {built:'🔧 built a tool', failed:'🛠️ build failed (will re-analyse)',
+                  parked:'⏸ parked a spec (needs you)'}[e.action];
+    if (verb) parts.push(`${verb}${what?`: <b>${escHtml(what)}</b>`:''}${e.attempts?` <span class="pill">attempt ${e.attempts}</span>`:''}${e.action!=='built'&&e.reason?` · ${escHtml(e.reason)}`:''}`);
+    body = `<div class="body">toolsmith — ${parts.join(' · ') || 'no action'}</div>`;
+    if (e.action === 'failed' || e.action === 'parked') cls += ' errored';
   } else if (e.kind === 'notify_scheduled') {
     body = `<div class="body">🔔 queued ${e.count||0} notification(s)${e.text?`: ${escHtml(e.text)}${e.when?` (${escHtml(e.when)})`:''}`:''}</div>`;
   } else if (e.kind === 'notify_spoken') {
@@ -2087,23 +2089,40 @@ async function loadTools() {
         `${t.created_at ? ' · ' + escHtml(t.created_at) : ''} · ${use}</div></div>`;
     }).join('');
   }
-  // toolsmith status + tool ideas (designs not built yet)
+  // toolsmith status + tool ideas (the spec queue she works through while idle)
   document.getElementById('toolsmithHint').innerHTML = d.toolsmith
-    ? 'The idle toolsmith is <strong>on</strong> — she may write herself a tool (or add an idea here) while idle.'
+    ? 'The idle toolsmith is <strong>on</strong>: it queues plain-language specs for missing tools, ' +
+      'builds them one at a time, and re-analyses failures. Ideas you add here get attempted too.'
     : 'The idle toolsmith is <strong>off</strong> (Settings → tools.own_tools.toolsmith.enabled). Ideas you add here stay as reminders.';
   const ideas = d.ideas || [];
   const il = document.getElementById('toolIdeas');
   if (!ideas.length) { il.innerHTML = '<div class="mem-empty">No tool ideas.</div>'; }
   else {
-    il.innerHTML = ideas.map(i =>
-      `<div class="mem-item">` +
+    const chip = s => ({proposed: ['queued to build', '#7aa2f7'],
+                        failed:   ['build failed — will re-analyse', '#e0af68'],
+                        parked:   ['parked — needs you', '#f7768e']}[s] || [s || '', '#888']);
+    il.innerHTML = ideas.map(i => {
+      const [label, col] = chip(i.status);
+      const att = i.attempts ? ` · ${i.attempts} attempt${i.attempts > 1 ? 's' : ''}` : '';
+      return `<div class="mem-item">` +
         `<div class="t">${escHtml(i.title || '')} ` +
-        `<span class="muted" style="font-weight:400">(${escHtml(i.source || '')})</span></div>` +
+        `<span class="muted" style="font-weight:400">(${escHtml(i.source || '')})</span> ` +
+        `<span style="color:${col};font-weight:400;font-size:12px">● ${escHtml(label)}${att}</span></div>` +
         (i.rationale ? `<div class="m">${escHtml(i.rationale)}</div>` : '') +
+        (i.last_error ? `<div class="m" style="color:#f7768e">last error: ${escHtml(String(i.last_error).slice(0, 160))}</div>` : '') +
         `<div class="bar" style="margin-top:6px">` +
+        (i.status !== 'proposed'
+          ? `<button class="btn secondary" onclick="requeueIdea('${escAttr(i.id)}')">Try again</button>` : '') +
         `<button class="btn secondary" onclick="removeIdea('${escAttr(i.id)}')">Remove</button>` +
-        `</div></div>`).join('');
+        `</div></div>`;
+    }).join('');
   }
+}
+
+async function requeueIdea(id) {
+  const d = await (await fetch('/api/own_tools/idea_requeue',
+        { method:'POST', body: JSON.stringify({ id }) })).json();
+  if (d.ok) loadTools();
 }
 
 async function addIdea() {

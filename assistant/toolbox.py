@@ -1170,7 +1170,15 @@ class Toolbox:
                       "avg_elapsed_s": round(s["_es"] / s["_en"], 3) if s["_en"] else None}
         return out
 
-    # -- tool IDEAS: designs she (or you) want but that aren't built yet --
+    # -- tool IDEAS: the spec queue the toolsmith works through --
+    # An idea is a plain-language spec for a tool that doesn't exist yet.  Statuses:
+    #   proposed — awaiting a build attempt (from the deficit scan, or jotted by the user)
+    #   failed   — a build attempt failed; the code + error are banked so a later idle
+    #              cycle can ANALYSE what went wrong and try again
+    #   parked   — she gave up (attempt budget spent, or judged unbuildable) — needs you
+    # A successful build REMOVES the idea (the tool itself now appears in the roster).
+    IDEA_STATUSES = ("proposed", "failed", "parked")
+
     def _ideas_path(self) -> Path:
         return self.root / "ideas.json"
 
@@ -1182,30 +1190,62 @@ class Toolbox:
     def ideas(self) -> list:
         try:
             d = json.loads(self._ideas_path().read_text())
-            return d.get("ideas", []) if isinstance(d, dict) else []
+            out = d.get("ideas", []) if isinstance(d, dict) else []
         except (OSError, ValueError):
             return []
+        # Migrate entries from before the queue model: a user-jotted idea is a wish she can
+        # try to build; a toolsmith one predating statuses was a can't-build note → parked.
+        for i in out:
+            if i.get("status") not in self.IDEA_STATUSES:
+                i["status"] = "proposed" if i.get("source") == "user" else "parked"
+            i.setdefault("attempts", 0)
+        return out
 
     def add_idea(self, title: str, *, rationale: str = "", sketch: str = "",
-                 source: str = "toolsmith") -> dict:
-        """Record a tool she wishes existed but couldn't build (or you jotted down).  Shown
-        in the same panel section as real tools.  Deduped by title so a recurring wish
-        doesn't pile up."""
+                 source: str = "toolsmith", status: str = "proposed") -> dict:
+        """Queue a tool spec (plain language).  Deduped by title so a recurring wish doesn't
+        pile up.  status='parked' records a design she can't build (needs you)."""
         title = str(title or "").strip()[:120]
         if not title:
             return {"ok": False, "error": "an idea needs a title"}
+        if status not in self.IDEA_STATUSES:
+            status = "proposed"
         ideas = self.ideas()
         if any(str(i.get("title", "")).strip().lower() == title.lower() for i in ideas):
             return {"ok": False, "error": "a similar idea already exists", "duplicate": True}
-        idea = {"id": f"idea-{int(time.time() * 1000)}", "title": title,
+        # ms clock + monotonic tail: two adds in the same millisecond must not share an id
+        # (update/requeue/remove all target by id).
+        idea = {"id": f"idea-{int(time.time() * 1000)}-{time.monotonic_ns() & 0xffff}",
+                "title": title,
                 "rationale": str(rationale or "")[:2000], "sketch": str(sketch or "")[:4000],
-                "source": str(source or "toolsmith"), "created_at": _man_time(self.cfg)}
+                "source": str(source or "toolsmith"), "status": status, "attempts": 0,
+                "created_at": _man_time(self.cfg)}
         ideas.append(idea)
         try:
             self._write_ideas(ideas)
         except OSError as e:
             return {"ok": False, "error": f"could not save idea: {e}"}
         return {"ok": True, "idea": idea}
+
+    def update_idea(self, idea_id: str, **patch) -> dict:
+        """Patch one idea in place (status/attempts/last_error/last_code/name/…)."""
+        ideas = self.ideas()
+        for i in ideas:
+            if i.get("id") == idea_id:
+                if patch.get("status") and patch["status"] not in self.IDEA_STATUSES:
+                    return {"ok": False, "error": f"bad status {patch['status']!r}"}
+                i.update(patch)
+                try:
+                    self._write_ideas(ideas)
+                except OSError as e:
+                    return {"ok": False, "error": f"could not save: {e}"}
+                return {"ok": True, "idea": i}
+        return {"ok": False, "error": "no such idea"}
+
+    def requeue_idea(self, idea_id: str) -> dict:
+        """Put a failed/parked idea back in the build queue with a fresh attempt budget
+        (the panel's 'try again' button)."""
+        return self.update_idea(idea_id, status="proposed", attempts=0, last_error="")
 
     def remove_idea(self, idea_id: str) -> dict:
         ideas = self.ideas()

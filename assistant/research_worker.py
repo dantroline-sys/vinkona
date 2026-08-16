@@ -1355,10 +1355,11 @@ async def main():
             if any(cstats.values()):
                 _log(f"consolidate: {cstats}")
                 trace.write(kind="consolidate", **cstats, store_size=len(memory.entries))
-        # Idle toolsmith: reflect on how things have gone and, if it helps, WRITE herself a
-        # small sandboxed tool (self-tested before it's ever offered) or note a tool idea she
-        # can't build.  Interval-gated (persisted; not on every tick or every boot), under the
-        # big-LM lease already held for this cycle, and preemptible like the rest.
+        # Idle toolsmith — the two questions, in order: (1) is a tool missing? → queue a
+        # plain-language spec; (2) is there a queued spec to build, or a failed one to
+        # re-analyse (with kb_ask guidance) and re-test? → attempt exactly one.  Interval-
+        # gated (persisted; not on every tick or every boot), under the big-LM lease already
+        # held for this cycle, and preemptible like the rest.
         if _stand_down():
             return
         _tsc = _otc.get("toolsmith", {}) or {}
@@ -1370,6 +1371,11 @@ async def main():
                     async def _ts_chat(prompt, think=True):
                         return await memory._chat_json(big["url"], big["model"], prompt,
                                                        think=think)
+
+                    async def _ts_guidance(question):
+                        # kb_ask (falling back to kb_search passages) as build guidance.
+                        r = await kb_source(tools, question, max_chars=2500, max_items=4)
+                        return r[0] if r else None
                     _facs = []
                     try:
                         if tools.active:
@@ -1381,14 +1387,29 @@ async def main():
                     st = await _toolsmith.run(
                         own_toolbox, _ts_chat, logs=memory.recent_logs(24),
                         faculties=_facs, context=memory._voice_anchor(),
+                        guidance=(_ts_guidance if _tsc.get("kb_guidance", True) else None),
                         max_repair=int(_tsc.get("max_repair", 2)),
-                        max_tools=int(_tsc.get("max_tools", 24)))
+                        max_tools=int(_tsc.get("max_tools", 24)),
+                        max_attempts=int(_tsc.get("max_attempts", 3)),
+                        max_queue=int(_tsc.get("max_queue", 10)))
                     memory.set_state("toolsmith_ran_at", str(time.time()))
-                    if st.get("action") not in (None, "none"):
-                        _log("toolsmith: " + st.get("action", "?") + " "
-                             + str(st.get("name") or st.get("title") or "")
-                             + (f" (attempt {st['attempts']})" if st.get("attempts") else ""))
-                        trace.write(kind="toolsmith", **st, store_size=len(memory.entries))
+                    ident, build = st.get("identified") or {}, st.get("build") or {}
+                    if ident.get("action") == "proposed":
+                        _log(f"toolsmith: queued a tool spec — {ident.get('title')}")
+                    if build.get("action") not in (None, "none"):
+                        _log("toolsmith: " + build.get("action", "?") + " "
+                             + str(build.get("name") or build.get("title") or "")
+                             + (f" (attempt {build['attempts']})" if build.get("attempts") else ""))
+                    if (ident.get("action") == "proposed"
+                            or build.get("action") not in (None, "none")):
+                        trace.write(kind="toolsmith",
+                                    identified=ident.get("title") if ident.get("action")
+                                    == "proposed" else None,
+                                    action=build.get("action"),
+                                    name=build.get("name"), title=build.get("title"),
+                                    attempts=build.get("attempts"),
+                                    reason=(build.get("reason") or "")[:200],
+                                    store_size=len(memory.entries))
                 except Exception as e:
                     _log(f"toolsmith failed (continuing): {e}")
                     memory.set_state("toolsmith_ran_at", str(time.time()))  # don't hammer on error
