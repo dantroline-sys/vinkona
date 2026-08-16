@@ -1533,9 +1533,18 @@ async def main():
                 return
         set_activity("toolsmith", interruptible=not force)
         try:
+            # Code generation is the slowest LM work we do (a mid-size model thinking
+            # through a whole program) — the reflect default of ~120s times out mid-write
+            # and reads as "the big LM did not return usable code".
+            _ts_to = float(_tsc.get("lm_timeout_s", 300))
+
             async def _ts_chat(prompt, think=True):
                 return await memory._chat_json(big["url"], big["model"], prompt,
-                                               think=think)
+                                               think=think, timeout_s=_ts_to)
+
+            async def _ts_text(prompt):
+                return await memory._chat_text(big["url"], big["model"], prompt,
+                                               think=True, timeout_s=_ts_to)
 
             async def _ts_guidance(question):
                 # kb_ask (falling back to kb_search passages) as build guidance.
@@ -1550,7 +1559,7 @@ async def main():
             except Exception:
                 pass
             st = await _toolsmith.run(
-                own_toolbox, _ts_chat, logs=memory.recent_logs(24),
+                own_toolbox, _ts_chat, _ts_text, logs=memory.recent_logs(24),
                 faculties=_facs, context=memory._voice_anchor(),
                 guidance=(_ts_guidance if _tsc.get("kb_guidance", True) else None),
                 max_repair=int(_tsc.get("max_repair", 2)),

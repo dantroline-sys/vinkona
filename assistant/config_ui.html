@@ -2115,7 +2115,7 @@ async function loadTools() {
         (i.rationale ? `<div class="m">${escHtml(i.rationale)}</div>` : '') +
         (i.last_error ? `<div class="m" style="color:#f7768e">last error: ${escHtml(String(i.last_error).slice(0, 160))}</div>` : '') +
         `<div class="bar" style="margin-top:6px">` +
-        (i.last_code
+        ((i.last_code || i.last_raw)
           ? `<button class="btn secondary" onclick="openAttempt('${escAttr(i.id)}')">Inspect attempt</button>` : '') +
         (i.status !== 'proposed'
           ? `<button class="btn secondary" onclick="requeueIdea('${escAttr(i.id)}')">Try again</button>` : '') +
@@ -2171,8 +2171,11 @@ function openAttempt(id) {
     { name: i.name || '', description: i.title || '', parameters: { type: 'object', properties: {} } };
   document.getElementById('toolManifest').value = JSON.stringify(manifest, null, 2);
   document.getElementById('toolTest').value = JSON.stringify(i.last_test || { input: {} }, null, 2);
-  document.getElementById('toolTestOut').textContent =
-    i.last_error ? ('Why the last attempt failed:\n' + i.last_error) : '';
+  const out = [];
+  if (i.last_error) out.push('Why the last attempt failed:\n' + i.last_error);
+  if (i.last_raw && i.last_raw.trim() !== (i.last_code || '').trim())
+    out.push('Raw model reply (what actually came back):\n' + i.last_raw);
+  document.getElementById('toolTestOut').textContent = out.join('\n\n────────\n\n');
   loadTools();  // re-render (clears any tool-row highlight)
 }
 

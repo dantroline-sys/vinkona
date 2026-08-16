@@ -2619,9 +2619,10 @@ class MemoryStore:
             return None
 
     async def _chat_text(self, base_url: str, model: str, prompt: str,
-                         think: bool = False) -> str | None:
-        """Like _chat_json but returns plain prose (for the document digest).  No JSON
-        mode; <think> leakage is stripped."""
+                         think: bool = False, timeout_s: float | None = None) -> str | None:
+        """Like _chat_json but returns plain prose (for the document digest, and the
+        toolsmith's code generation — which needs a LONGER timeout than the reflect
+        default, hence timeout_s).  No JSON mode; <think> leakage is stripped."""
         import aiohttp
         payload = {"model": model, "stream": False, "temperature": 0.3,
                    "chat_template_kwargs": {"enable_thinking": bool(think)},
@@ -2632,7 +2633,8 @@ class MemoryStore:
                 async with s.post(f"{base_url.rstrip('/')}/v1/chat/completions",
                                   json=payload,
                                   timeout=aiohttp.ClientTimeout(
-                                      total=getattr(self, "ctx", {}).get("reflect_timeout_s", 120))) as r:
+                                      total=timeout_s or getattr(self, "ctx", {})
+                                      .get("reflect_timeout_s", 120))) as r:
                     if r.status != 200:
                         return None
                     choices = (await r.json()).get("choices") or [{}]

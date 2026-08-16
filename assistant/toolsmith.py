@@ -34,6 +34,7 @@ dependency and unit-tests with stubs.
 from __future__ import annotations
 
 import re
+import time
 import typing as tp
 
 # The rules the generated tool must obey — same contract the seed tools follow, stated so
@@ -179,6 +180,11 @@ Set "unbuildable": true (with the diagnosis saying why) only if the spec cannot 
 under the rules — needs the network, a package, or a capability you don't have."""
 
 
+# The build harness asks for the code as PLAIN TEXT in a fenced block, not as a string
+# escaped inside a JSON object — mid-size models reliably write correct Python but fumble
+# JSON-escaping a multiline program.  Metadata (name/schema/test) is a separate, small JSON
+# ask afterwards, and degrades to defaults rather than failing the build.
+
 def _code_prompt(*, idea: dict, fac_allow: list, adjustment: str = "",
                  guidance: str = "", prev_code: str = "", error: str = "") -> str:
     base = f"""{_TOOL_CONTRACT}
@@ -192,28 +198,67 @@ Why it's wanted: {_s(idea.get('rationale'), 1000)}"""
         base += f"\nThis is a RETRY. Apply this adjustment: {_s(adjustment, 1000)}"
     if guidance:
         base += f"\n\nGuidance from your knowledge base:\n{_s(guidance, 2500)}"
+    if error:
+        base += (f"\n\nYour previous attempt FAILED:\n{_s(error, 1200)}\n\n"
+                 f"Previous code:\n```python\n{_s(prev_code, 4000)}\n```\nFix it.")
     base += """
 
-Reply with ONE JSON object:
-{"name": "snake_case_name",
-  "code": "<the full Python file as a string>",
-  "parameters": {"type":"object","properties":{...},"required":[...]},
-  "uses_faculties": false,
-  "test": {"input":{...},"expect_keys":["..."]},
-  "unbuildable": false}
-- "name" is the tool's menu name (lower_snake_case, 3-40 chars).
-- "parameters" is the JSON-schema of the stdin arguments (for the menu).
-- Set "uses_faculties": true ONLY if the code imports the faculties helper (see above).
-- "test.input" is a concrete arguments object that exercises the tool; "expect_keys" are
-  keys that MUST appear in its output. The test runs in the sandbox and must pass, so pick
-  an input that works there (e.g. read a file that exists like /etc/hostname).
-- If while writing it you realise it CANNOT be built under the rules, reply
-  {"unbuildable": true, "reason": "why"} instead."""
-    if error:
-        base += (f"\n\nYour previous attempt FAILED its self-test with:\n{_s(error, 1200)}\n\n"
-                 f"Previous code:\n{_s(prev_code, 4000)}\n\nFix it and return the full "
-                 "corrected JSON object.")
+Reply with ONLY the complete Python file in one fenced code block:
+```python
+<the whole tool>
+```
+No JSON, no commentary outside the fence.  If the spec CANNOT be built under the rules
+(needs the network, a package, a capability you don't have), reply instead with one line:
+UNBUILDABLE: <why>"""
     return base
+
+
+def _metadata_prompt(*, idea: dict, code: str) -> str:
+    return f"""This finished tool of yours needs its menu entry.  Read the code and describe it.
+
+Spec: {_s(idea.get('title'), 120)}
+
+```python
+{_s(code, 6000)}
+```
+
+Reply with ONE JSON object:
+{{"name": "snake_case_name",
+  "parameters": {{"type":"object","properties":{{...}},"required":[...]}},
+  "test": {{"input": {{...}}, "expect_keys": ["..."], "faculty_stubs": {{...}}}}}}
+- "name": lower_snake_case, 3-40 chars, matching what the tool does.
+- "parameters": the JSON-schema of the stdin arguments the CODE actually reads.
+- "test.input": concrete arguments that exercise it; "expect_keys": keys that MUST appear
+  in its output.  The test runs in the sandbox, so pick input that works there (e.g. read a
+  file that exists, like /etc/hostname).  Include "faculty_stubs" (a canned result per
+  faculty the code calls) ONLY if it uses the faculties helper."""
+
+
+def _slug(title: str) -> str:
+    """A usable fallback tool name derived from the spec title (metadata step flaked)."""
+    s = re.sub(r"[^a-z0-9]+", "_", str(title or "tool").lower()).strip("_")[:40]
+    if not s or not s[0].isalpha():
+        s = "t_" + s
+    return (s + "_tool")[:40] if len(s) < 3 else s[:40]
+
+
+def _uniquify(name: str, taken) -> str:
+    if not taken(name):
+        return name
+    for n in range(2, 10):
+        cand = f"{name[:37]}_{n}"
+        if not taken(cand):
+            return cand
+    return f"{name[:30]}_{time.monotonic_ns() % 10000}"
+
+
+def _extract_code(text: str) -> str:
+    """The Python file out of a model reply: the LONGEST fenced block (models sometimes emit
+    a short example fence before the real one), else the whole reply as-is."""
+    fences = re.findall(r"```(?:python|py)?\s*\n(.*?)```", text or "", flags=re.DOTALL)
+    if fences:
+        return max(fences, key=len).strip()
+    return (text or "").strip()
 
 
 def _pick(ideas: list, max_attempts: int) -> dict | None:
@@ -230,13 +275,27 @@ def _pick(ideas: list, max_attempts: int) -> dict | None:
         if open_specs else None
 
 
-async def build_next(toolbox, chat_json: tp.Callable, *, guidance: tp.Callable | None = None,
+async def build_next(toolbox, chat_json: tp.Callable, chat_text: tp.Callable, *,
+                     guidance: tp.Callable | None = None,
                      max_repair: int = 2, max_tools: int = 24,
                      max_attempts: int = 3) -> dict:
-    """Phase 2: take one queued spec and attempt it — code, self-test, pass or fail.  A
-    failed spec is banked (code + error) and re-analysed on a later cycle; `guidance` is an
-    optional ``async (question) -> str|None`` (kb_ask) consulted when the analysis asks for
-    it.  Returns {action: built|failed|parked|none, title?/name?, attempts?, reason?}."""
+    """Phase 2: take one queued spec and attempt it, through the build HARNESS that helps a
+    mid-size model iterate until the code runs:
+
+      1. CODE as plain text in a fenced block (``chat_text`` — no JSON-escaping a multiline
+         program, the classic mid-model failure).
+      2. A free local SYNTAX gate (compile()) — a SyntaxError is fed straight back for
+         another go without spending a sandbox run.
+      3. METADATA (name/schema/self-test) as a separate small JSON ask (``chat_json``) that
+         DEGRADES to defaults (slug name, empty schema, bare test) instead of failing the
+         build — only code quality can fail a build, never menu decoration.
+      4. The sandbox self-test; its traceback loops back to step 1 (max_repair times).
+
+    Whatever happens, the attempt is banked on the idea — the extracted code even when it
+    doesn't parse, and the RAW model reply when nothing usable could be extracted — so the
+    panel can always show what actually came back.  A failed spec is re-analysed on a later
+    cycle; `guidance` is an optional ``async (question) -> str|None`` (kb_ask) consulted
+    when the analysis asks for it.  Returns {action: built|failed|parked|none, …}."""
     if len(toolbox.names()) >= int(max_tools):
         return {"action": "none", "reason": "tool cap reached — build later"}
     idea = _pick(toolbox.ideas(), max_attempts)
@@ -263,48 +322,62 @@ async def build_next(toolbox, chat_json: tp.Callable, *, guidance: tp.Callable |
                 except Exception:
                     kb_text = ""
 
-    # -- code it, with the in-session repair loop --
     fac = _fac_allow(toolbox)
+    # A retry session starts from the banked attempt: the code AND the error it died with,
+    # so the first code prompt of the session carries the full failing context (not just
+    # the analysis's adjustment).
     prev_code = _s(idea.get("last_code"), 4000) if idea.get("status") == "failed" else ""
-    last_err = ""
-    # The WHOLE last attempt is banked on failure (not just the code) so the panel can open
-    # it in the editor for inspection and repair by hand.
+    last_err = _s(idea.get("last_error"), 1200) if idea.get("status") == "failed" else ""
+    last_raw = ""
     last_name = str(idea.get("name") or "")
     last_manifest = last_test = None
     for _ in range(1, int(max_repair) + 2):              # first try + max_repair retries
-        spec = await chat_json(_code_prompt(
+        # 1. the code, as plain fenced text
+        txt = await chat_text(_code_prompt(
             idea=idea, fac_allow=fac, adjustment=adjustment, guidance=kb_text,
-            prev_code=prev_code, error=last_err), think=True)
-        if not isinstance(spec, dict):
-            last_err = "the big LM did not return usable code"
+            prev_code=prev_code, error=last_err))
+        if not (isinstance(txt, str) and txt.strip()):
+            last_err = ("code step: the big LM returned no reply "
+                        "(timed out, errored, or produced an empty message)")
             continue
-        if spec.get("unbuildable"):
-            toolbox.update_idea(idea["id"], status="parked",
-                                last_error=_s(spec.get("reason"), 400) or "judged unbuildable")
+        last_raw = _s(txt, 6000)
+        first = txt.strip().splitlines()[0].strip()
+        if first.upper().startswith("UNBUILDABLE"):
+            reason = first.split(":", 1)[1].strip() if ":" in first else "judged unbuildable"
+            toolbox.update_idea(idea["id"], status="parked", last_error=_s(reason, 400))
             return {"action": "parked", "title": idea.get("title"),
-                    "reason": _s(spec.get("reason"), 200)}
-        if not isinstance(spec.get("code"), str) or not spec["code"].strip():
-            last_err = "the big LM did not return usable code"
+                    "reason": _s(reason, 200)}
+        code = _extract_code(txt)
+        prev_code = code                                 # always shown to the next round
+        # 2. the free syntax gate — no sandbox run spent on a file that can't parse
+        try:
+            compile(code, "<tool>", "exec")
+        except SyntaxError as e:
+            last_err = f"code step: SyntaxError: {e.msg} (line {e.lineno})"
             continue
-        prev_code = spec["code"]
-        name = str(spec.get("name") or idea.get("name") or "").strip().lower()
-        last_name = name or last_name
-        test = spec.get("test")
+        # 3. metadata — a small ask that degrades to defaults, never fails the build
+        meta = await chat_json(_metadata_prompt(idea=idea, code=code), think=False)
+        meta = meta if isinstance(meta, dict) else {}
+        name = str(meta.get("name") or idea.get("name") or _slug(idea.get("title"))
+                   ).strip().lower()
+        if not _NAME_RE.match(name):
+            name = _slug(idea.get("title"))
+        name = _uniquify(name, toolbox.has)
+        last_name = name
+        test = meta.get("test")
         if not isinstance(test, dict) or not isinstance(test.get("input"), dict):
             test = {"input": {}}
         last_test = test
+        params = meta.get("parameters")
+        if not isinstance(params, dict) or params.get("type") != "object":
+            params = {"type": "object", "properties": {}}
         manifest = {"name": name, "description": _s(idea.get("title"), 300),
                     "author": "toolsmith",
-                    "uses_faculties": bool(spec.get("uses_faculties")),
-                    "parameters": spec.get("parameters")}
+                    "uses_faculties": "import faculties" in code,   # detected, not asked
+                    "parameters": params}
         last_manifest = manifest
-        if not _NAME_RE.match(name):
-            last_err = f"'{name}' is not a valid tool name (lower_snake_case, 3-40 chars)"
-            continue
-        if toolbox.has(name):
-            last_err = f"the name '{name}' is already taken by another tool — pick a new one"
-            continue
-        res = toolbox.install(name, prev_code, manifest, test,
+        # 4. the sandbox self-test
+        res = toolbox.install(name, code, manifest, test,
                               author="toolsmith", overwrite=False)
         if res.get("ok"):
             toolbox.remove_idea(idea["id"])              # the tool itself is the record now
@@ -312,11 +385,12 @@ async def build_next(toolbox, chat_json: tp.Callable, *, guidance: tp.Callable |
                     "attempts": session}
         last_err = _s(res.get("error"), 1200)
 
-    # -- session over: bank the failure for a later analyse-and-retry, or park --
+    # -- session over: bank the WHOLE attempt (faulty code, raw reply, error) for the
+    #    panel's inspector and a later analyse-and-retry — or park when the budget's spent --
     exhausted = session >= int(max_attempts)
     patch = {"status": "parked" if exhausted else "failed", "attempts": session,
              "last_error": last_err, "last_code": _s(prev_code, 8000),
-             "name": _s(last_name, 60)}
+             "last_raw": last_raw, "name": _s(last_name, 60)}
     if last_manifest is not None:                        # keep an older banked one otherwise
         patch["last_manifest"] = last_manifest
     if last_test is not None:
@@ -328,17 +402,19 @@ async def build_next(toolbox, chat_json: tp.Callable, *, guidance: tp.Callable |
 
 # ── the idle entry point: both questions, in order ───────────────────────────
 
-async def run(toolbox, chat_json: tp.Callable, *, logs: list | None = None,
+async def run(toolbox, chat_json: tp.Callable, chat_text: tp.Callable, *,
+              logs: list | None = None,
               faculties: list | None = None, context: str = "",
               guidance: tp.Callable | None = None, max_repair: int = 2,
               max_tools: int = 24, max_attempts: int = 3, max_queue: int = 10) -> dict:
     """One toolsmith pass = the two questions Dan specified: (1) is a tool missing? →
     queue a plain-language spec; (2) is there a queued spec to build (or a failed one to
-    re-analyse and re-test)? → attempt exactly one.  Returns
+    re-analyse and re-test)? → attempt exactly one.  ``chat_json`` serves the structured
+    steps (identify/analysis/metadata); ``chat_text`` serves code generation.  Returns
     {identified: {...}, build: {...}} for the log/trace."""
     identified = await identify(toolbox, chat_json, logs=logs, faculties=faculties,
                                 context=context, max_queue=max_queue)
-    build = await build_next(toolbox, chat_json, guidance=guidance,
+    build = await build_next(toolbox, chat_json, chat_text, guidance=guidance,
                              max_repair=max_repair, max_tools=max_tools,
                              max_attempts=max_attempts)
     return {"identified": identified, "build": build}

@@ -973,6 +973,9 @@ DEFAULTS: dict = {
                 "max_attempts": 3,          # build sessions per spec (across idle cycles) before parking
                 "max_queue": 10,            # open specs (proposed+failed) before the deficit scan pauses
                 "kb_guidance": True,        # consult kb_ask when re-analysing a failed build
+                "lm_timeout_s": 300,        # per LM call during a build — code generation is SLOW
+                                            # on a mid-size model; the 120s reflect default
+                                            # times out mid-write ("did not return usable code")
             },
         },
         # Connecting Vinkona to your tools on another computer (usually a Mac).
@@ -1515,6 +1518,7 @@ FIELD_LEVELS: dict[str, str] = {
     "tools.own_tools.toolsmith.max_attempts": "expert",
     "tools.own_tools.toolsmith.max_queue": "expert",
     "tools.own_tools.toolsmith.kb_guidance": "advanced",
+    "tools.own_tools.toolsmith.lm_timeout_s": "advanced",
     "music.enabled": "basic",
     "knowledge.enabled": "basic",
     "knowledge_host.enabled": "basic",
