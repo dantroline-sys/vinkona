@@ -712,10 +712,17 @@ async def _lm_stream_collect(base_url: str, model: str, payload: dict, *,
     back to a plain non-streamed body when the transport has no SSE (test fakes, or a
     server that ignores the stream flag).  Raises on transport errors (callers tap the
     error event).  Module-level on purpose: _chat_json/_chat_text stay callable unbound
-    (no instance state)."""
+    (no instance state).
+
+    `timeout_s` is a STALL guard, not a wall clock: it trips only when NO data has
+    arrived for that long (dead server, wedged load).  A slow local model that keeps
+    streaming tokens — a 27B on one consumer GPU thinking through a whole program —
+    never trips it, however long it takes; the total length is bounded by max_tokens
+    (a token budget scales with the hardware's speed, a wall clock does not)."""
     import aiohttp
     payload = dict(payload)
     payload["stream"] = True
+    payload.setdefault("max_tokens", 16384)     # the runaway bound (thinking included)
     content: list = []
     thinking: list = []
     last_push = 0.0
@@ -727,7 +734,9 @@ async def _lm_stream_collect(base_url: str, model: str, payload: dict, *,
     async with aiohttp.ClientSession() as s:
         async with s.post(f"{base_url.rstrip('/')}/v1/chat/completions",
                           json=payload,
-                          timeout=aiohttp.ClientTimeout(total=timeout_s)) as r:
+                          timeout=aiohttp.ClientTimeout(
+                              total=None, sock_connect=15,
+                              sock_read=max(30.0, float(timeout_s)))) as r:
             if r.status != 200:
                 raise RuntimeError(f"HTTP {r.status}")
             saw_sse = False
@@ -2665,11 +2674,10 @@ class MemoryStore:
         _lm_tap.write("big", "request", prompt, call_id=cid, lane=tag, model=model,
                       meta={"json": True, "think": bool(think)})
         t0 = time.monotonic()
+        stall = timeout_s or getattr(self, "ctx", {}).get("reflect_timeout_s", 120)
         try:
             content, thinking = await _lm_stream_collect(
-                base_url, model, payload, tag=tag, cid=cid,
-                timeout_s=timeout_s or getattr(self, "ctx", {})
-                .get("reflect_timeout_s", 120))
+                base_url, model, payload, tag=tag, cid=cid, timeout_s=stall)
             _lm_tap.write("big", "response",
                           (f"[thinking]\n{thinking}\n\n" if thinking else "") + content,
                           call_id=cid, lane=tag, model=model,
@@ -2683,7 +2691,12 @@ class MemoryStore:
                 m = re.search(r"\{.*\}", content, flags=re.DOTALL)
                 return json.loads(m.group(0)) if m else None
         except Exception as e:
-            _lm_tap.write("big", "error", f"{type(e).__name__}: {e}", call_id=cid,
+            import asyncio as _aio
+            err = (f"stalled: no data from the LM for {stall:.0f}s (server down or a "
+                   "wedged load — a slow model that keeps streaming never trips this)"
+                   if isinstance(e, (_aio.TimeoutError, TimeoutError))
+                   else f"{type(e).__name__}: {e}")
+            _lm_tap.write("big", "error", err, call_id=cid,
                           lane=tag, model=model, elapsed_s=time.monotonic() - t0)
             return None
         finally:
@@ -2705,18 +2718,22 @@ class MemoryStore:
         _lm_tap.write("big", "request", prompt, call_id=cid, lane=tag, model=model,
                       meta={"think": bool(think)})
         t0 = time.monotonic()
+        stall = timeout_s or getattr(self, "ctx", {}).get("reflect_timeout_s", 120)
         try:
             content, thinking = await _lm_stream_collect(
-                base_url, model, payload, tag=tag, cid=cid,
-                timeout_s=timeout_s or getattr(self, "ctx", {})
-                .get("reflect_timeout_s", 120))
+                base_url, model, payload, tag=tag, cid=cid, timeout_s=stall)
             _lm_tap.write("big", "response",
                           (f"[thinking]\n{thinking}\n\n" if thinking else "") + content,
                           call_id=cid, lane=tag, model=model,
                           elapsed_s=time.monotonic() - t0)
             return re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
         except Exception as e:
-            _lm_tap.write("big", "error", f"{type(e).__name__}: {e}", call_id=cid,
+            import asyncio as _aio
+            err = (f"stalled: no data from the LM for {stall:.0f}s (server down or a "
+                   "wedged load — a slow model that keeps streaming never trips this)"
+                   if isinstance(e, (_aio.TimeoutError, TimeoutError))
+                   else f"{type(e).__name__}: {e}")
+            _lm_tap.write("big", "error", err, call_id=cid,
                           lane=tag, model=model, elapsed_s=time.monotonic() - t0)
             return None
         finally:

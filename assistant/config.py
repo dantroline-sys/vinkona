@@ -973,9 +973,12 @@ DEFAULTS: dict = {
                 "max_attempts": 3,          # build sessions per spec (across idle cycles) before parking
                 "max_queue": 10,            # open specs (proposed+failed) before the deficit scan pauses
                 "kb_guidance": True,        # consult kb_ask when re-analysing a failed build
-                "lm_timeout_s": 300,        # per LM call during a build — code generation is SLOW
-                                            # on a mid-size model; the 120s reflect default
-                                            # times out mid-write ("did not return usable code")
+                "lm_timeout_s": 300,        # STALL guard per build LM call: trips only when NO
+                                            # tokens arrive for this long (dead/wedged server).
+                                            # A slow model that keeps streaming never trips it,
+                                            # however long the write takes — length is bounded
+                                            # by the token budget, not the clock (watch it live
+                                            # in the Live tab's Big LM view)
             },
         },
         # Connecting Vinkona to your tools on another computer (usually a Mac).
