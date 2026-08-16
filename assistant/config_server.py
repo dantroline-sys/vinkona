@@ -82,6 +82,7 @@ IDLECTL = _load_mod("idle_control")    # idle pause/resume + quiet-hours math
 HELPMOD = _load_mod("confighelp")      # /api/help — extracted config.py comments + help.json
 WACT = _load_mod("worker_activity")    # /api/activity — what she's doing (worker + session)
 TOOLBOX = _load_mod("toolbox")         # her own sandboxed tools (view/edit on the Tools tab)
+LMTAP = _load_mod("lm_tap")            # RAM-file live feed of LM context/output (Live tab)
 UI_PATH = Path(__file__).parent / "config_ui.html"
 LOGS_DIR = Path(__file__).parent / "logs"            # written by vinkona.sh (shared filesystem)
 ASSIST_DIR = Path(__file__).resolve().parent         # where the venvs + install.sh live
@@ -982,6 +983,17 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, {"ok": False, "error": f"{type(e).__name__}: {e}"})
         if path == "/api/personas":
             return self._send(200, CFGMOD.resolve_read(self._personas_path()).read_text())
+        if path == "/api/lm_feed":
+            # The live LM feed (Live tab sub-tabs): recent context/output events for one
+            # model source.  Backed by a RAM file (/dev/shm) — never persisted to disk.
+            try:
+                q = self._query()
+                src = (q.get("src", [""])[0] or "").strip() or None
+                n = max(1, min(400, int(q.get("n", ["120"])[0])))
+                return self._json(200, {"events": LMTAP.read(n=n, src=src),
+                                        "path": LMTAP.feed_path()})
+            except Exception as e:
+                return self._json(500, {"error": str(e)})
         if path == "/api/own_tools":
             # Her sandboxed tools + the platform's containment status, for the Tools tab.
             try:

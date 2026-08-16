@@ -44,6 +44,7 @@ except Exception:                       # file-path-loaded context: bootstrap it
 
 _safety = localmod.use("safety")        # untrusted-content defenses (prompt injection)
 sanitize_external, wrap_untrusted = _safety.sanitize_external, _safety.wrap_untrusted
+lm_tap = localmod.use("lm_tap")         # RAM-file live feed of LM context/output (Live tab)
 lm_lease = localmod.use("lm_lease")     # per-LM busy leases (yield the big LM downward)
 _LEASE_SEQ = itertools.count(1)         # per-call holder ids: overlapping big-LM streams
                                         # must never share a lease file (see lm_lease.py)
@@ -2978,6 +2979,19 @@ class LLMBridge:
         if big_hold:
             lm_lease.acquire(lm_lease.BIG, ttl=self.lease_ttl, holder=_hold)
             _lease_next = time.monotonic() + self.lease_ttl / 3
+        # The live LM feed: the exact context going in now, the assembled raw output (in
+        # the finally, so an error/stall still records whatever arrived).  RAM-file only.
+        _tap_src = "big" if (self.big_url and base_url == self.big_url) else "fast"
+        _tap_cid = f"b{os.getpid()}-{next(_LEASE_SEQ)}"
+        _tap_t0 = time.monotonic()
+        _tap_out: list = []                    # raw content deltas, pre-strip
+        _tap_think: list = []                  # reasoning_content deltas
+        lm_tap.write(_tap_src, "request",
+                     "\n\n".join(f"[{m.get('role', '?')}]\n{m.get('content', '')}"
+                                 for m in messages),
+                     call_id=_tap_cid, model=model,
+                     meta={"tools": len(tools or []), "think": bool(think),
+                           "max_tokens": max_tokens})
         # NO total cap: a hard total=60 here silently guillotined every reply that thought
         # or streamed past a minute, defeating the deliberation budgets (stall 75s / total
         # 180s) that are policed OUTSIDE via the heartbeat stamps.  Liveness on the wire is
@@ -3019,6 +3033,7 @@ class LLMBridge:
                         heartbeat()
                     if delta.get("reasoning_content"):
                         saw_reasoning = True            # routed to a separate field; never spoken
+                        _tap_think.append(delta["reasoning_content"])
                     for tc in (delta.get("tool_calls") or []):
                         slot = tc_acc.setdefault(tc.get("index", 0),
                                                  {"id": "", "name": "", "arguments": ""})
@@ -3031,6 +3046,7 @@ class LLMBridge:
                             slot["arguments"] += fn["arguments"]
                     content = delta.get("content")
                     if content:
+                        _tap_out.append(content)        # the raw stream, pre-strip
                         piece = aside_cap.feed(stripper.feed(content))  # drop <think>, capture <aside>
                         if piece:
                             yielded = True
@@ -3080,6 +3096,23 @@ class LLMBridge:
         finally:
             if big_hold:
                 lm_lease.release(lm_lease.BIG, holder=_hold)
+            # Whatever actually came back — content, thinking, tool calls — goes to the
+            # live feed even when the stream died mid-way (that's when you need it most).
+            try:
+                parts = []
+                if _tap_think:
+                    parts.append("[thinking]\n" + "".join(_tap_think))
+                if _tap_out:
+                    parts.append("".join(_tap_out))
+                for i in sorted(tc_acc):
+                    if tc_acc[i].get("name"):
+                        parts.append(f"[tool call] {tc_acc[i]['name']}"
+                                     f"({tc_acc[i].get('arguments', '')})")
+                lm_tap.write(_tap_src, "response", "\n\n".join(parts) or "(no output)",
+                             call_id=_tap_cid, model=model,
+                             elapsed_s=time.monotonic() - _tap_t0)
+            except Exception:
+                pass
         if saw_reasoning and not yielded:
             _log("warning", f"LM {model} returned only reasoning, empty content — it's in "
                             "thinking mode. Disable it, e.g. add ['--reasoning-budget','0'] to "

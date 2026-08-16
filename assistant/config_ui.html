@@ -381,8 +381,11 @@
   <section id="tab-live" class="tab">
     <h2>Live LM activity <span class="muted">— what the fast &amp; big LM are seeing &amp; producing</span></h2>
     <div class="bar">
-      <label style="margin:0"><input type="checkbox" id="autoLive" checked style="width:auto"> auto-refresh (2s)</label>
-      <button class="btn secondary" onclick="loadTrace()">Refresh now</button>
+      <button class="btn secondary" id="liveSub-events" onclick="setLiveSub('events')">Events</button>
+      <button class="btn secondary" id="liveSub-big" onclick="setLiveSub('big')">Big LM</button>
+      <button class="btn secondary" id="liveSub-fast" onclick="setLiveSub('fast')">Fast LM</button>
+      <label style="margin:0 0 0 12px"><input type="checkbox" id="autoLive" checked style="width:auto"> auto-refresh (2s)</label>
+      <button class="btn secondary" onclick="refreshLive()">Refresh now</button>
       <label style="margin:0 0 0 12px" class="muted">turns
         <input type="number" id="dbgTurns" value="1" min="1" max="20"
                style="width:56px;margin-left:4px"></label>
@@ -391,6 +394,12 @@
     </div>
     <div id="dbgOut" class="muted" style="display:none;margin:8px 0"></div>
     <div id="trace"></div>
+    <div id="lmFeed" style="display:none">
+      <div class="hint">The raw context each call sent and the raw output that came back
+        (thinking and tool calls included) — across the cascade AND the idle worker.
+        Kept in a RAM file (<span id="lmFeedPath" class="mono"></span>), never written to disk.</div>
+      <div id="lmFeedList"></div>
+    </div>
   </section>
 
   <!-- ── Working memory (VIN-WM-02 conversational graph) ───────────────────── -->
@@ -1051,10 +1060,49 @@ async function restartService() {
 }
 
 // ── Live feed ───────────────────────────────────────────────────────────────
-let liveTimer = null;
-function startLive() { loadTrace(); liveTimer = setInterval(() => {
-  if (document.getElementById('autoLive').checked) loadTrace(); }, 2000); }
+let liveTimer = null, liveSub = 'events';
+function startLive() { refreshLive(); liveTimer = setInterval(() => {
+  if (document.getElementById('autoLive').checked) refreshLive(); }, 2000); }
 function ts(t) { return new Date(t * 1000).toLocaleTimeString(); }
+
+function setLiveSub(s) {
+  liveSub = s;
+  document.getElementById('trace').style.display = s === 'events' ? '' : 'none';
+  document.getElementById('lmFeed').style.display = s === 'events' ? 'none' : '';
+  for (const k of ['events', 'big', 'fast'])
+    document.getElementById('liveSub-' + k).style.fontWeight = k === s ? '700' : '400';
+  refreshLive();
+}
+
+function refreshLive() { liveSub === 'events' ? loadTrace() : loadLMFeed(liveSub); }
+
+async function loadLMFeed(src) {
+  let d;
+  try { d = await (await fetch('/api/lm_feed?src=' + src + '&n=60')).json(); }
+  catch (e) { document.getElementById('lmFeedList').innerHTML =
+      '<div class="status err">fetch failed</div>'; return; }
+  document.getElementById('lmFeedPath').textContent = d.path || '';
+  const evs = (d.events || []).slice().reverse();       // newest first
+  const list = document.getElementById('lmFeedList');
+  if (!evs.length) {
+    list.innerHTML = `<div class="mem-empty">No ${src} LM traffic yet — this fills as calls happen (chat, dreaming, the toolsmith…).</div>`;
+    return;
+  }
+  const col = { request: '#7aa2f7', response: '#9ece6a', error: '#f7768e' };
+  const arrow = { request: '→ context in', response: '← output', error: '✗ error' };
+  list.innerHTML = evs.map(e => {
+    const meta = [];
+    if (e.lane) meta.push(e.lane);
+    if (e.model) meta.push(e.model);
+    if (e.meta && e.meta.tools) meta.push(`${e.meta.tools} tools offered`);
+    if (e.meta && e.meta.think) meta.push('thinking');
+    if (e.elapsed_s != null) meta.push(`${e.elapsed_s}s`);
+    return `<div style="border-left:3px solid ${col[e.kind] || '#888'};padding:6px 10px;margin:8px 0;background:rgba(127,127,127,.05)">` +
+      `<div style="font-size:12px;margin-bottom:4px"><b style="color:${col[e.kind] || '#888'}">${arrow[e.kind] || e.kind}</b>` +
+      ` <span class="muted">· ${ts(e.ts)}${meta.length ? ' · ' + escHtml(meta.join(' · ')) : ''}${e.id ? ' · #' + escHtml(e.id) : ''}</span></div>` +
+      `<pre class="mono" style="white-space:pre-wrap;margin:0;max-height:340px;overflow:auto;font-size:12px">${escHtml(e.text || '')}</pre></div>`;
+  }).join('');
+}
 
 // ── Working memory (VIN-WM-02 conversational graph) ─────────────────────────
 let wgTimer = null, wgPos = {};

@@ -50,6 +50,7 @@ except Exception:                       # file-path-loaded context: bootstrap it
     localmod = _ilu.module_from_spec(_s); _s.loader.exec_module(localmod)
     _sys.modules.setdefault("localmod", localmod)
 
+_lm_tap = localmod.use("lm_tap")        # RAM-file live feed of LM context/output (Live tab)
 _safety = localmod.use("safety")        # untrusted-content defenses (prompt injection)
 sanitize_external, wrap_untrusted = _safety.sanitize_external, _safety.wrap_untrusted
 query_privacy = _safety.query_privacy
@@ -2582,20 +2583,25 @@ class MemoryStore:
         return n
 
     async def _chat_json(self, base_url: str, model: str, prompt: str,
-                         think: bool = True, timeout_s: float | None = None) -> dict | None:
+                         think: bool = True, timeout_s: float | None = None,
+                         tag: str = "") -> dict | None:
         import aiohttp
         # Background work (reflection/research/ingest) wants the big LM's reasoning —
         # it's latency-insensitive and the extra thinking improves the JSON it returns.
         # `think` is sent two ways since llama.cpp accepts either spelling depending on
         # the model's chat template; harmless when ignored.  `timeout_s` overrides the
         # reflect default for callers with a different latency shape (e.g. the mind-graph
-        # extraction lane).
+        # extraction lane).  `tag` labels the call in the panel's live LM feed.
         payload = {"model": model, "stream": False,
                    "response_format": {"type": "json_object"},
                    "temperature": 0.2,
                    "chat_template_kwargs": {"enable_thinking": bool(think)},
                    "reasoning_budget": -1 if think else 0,
                    "messages": [{"role": "user", "content": prompt}]}
+        cid = f"m{time.monotonic_ns() & 0xffffff}"
+        _lm_tap.write("big", "request", prompt, call_id=cid, lane=tag, model=model,
+                      meta={"json": True, "think": bool(think)})
+        t0 = time.monotonic()
         try:
             async with aiohttp.ClientSession() as s:
                 async with s.post(f"{base_url.rstrip('/')}/v1/chat/completions",
@@ -2604,9 +2610,14 @@ class MemoryStore:
                                       total=timeout_s or getattr(self, "ctx", {})
                                       .get("reflect_timeout_s", 120))) as r:
                     if r.status != 200:
+                        _lm_tap.write("big", "error", f"HTTP {r.status}", call_id=cid,
+                                      lane=tag, model=model,
+                                      elapsed_s=time.monotonic() - t0)
                         return None
                     choices = (await r.json()).get("choices") or [{}]
                     content = (choices[0].get("message") or {}).get("content", "")
+            _lm_tap.write("big", "response", content, call_id=cid, lane=tag, model=model,
+                          elapsed_s=time.monotonic() - t0)
             # A thinking model may leak <think>…</think> into content despite JSON mode;
             # strip it, then fall back to the first {...} span if there's still chatter.
             content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
@@ -2615,19 +2626,27 @@ class MemoryStore:
             except json.JSONDecodeError:
                 m = re.search(r"\{.*\}", content, flags=re.DOTALL)
                 return json.loads(m.group(0)) if m else None
-        except Exception:
+        except Exception as e:
+            _lm_tap.write("big", "error", f"{type(e).__name__}: {e}", call_id=cid,
+                          lane=tag, model=model, elapsed_s=time.monotonic() - t0)
             return None
 
     async def _chat_text(self, base_url: str, model: str, prompt: str,
-                         think: bool = False, timeout_s: float | None = None) -> str | None:
+                         think: bool = False, timeout_s: float | None = None,
+                         tag: str = "") -> str | None:
         """Like _chat_json but returns plain prose (for the document digest, and the
         toolsmith's code generation — which needs a LONGER timeout than the reflect
-        default, hence timeout_s).  No JSON mode; <think> leakage is stripped."""
+        default, hence timeout_s).  No JSON mode; <think> leakage is stripped.  `tag`
+        labels the call in the panel's live LM feed."""
         import aiohttp
         payload = {"model": model, "stream": False, "temperature": 0.3,
                    "chat_template_kwargs": {"enable_thinking": bool(think)},
                    "reasoning_budget": -1 if think else 0,
                    "messages": [{"role": "user", "content": prompt}]}
+        cid = f"m{time.monotonic_ns() & 0xffffff}"
+        _lm_tap.write("big", "request", prompt, call_id=cid, lane=tag, model=model,
+                      meta={"think": bool(think)})
+        t0 = time.monotonic()
         try:
             async with aiohttp.ClientSession() as s:
                 async with s.post(f"{base_url.rstrip('/')}/v1/chat/completions",
@@ -2636,11 +2655,18 @@ class MemoryStore:
                                       total=timeout_s or getattr(self, "ctx", {})
                                       .get("reflect_timeout_s", 120))) as r:
                     if r.status != 200:
+                        _lm_tap.write("big", "error", f"HTTP {r.status}", call_id=cid,
+                                      lane=tag, model=model,
+                                      elapsed_s=time.monotonic() - t0)
                         return None
                     choices = (await r.json()).get("choices") or [{}]
                     content = (choices[0].get("message") or {}).get("content", "")
+            _lm_tap.write("big", "response", content, call_id=cid, lane=tag, model=model,
+                          elapsed_s=time.monotonic() - t0)
             return re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
-        except Exception:
+        except Exception as e:
+            _lm_tap.write("big", "error", f"{type(e).__name__}: {e}", call_id=cid,
+                          lane=tag, model=model, elapsed_s=time.monotonic() - t0)
             return None
 
     def close(self):

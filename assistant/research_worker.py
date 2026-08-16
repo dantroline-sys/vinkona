@@ -1540,11 +1540,13 @@ async def main():
 
             async def _ts_chat(prompt, think=True):
                 return await memory._chat_json(big["url"], big["model"], prompt,
-                                               think=think, timeout_s=_ts_to)
+                                               think=think, timeout_s=_ts_to,
+                                               tag="toolsmith")
 
             async def _ts_text(prompt):
                 return await memory._chat_text(big["url"], big["model"], prompt,
-                                               think=True, timeout_s=_ts_to)
+                                               think=True, timeout_s=_ts_to,
+                                               tag="toolsmith")
 
             async def _ts_guidance(question):
                 # kb_ask (falling back to kb_search passages) as build guidance.
