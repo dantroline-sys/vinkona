@@ -13,6 +13,7 @@ library;
 import 'package:flutter/material.dart';
 
 import '../api/backend.dart';
+import '../widgets/load_problem.dart';
 
 class SettingsBasicScreen extends StatefulWidget {
   final BackendClient client;
@@ -136,13 +137,7 @@ class _SettingsBasicScreenState extends State<SettingsBasicScreen> {
   @override
   Widget build(BuildContext context) {
     if (_error != null) {
-      return Center(
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          Text(_error!),
-          const SizedBox(height: 12),
-          FilledButton(onPressed: _load, child: const Text('Try again')),
-        ]),
-      );
+      return LoadProblem(detail: _error!, onRetry: _load);
     }
     if (_config == null) {
       return const Center(child: CircularProgressIndicator());

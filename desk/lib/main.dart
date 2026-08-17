@@ -11,7 +11,7 @@ import 'package:flutter/material.dart';
 import 'api/backend.dart';
 import 'screens/home.dart';
 import 'screens/placeholder.dart';
-import 'screens/settings_basic.dart';
+import 'screens/settings.dart';
 
 void main() {
   runApp(VinkonaDeskApp(client: BackendClient()));
@@ -58,7 +58,7 @@ class _ShellState extends State<Shell> {
   Widget build(BuildContext context) {
     final pages = <Widget>[
       HomeScreen(client: widget.client),
-      SettingsBasicScreen(client: widget.client),
+      SettingsScreen(client: widget.client),
       const ComingSoonScreen(
           title: 'Her tools',
           detail: 'The tools she makes for herself — the queue of ideas, the '

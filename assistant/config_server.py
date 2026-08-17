@@ -136,15 +136,37 @@ def _tts_installed(engine: str) -> bool:
     return False
 
 
+def _orpheus_voices() -> list:
+    """Orpheus's preset-voice list for the picker, read from tts_orpheus_gguf.py
+    WITHOUT importing it (the module needs numpy at import time; this server stays
+    stdlib-only).  Falls back to the known presets if parsing ever fails."""
+    try:
+        import ast
+        src = (Path(__file__).parent / "tts_orpheus_gguf.py").read_text()
+        for node in ast.walk(ast.parse(src)):
+            if isinstance(node, ast.Assign) and \
+                    any(getattr(t, "id", "") == "PRESET_VOICES" for t in node.targets):
+                v = ast.literal_eval(node.value)
+                if isinstance(v, list) and v:
+                    return [str(x) for x in v]
+    except Exception:
+        pass
+    return ["tara", "leah", "julia", "jess", "leo", "mia", "zac", "zoe"]
+
+
 def tts_status(cfg: dict) -> dict:
     """The current engine + the catalogue with per-engine install status, for the
-    Models-tab picker."""
+    Models-tab picker.  Each engine carries its preset-voice list (empty = the
+    engine clones/designs voices instead of picking from presets)."""
     cur = (cfg.get("tts") or {}).get("engine") or "orpheus_gguf"
     if cur == "orpheus":                          # legacy alias
         cur = "orpheus_gguf"
-    engines = [{**e, "installed": _tts_installed(e["key"]), "current": e["key"] == cur}
+    voices = {"orpheus_gguf": _orpheus_voices()}
+    engines = [{**e, "installed": _tts_installed(e["key"]), "current": e["key"] == cur,
+                "voices": voices.get(e["key"], [])}
                for e in TTS_ENGINES]
-    return {"current": cur, "engines": engines}
+    return {"current": cur, "engines": engines,
+            "default_voice": (cfg.get("tts") or {}).get("default_voice") or ""}
 
 
 def tts_select(config_path: str, engine: str) -> dict:
@@ -952,7 +974,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, {"levels": CFGMOD.resolved_field_levels(self._cfg()),
                                         "default": CFGMOD.LEVEL_DEFAULT,
                                         "order": CFGMOD.LEVEL_ORDER,
-                                        "labels": getattr(CFGMOD, "FIELD_LABELS", {})})
+                                        "labels": getattr(CFGMOD, "FIELD_LABELS", {}),
+                                        "choices": getattr(CFGMOD, "FIELD_CHOICES", {})})
             except Exception as e:
                 return self._json(500, {"error": str(e)})
         if path == "/api/feature_recipes":

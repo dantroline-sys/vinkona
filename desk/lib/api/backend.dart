@@ -86,13 +86,155 @@ class Activity {
       );
 }
 
+/// One persona from the personas document.  A read-only view for pickers —
+/// edits go through the WHOLE document ([BackendClient.savePersonas]), the
+/// same contract the web panel uses.
+class Persona {
+  final String name; // the document key
+  final String description;
+  final String greeting;
+  final String voice;
+  Persona(
+      {required this.name,
+      required this.description,
+      required this.greeting,
+      required this.voice});
+}
+
+/// The personas document: who she can be, and who she is by default.
+class PersonaDoc {
+  final String defaultName;
+  final List<Persona> personas;
+  final Map<String, dynamic> raw; // the whole document, posted back on save
+  PersonaDoc(
+      {required this.defaultName, required this.personas, required this.raw});
+
+  factory PersonaDoc.fromJson(Map<String, dynamic> j) {
+    final ps = (j['personas'] as Map<String, dynamic>?) ?? const {};
+    return PersonaDoc(
+      defaultName: j['default'] as String? ?? '',
+      personas: ps.entries
+          .where((e) => e.value is Map<String, dynamic>)
+          .map((e) {
+        final p = e.value as Map<String, dynamic>;
+        return Persona(
+          name: e.key,
+          description: p['description'] as String? ?? '',
+          greeting: p['greeting'] as String? ?? '',
+          voice: p['voice'] as String? ?? '',
+        );
+      }).toList(),
+      raw: j,
+    );
+  }
+}
+
+/// One TTS engine from the backend's catalogue, with its install state and
+/// preset voices (empty = the engine clones/designs voices instead).
+class TtsEngine {
+  final String key;
+  final String label;
+  final String footprint;
+  final String note;
+  final bool installed;
+  final bool current;
+  final List<String> voices;
+  TtsEngine(
+      {required this.key,
+      required this.label,
+      required this.footprint,
+      required this.note,
+      required this.installed,
+      required this.current,
+      required this.voices});
+
+  factory TtsEngine.fromJson(Map<String, dynamic> j) => TtsEngine(
+        key: j['key'] as String? ?? '',
+        label: j['label'] as String? ?? '',
+        footprint: j['footprint'] as String? ?? '',
+        note: j['note'] as String? ?? '',
+        installed: j['installed'] as bool? ?? false,
+        current: j['current'] as bool? ?? false,
+        voices: ((j['voices'] as List?) ?? const [])
+            .map((v) => v.toString())
+            .toList(),
+      );
+}
+
+class TtsStatus {
+  final String current;
+  final String defaultVoice;
+  final List<TtsEngine> engines;
+  TtsStatus(
+      {required this.current,
+      required this.defaultVoice,
+      required this.engines});
+
+  TtsEngine? get currentEngine {
+    for (final e in engines) {
+      if (e.current) return e;
+    }
+    return null;
+  }
+
+  factory TtsStatus.fromJson(Map<String, dynamic> j) => TtsStatus(
+        current: j['current'] as String? ?? '',
+        defaultVoice: j['default_voice'] as String? ?? '',
+        engines: ((j['engines'] as List?) ?? const [])
+            .whereType<Map<String, dynamic>>()
+            .map(TtsEngine.fromJson)
+            .toList(),
+      );
+}
+
+/// One memory+personas bundle ("profile") with its lightweight stats.
+class ProfileInfo {
+  final String name;
+  final int memories; // -1 = unknown/unreadable
+  final int personas;
+  final int sizeBytes;
+  final bool active;
+  ProfileInfo(
+      {required this.name,
+      required this.memories,
+      required this.personas,
+      required this.sizeBytes,
+      required this.active});
+
+  factory ProfileInfo.fromJson(Map<String, dynamic> j) => ProfileInfo(
+        name: j['name'] as String? ?? '',
+        memories: (j['memories'] as num?)?.toInt() ?? -1,
+        personas: (j['personas'] as num?)?.toInt() ?? 0,
+        sizeBytes: (j['size'] as num?)?.toInt() ?? 0,
+        active: j['active'] as bool? ?? false,
+      );
+}
+
+class ProfilesStatus {
+  final String active;
+  final List<ProfileInfo> profiles;
+  ProfilesStatus({required this.active, required this.profiles});
+
+  factory ProfilesStatus.fromJson(Map<String, dynamic> j) => ProfilesStatus(
+        active: j['active'] as String? ?? '',
+        profiles: ((j['profiles'] as List?) ?? const [])
+            .whereType<Map<String, dynamic>>()
+            .map(ProfileInfo.fromJson)
+            .toList(),
+      );
+}
+
 /// The audience-tier map: dotted config path -> basic | advanced | expert.
 class FieldLevels {
   final Map<String, String> levels;
   final String defaultLevel;
   final Map<String, String> labels; // optional friendly names per path
+  final Map<String, List<Object?>> choices; // fixed-choice fields (pickers)
   FieldLevels(
-      {required this.levels, required this.defaultLevel, required this.labels});
+      {required this.levels,
+      required this.defaultLevel,
+      required this.labels,
+      required this.choices});
 
   String levelFor(String path) {
     // Exact match wins; then glob prefixes ("vad.*"); then the default.
@@ -113,6 +255,8 @@ class FieldLevels {
         defaultLevel: j['default'] as String? ?? 'advanced',
         labels: ((j['labels'] as Map<String, dynamic>?) ?? const {})
             .map((k, v) => MapEntry(k, v as String)),
+        choices: ((j['choices'] as Map<String, dynamic>?) ?? const {})
+            .map((k, v) => MapEntry(k, List<Object?>.from(v as List))),
       );
 }
 
@@ -158,8 +302,49 @@ class BackendClient {
     }
   }
 
+  Future<Map<String, dynamic>> _postJson(String path, Object body) async {
+    final r = await _http
+        .post(Uri.parse('$baseUrl$path'), body: jsonEncode(body))
+        .timeout(const Duration(seconds: 10));
+    if (r.statusCode != 200) {
+      String detail = '';
+      try {
+        detail = (jsonDecode(r.body) as Map<String, dynamic>)['error'] ?? '';
+      } catch (_) {}
+      throw BackendException(
+          'HTTP ${r.statusCode} from $path${detail.isEmpty ? "" : ": $detail"}');
+    }
+    final body2 = jsonDecode(r.body);
+    return body2 is Map<String, dynamic> ? body2 : <String, dynamic>{};
+  }
+
   Future<FieldLevels> fieldLevels() async =>
       FieldLevels.fromJson(await _getJson('/api/field_levels'));
+
+  /// The personas document (who she can be).  Edited whole, like config.
+  Future<PersonaDoc> personas() async =>
+      PersonaDoc.fromJson(await _getJson('/api/personas'));
+
+  Future<void> savePersonas(Map<String, dynamic> doc) =>
+      _postJson('/api/personas', doc);
+
+  Future<TtsStatus> tts() async => TtsStatus.fromJson(await _getJson('/api/tts'));
+
+  /// Select a TTS engine.  [when] is 'next_restart' (default) or 'now' (the
+  /// backend then restarts everything to reconcile the service set).
+  Future<Map<String, dynamic>> ttsSelect(String engine,
+          {String when = 'next_restart'}) =>
+      _postJson('/api/tts/select', {'engine': engine, 'when': when});
+
+  /// The memory+personas bundles and which one is live.
+  Future<ProfilesStatus> profiles() async =>
+      ProfilesStatus.fromJson(await _getJson('/api/profiles'));
+
+  Future<void> profileSwitch(String name) =>
+      _postJson('/api/profiles/switch', {'name': name});
+
+  Future<void> profileCreate(String name) =>
+      _postJson('/api/profiles/create', {'name': name});
 
   Future<List<FeatureRecipe>> featureRecipes() async {
     final j = await _getJson('/api/feature_recipes');

@@ -507,7 +507,7 @@ DEFAULTS: dict = {
         # language voice control; own venv qwen3_env, not yet live-tested — see
         # tts_qwen3.py).  A legacy "orpheus" value is treated as orpheus_gguf.
         "engine": "orpheus_gguf",
-        "default_voice": "tara",
+        "default_voice": "tara",             # voice preset used when a persona doesn't pick its own
         # Trim the silent head/tail Orpheus bakes into each sentence and replace it
         # with one short uniform gap — kills the long unnatural inter-sentence pauses.
         "trim_silence": True,
@@ -606,7 +606,7 @@ DEFAULTS: dict = {
         },
     },
     "memory": {
-        "enabled": True,
+        "enabled": True,                         # remember what you tell her and recall it in later chats
         "db_path": "config/memory.db",
         "recall_top_k": 5,
         "recency_halflife_s": 1209600,           # 14 days
@@ -734,7 +734,7 @@ DEFAULTS: dict = {
         # than confabulate when nothing relevant was recalled for a question. Scoped so it never
         # suppresses general-knowledge answers — only guards user-specific / researched facts.
         "grounding": {
-            "enabled": True,
+            "enabled": True,                     # she says "I don't have that" rather than inventing personal facts
             "abstain_note": ("(Nothing is recalled about the user on this. If the question is "
                              "about their own life, plans, people or specifics you'd only know "
                              "if they'd told you, say you don't have that rather than inventing "
@@ -1138,7 +1138,7 @@ DEFAULTS: dict = {
             # e.g. {"general": 180, "medical-research": 0} (§9: keep clinical indefinitely).
             "keep_days": 0,
             "digest": {                           # daily "what happened" narrative (big LM → memory)
-                "enabled": True,
+                "enabled": True,                  # a short daily news summary, written while idle
                 "interval_s": 86400,
                 "min_items": 5,                   # skip the digest on a thin news day
                 "prompt": None,
@@ -1257,7 +1257,7 @@ DEFAULTS: dict = {
         # answers from sources over idle cycles ("research"), plus a few it raises with you
         # in conversation ("ask_user").  Watch progress in the Plans tab.
         "plans": {
-            "enabled": True,
+            "enabled": True,                 # she keeps research plans: open questions worked through while idle
             "work_per_cycle": 3,             # research questions answered per idle cycle
             "surface_user_questions": 1,     # ask_user questions offered to the fast LM per turn
             "plan_prompt": None,             # None → memory.DEFAULT_PLAN_PROMPT
@@ -1330,7 +1330,7 @@ DEFAULTS: dict = {
     # from speech and logs them to chat_logs (role='aside') for the dreaming phase to read.
     # Off = no prompt instruction (and any stray <aside> is still stripped, never spoken).
     "asides": {
-        "enabled": True,
+        "enabled": True,     # she may jot brief private thoughts alongside her replies (her inner voice)
     },
     "spontaneity": {
         "enabled": True,
@@ -1344,7 +1344,7 @@ DEFAULTS: dict = {
         "candidate_pool": 40,
     },
     "proactive": {
-        "enabled": True,
+        "enabled": True,                     # she mentions upcoming calendar events before you ask
         "lookahead_min": 240,                # only surface events starting within this horizon
         "max_events": 3,                     # cap how many upcoming events go in the feed
         "calendar_args": {"days": 2},        # window to pull when the notifications bell is off
@@ -1447,7 +1447,7 @@ DEFAULTS: dict = {
         "trace_path": "config/trace.jsonl",  # live LM-activity feed the UI reads
         "trace_max_events": 400,    # ring-buffer cap; oldest events drop
     },
-    "default_persona": "vinkona",
+    "default_persona": "vinkona",   # who she is when personas.json names no default
     "personas_path": "config/personas.json",
 
     # ── egress broker (amiga_net) — the Network tab edits these ──────────────
@@ -1614,6 +1614,41 @@ FIELD_LABELS: dict[str, str] = {
     "tools.tunnel.remote_host": "Where the tools listen on the Mac",
     "tools.tunnel.remote_port": "The tools' port on the Mac",
     "tools.tunnel.extra_forwards": "Extra ports to relay",
+    # Basic-tier fields the desktop app shows outside the feature-recipe switches — friendly
+    # names so a non-technical user never reads a dotted path.
+    "default_persona": "Persona",
+    "tts.engine": "Speech engine",
+    "tts.default_voice": "Voice",
+    "awareness.location": "Where you are",
+    "awareness.holidays_country": "Holiday country code",
+    "awareness.inject_time": "She knows the date and time",
+    "asides.enabled": "Private asides",
+    "memory.enabled": "Long-term memory",
+    "memory.grounding.enabled": "Honest about what she doesn't know",
+    "knowledge.enabled": "Knowledge lookup",
+    "proactive.enabled": "Mentions what's coming up",
+    "research.plans.enabled": "Research plans",
+    "research.plans.surface_user_questions": "Questions she may ask you",
+    "research.rss.digest.enabled": "Daily news digest",
+    "research.scholarly": "Keep full source texts",
+    "research.web_search": "Web search while researching",
+    "notifications.lead_times_min": "Reminder lead times (minutes)",
+    "tools.calculator": "Built-in calculator",
+    "tools.confirm_required": "Ask before acting",
+    "tools.wikipedia": "Wikipedia lookup",
+    "tools.own_tools.enabled": "Her own tools",
+    "tools.own_tools.faculties.enabled": "Tools may use her faculties",
+    "tools.own_tools.toolsmith.enabled": "She may write new tools",
+}
+
+
+# ── Enumerated field choices ───────────────────────────────────────────────────────
+# Fields whose value is one of a small fixed set: the form should offer a picker, not
+# free text.  A choices list may mix strings and booleans ("auto"/true/false).  Keyed
+# by dotted path; test_field_levels.py asserts every key exists in DEFAULTS and that
+# the shipped default value is itself one of the choices.
+FIELD_CHOICES: dict[str, list] = {
+    "tools.wikipedia": ["auto", True, False],
 }
 
 

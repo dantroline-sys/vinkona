@@ -99,6 +99,20 @@ def test_field_labels_reference_real_paths():
     check(f"every friendly label is a non-empty string (offenders: {blank})", not blank)
 
 
+def test_field_choices_reference_real_paths():
+    choices = getattr(cfg, "FIELD_CHOICES", {})
+    dead = [k for k in choices if k not in ALL]
+    check(f"every choices path exists in DEFAULTS (offenders: {dead})", not dead)
+
+    def _default_at(path):
+        cur = cfg.DEFAULTS
+        for part in path.split("."):
+            cur = cur[part]
+        return cur
+    off = [k for k, v in choices.items() if _default_at(k) not in v]
+    check(f"every shipped default is among its own choices (offenders: {off})", not off)
+
+
 def test_key_features_have_a_basic_toggle():
     # the sections a newcomer actually reasons about must each expose at least their on/off in Basic
     for path in ("memory.working_graph.enabled", "memory.mind_graph.enabled", "research.enabled",
@@ -113,6 +127,7 @@ def main():
     test_resolver_precedence()
     test_resolved_map_is_non_default_only()
     test_field_labels_reference_real_paths()
+    test_field_choices_reference_real_paths()
     test_key_features_have_a_basic_toggle()
     print(f"\n{PASS} passed, {FAIL} failed")
     raise SystemExit(1 if FAIL else 0)

@@ -37,9 +37,9 @@ on Linux (native equivalents elsewhere).  Lives in `desk/` (Flutter/Dart).
 Each stage is a committable slice with its own acceptance test; later stages never
 block earlier ones from shipping.
 
-* **D0 — toolchain** (Dan): `sudo dnf install clang cmake ninja-build gtk3-devel`
-  on the dev VM, then `flutter doctor` shows Linux desktop green.
-  *Accept: `flutter build linux` produces a runnable bundle of the D1 skeleton.*
+* **D0 — toolchain** (DONE 2026-08-17): `sudo dnf install clang cmake ninja-build
+  gtk3-devel` on the dev VM.
+  *Accepted: `flutter build linux --release` builds the bundle (24 MB) on the VM.*
 
 * **D1 — skeleton** (DONE, this commit): `desk/` app; `BackendClient` (config,
   field_levels, feature_recipes, help, activity, whole-config save); shell with
@@ -50,13 +50,23 @@ block earlier ones from shipping.
   *Accept: `flutter analyze` clean; widget tests prove flip→preview→confirm posts the
   switch + companions in one save, and cancel changes nothing.  (8 tests green.)*
 
-* **D2 — Basic settings, complete**: the remaining Basic-tier knobs that aren't recipe
-  switches (persona picker via `/api/profiles` + `/api/personas`, TTS voice via
-  `/api/tts` + `/api/tts/select`, awareness basics), grouped in friendly sections with
-  `/api/help` text as subtitles.  First-run state: backend not installed → point at the
-  installer instead of an error.
-  *Accept: a non-technical user can change everything Basic without seeing a dotted
-  path or JSON.*
+* **D2 — Basic settings, complete** (DONE, this commit): Settings is now four tabs —
+  **Persona & voice** (persona picker over the whole-document `/api/personas` contract;
+  engine picker over `/api/tts` + `/api/tts/select` with install state and a
+  now-or-next-restart confirm sheet; preset-voice chips), **Features** (the D1 recipe
+  switches), **Everyday** (every remaining Basic knob, server-derived: FIELD_LEVELS
+  basic minus recipe paths minus persona/voice, rendered by value type — switch /
+  fixed-choice picker / text — with `/api/help` subtitles and FIELD_LABELS names), and
+  **Profiles** (switch with confirm + create, over `/api/profiles`).  Backend extended
+  first, per rule 1: `/api/tts` now serves per-engine preset `voices` (read from
+  tts_orpheus_gguf.py via `ast`, keeping the panel numpy-free), `/api/field_levels`
+  serves `choices` (new config.FIELD_CHOICES), and the eight Basic fields that had no
+  help got comments in config.py — the web panel gains all three for free.  A shared
+  can't-reach-her card covers not-running and not-installed with a next step.
+  *Accepted: 19 Flutter tests green (persona save keeps the untouched document whole;
+  engine switch posts nothing before confirm; choice/number-list fields round-trip
+  typed values); analyzer clean; `flutter build linux` builds; backend suites
+  (field_levels 24, confighelp, tts_select, profiles, recipes) green.*
 
 * **D3 — Home becomes a real dashboard**: services health (`/api/services`,
   supervisor seam), doctor-style rows with the one-line fix when something's down,

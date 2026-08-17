@@ -67,11 +67,97 @@ void main() {
           'default': 'advanced',
           'order': {'basic': 0, 'advanced': 1, 'expert': 2},
           'labels': {},
+          'choices': {
+            'tools.wikipedia': ['auto', true, false]
+          },
         });
     final fl = await c.fieldLevels();
     expect(fl.levelFor('tools.own_tools.enabled'), 'basic');
     expect(fl.levelFor('vad.onset'), 'expert');
     expect(fl.levelFor('anything.else'), 'advanced');
+    expect(fl.choices['tools.wikipedia'], ['auto', true, false]);
+  });
+
+  test('personas document parses and keeps the raw doc for whole saves',
+      () async {
+    final c = _client((req) => {
+          'default': 'vinkona',
+          'personas': {
+            'vinkona': {
+              'description': 'Warm and witty.',
+              'greeting': 'Hey.',
+              'voice': 'tara',
+              'system_prompt': 'long prompt kept in raw',
+            },
+            'sage': {'description': 'Calm mentor.', 'voice': 'leo'},
+          },
+        });
+    final doc = await c.personas();
+    expect(doc.defaultName, 'vinkona');
+    expect(doc.personas.map((p) => p.name), containsAll(['vinkona', 'sage']));
+    expect(doc.personas.firstWhere((p) => p.name == 'sage').voice, 'leo');
+    // The raw document keeps everything the picker doesn't render.
+    expect(
+        ((doc.raw['personas'] as Map)['vinkona'] as Map)['system_prompt'],
+        'long prompt kept in raw');
+  });
+
+  test('tts status parses engines with install state and preset voices',
+      () async {
+    final c = _client((req) => {
+          'current': 'orpheus_gguf',
+          'default_voice': 'tara',
+          'engines': [
+            {
+              'key': 'orpheus_gguf',
+              'label': 'Orpheus',
+              'footprint': 'small',
+              'note': 'the default',
+              'installed': true,
+              'current': true,
+              'voices': ['tara', 'leo'],
+            },
+            {
+              'key': 'chatterbox',
+              'label': 'Chatterbox',
+              'footprint': 'tiny',
+              'note': 'clones a clip',
+              'installed': false,
+              'current': false,
+              'voices': [],
+            },
+          ],
+        });
+    final t = await c.tts();
+    expect(t.current, 'orpheus_gguf');
+    expect(t.currentEngine?.voices, ['tara', 'leo']);
+    expect(t.engines[1].installed, isFalse);
+  });
+
+  test('profiles parse with stats and the active flag', () async {
+    final c = _client((req) => {
+          'active': 'default',
+          'profiles': [
+            {
+              'name': 'default',
+              'memories': 42,
+              'personas': 3,
+              'size': 2048,
+              'active': true
+            },
+            {
+              'name': 'guest',
+              'memories': -1,
+              'personas': 0,
+              'size': 0,
+              'active': false
+            },
+          ],
+        });
+    final s = await c.profiles();
+    expect(s.active, 'default');
+    expect(s.profiles.first.memories, 42);
+    expect(s.profiles.last.active, isFalse);
   });
 
   test('a non-200 surfaces as a BackendException', () async {
