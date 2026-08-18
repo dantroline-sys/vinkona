@@ -387,3 +387,29 @@ def digest_render(inputs, params, ctx):
         lines.append("• " + " ".join(bits))
     return {"digest": {"title": params["title"], "text": "\n".join(lines),
                        "count": len(items)}}
+
+
+@block(
+    name="store_write", version="1.0.0",
+    summary="Save a digest as a text file inside her tool store, so it can be "
+            "read back later.",
+    ports_in={"digest": "Digest"}, ports_out={"file": "FileRef"},
+    params={"path": {"type": "string", "default": "digests/latest.txt",
+                     "description": "Store-relative file path to write."}},
+    capabilities=("fs-write",),
+    rollback="the one store-relative file it writes (engine snapshots before "
+             "overwrite; see graphrun.LiveCtx)",
+    failure_modes=("a path escaping the store → fail (containment is the "
+                   "engine's, not this block's)",),
+    fixtures=(
+        {"name": "write", "inputs": {"digest": {"title": "D", "text": "hello",
+                                                "count": 1}},
+         "expect": {"file": {"path": "(shadow)/digests/latest.txt"}}},
+        {"name": "edge-own-path", "params": {"path": "digests/rain.txt"},
+         "inputs": {"digest": {"title": "D", "text": "", "count": 0}},
+         "expect": {"file": {"path": "(shadow)/digests/rain.txt"}}},
+    ))
+def store_write(inputs, params, ctx):
+    d = inputs["digest"]
+    body = (d.get("title") or "Digest") + "\n\n" + (d.get("text") or "")
+    return {"file": {"path": ctx.write(params["path"], body)}}

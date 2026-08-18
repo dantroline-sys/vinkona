@@ -299,17 +299,22 @@ class Ctx:
     def now(self) -> float:
         raise BlockError("this Ctx has no clock")
 
+    def write(self, relpath: str, text: str) -> str:
+        raise BlockError("this Ctx has no writable store")
+
 
 class ReplayCtx(Ctx):
     """Canned side effects for fixture/shadow runs.  A miss FAILS — a fixture
     that would silently invent data is the exact failure class this contract
-    exists to remove."""
+    exists to remove.  Writes never touch disk: they are recorded in
+    self.writes so a fixture can assert WHAT would have been written."""
 
     def __init__(self, canned: dict | None = None):
         c = canned or {}
         self._net = dict(c.get("net", {}))
         self._llm = c.get("llm")          # str (one reply) or {substr: reply}
         self._now = c.get("now", 0.0)
+        self.writes: list = []            # (relpath, text) — shadow, no disk
 
     def net(self, url: str) -> str:
         if url not in self._net:
@@ -327,6 +332,10 @@ class ReplayCtx(Ctx):
 
     def now(self) -> float:
         return self._now
+
+    def write(self, relpath: str, text: str) -> str:
+        self.writes.append((relpath, text))
+        return f"(shadow)/{relpath}"
 
 
 # ── Fixtures runner (§3, §6.2) ────────────────────────────────────────────────
