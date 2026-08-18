@@ -113,6 +113,19 @@ async def test_chat_json_think():
 
     res2 = await memory.MemoryStore._chat_json(_Dummy(), "http://x", "m", "hi")
     check("_chat_json defaults to think=True (background path)", _LAST["payload"]["reasoning_budget"] == -1)
+    check("no schema → plain json_object mode",
+          _LAST["payload"]["response_format"] == {"type": "json_object"})
+
+    # VIN-TOOL-01 §0.3: schema= upgrades JSON mode to a server-enforced grammar.
+    await memory.MemoryStore._chat_json(_Dummy(), "http://x", "m", "hi",
+                                        schema={"type": "object"},
+                                        schema_name="tool_graph")
+    rf = _LAST["payload"]["response_format"]
+    check("schema= sends response_format json_schema", rf.get("type") == "json_schema")
+    check("…named, strict, and carrying the schema verbatim",
+          rf.get("json_schema", {}).get("name") == "tool_graph"
+          and rf.get("json_schema", {}).get("strict") is True
+          and rf.get("json_schema", {}).get("schema") == {"type": "object"})
 
 
 async def test_call_tool_routing():

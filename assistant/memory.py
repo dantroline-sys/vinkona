@@ -2656,23 +2656,30 @@ class MemoryStore:
 
     async def _chat_json(self, base_url: str, model: str, prompt: str,
                          think: bool = True, timeout_s: float | None = None,
-                         tag: str = "") -> dict | None:
+                         tag: str = "", schema: dict | None = None,
+                         schema_name: str = "result") -> dict | None:
         # Background work (reflection/research/ingest) wants the big LM's reasoning —
         # it's latency-insensitive and the extra thinking improves the JSON it returns.
         # `think` is sent two ways since llama.cpp accepts either spelling depending on
         # the model's chat template; harmless when ignored.  `timeout_s` overrides the
         # reflect default for callers with a different latency shape (e.g. the mind-graph
         # extraction lane).  `tag` labels the call in the panel's live LM feed, which sees
-        # the output STREAM while the model writes it.
+        # the output STREAM while the model writes it.  `schema` upgrades JSON mode to a
+        # server-enforced grammar: llama-server converts the JSON schema to GBNF per
+        # request (VIN-TOOL-01 §0.3), so the model CANNOT emit outside it.
+        rf = ({"type": "json_schema",
+               "json_schema": {"name": schema_name, "strict": True, "schema": schema}}
+              if schema is not None else {"type": "json_object"})
         payload = {"model": model,
-                   "response_format": {"type": "json_object"},
+                   "response_format": rf,
                    "temperature": 0.2,
                    "chat_template_kwargs": {"enable_thinking": bool(think)},
                    "reasoning_budget": -1 if think else 0,
                    "messages": [{"role": "user", "content": prompt}]}
         cid = f"m{time.monotonic_ns() & 0xffffff}"
         _lm_tap.write("big", "request", prompt, call_id=cid, lane=tag, model=model,
-                      meta={"json": True, "think": bool(think)})
+                      meta={"json": True, "think": bool(think),
+                            **({"schema": schema_name} if schema is not None else {})})
         t0 = time.monotonic()
         stall = timeout_s or getattr(self, "ctx", {}).get("reflect_timeout_s", 120)
         try:
