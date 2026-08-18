@@ -101,9 +101,10 @@ TTS_ENGINES = [
     {"key": "neutts", "label": "NeuTTS Air",
      "footprint": "own venv (torch)",
      "note": "Voice cloned from a short reference clip."},
-    {"key": "qwen3", "label": "Qwen3-TTS (experimental)",
+    {"key": "qwen3", "label": "Qwen3-TTS (parked)",
      "footprint": "≈1.7B, own venv (torch + qwen-tts)",
-     "note": "Natural-language voice style ('a warm, slow storyteller'). New — not yet live-tested here."},
+     "note": "Natural-language voice style ('a warm, slow storyteller'). Parked: ran fine "
+             "but underperforms Orpheus here — revisit when upstream speeds it up."},
 ]
 _TTS_ENGINE_KEYS = {e["key"] for e in TTS_ENGINES}
 

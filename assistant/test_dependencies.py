@@ -48,7 +48,11 @@ def scan():
     column 0 (module scope, unguarded); anything indented — inside try/def —
     is soft: the file loads without it."""
     std = set(sys.stdlib_module_names)
-    local = {p.stem for p in HERE.glob("*.py")}
+    # Local = top-level modules AND local subpackages (amiga_net, the vendored
+    # egress broker, is a package dir — not a third-party dependency).
+    local = {p.stem for p in HERE.glob("*.py")} | \
+            {p.name for p in HERE.iterdir()
+             if p.is_dir() and (p / "__init__.py").exists()}
     hard, soft = {}, {}
     for f in sorted(HERE.glob("*.py")):
         try:
@@ -114,6 +118,8 @@ def main():
     # that only detonates on the machine where it happens to be installed —
     # EXCEPT the deliberately-external engines that carry their own venvs.
     own_venv = {"torch", "chatterbox", "neutts",     # deps/neutts project
+                "qwen_tts",         # qwen3_env (engine PARKED 2026-08-18: ran, but
+                                    # underperforms Orpheus — revisit on upstream perf)
                 "knowledgehost"}    # vinur PAIRED CHECKOUT (local_kb's in-process
                                     # tier) — found via sibling/vinur_path, never pip
     dec = {IMPORT_NAME.get(d, d.replace("-", "_")) for d in declared()}
