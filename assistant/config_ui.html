@@ -522,6 +522,12 @@
       </div>
     </div>
 
+    <h3 style="margin:22px 0 4px">Her tool graphs <span class="muted">— tools she composed from pre-verified blocks (self-tested, then on probation)</span></h3>
+    <div class="hint">Each graph says exactly what it may touch — enabling one that is “awaiting your approval” IS the approval.
+      Schedule 0 = runs only when you press Run now. <span id="graphOpStatus" class="status"></span></div>
+    <div id="toolGraphs" class="mem-list" style="max-width:720px"></div>
+    <pre id="graphInspect" class="mono" style="white-space:pre-wrap; display:none; max-width:720px; margin-top:8px"></pre>
+
     <h3 style="margin:22px 0 4px">Tool ideas <span class="muted">— designs not built yet (from the idle toolsmith, or jotted by you)</span></h3>
     <div class="hint" id="toolsmithHint"></div>
     <div class="bar">
@@ -2172,8 +2178,9 @@ async function loadTools() {
   // toolsmith status + tool ideas (the spec queue she works through while idle)
   document.getElementById('toolsmithRun').style.display = d.toolsmith ? '' : 'none';
   document.getElementById('toolsmithHint').innerHTML = d.toolsmith
-    ? 'The idle toolsmith is <strong>on</strong>: it queues plain-language specs for missing tools, ' +
-      'builds them one at a time, and re-analyses failures. Ideas you add here get attempted too.'
+    ? 'The idle toolsmith is <strong>on</strong>: it queues plain-language specs for missing tools and ' +
+      'COMPOSES each into a tool graph from her pre-verified blocks (grammar-constrained, self-tested ' +
+      'before it deploys). What she can’t compose becomes a gap report here. Ideas you add get attempted too.'
     : 'The idle toolsmith is <strong>off</strong> (Settings → tools.own_tools.toolsmith.enabled). Ideas you add here stay as reminders.';
   const ideas = d.ideas || [];
   const il = document.getElementById('toolIdeas');
@@ -2201,6 +2208,104 @@ async function loadTools() {
         `</div></div>`;
     }).join('');
   }
+  // Deployed tool graphs (VIN-TOOL-01): composed from blocks, self-tested, probation.
+  const graphs = d.graphs || [];
+  const gl = document.getElementById('toolGraphs');
+  if (!graphs.length) {
+    gl.innerHTML = '<div class="mem-empty">No graphs yet — the toolsmith deploys them here ' +
+                   'when a queued idea composes cleanly.</div>';
+  } else {
+    const gchip = g => g.state === 'active' ? ['active', '#9ece6a']
+      : g.state === 'probation'
+        ? [`probation — ${g.probation_left} run${g.probation_left === 1 ? '' : 's'} to go`, '#e0af68']
+        : [String(g.disabled_reason || '').startsWith('awaiting')
+            ? 'awaiting your approval' : 'disabled', '#f7768e'];
+    gl.innerHTML = graphs.map(g => {
+      const [label, col] = gchip(g);
+      const lr = g.last_run;
+      let lrHtml = '';
+      if (lr) {
+        const ex = (lr.steps || []).flatMap(s => (s.excluded_sample || []).map(e => e.title));
+        lrHtml = `<div class="m">last run ${escHtml(lr.at || '')}: ` +
+          (lr.ok ? 'ok' : 'FAILED — ' + escHtml(String(lr.error || '').slice(0, 140))) +
+          (ex.length ? ` · filtered out e.g.: ${escHtml(ex.slice(0, 3).join('; '))}` : '') + `</div>`;
+      }
+      const awaiting = String(g.disabled_reason || '').startsWith('awaiting');
+      return `<div class="mem-item">` +
+        `<div class="t">${escHtml(g.name)} ` +
+        `<span style="color:${col};font-weight:400;font-size:12px">● ${escHtml(label)}</span>` +
+        (g.schedule_s ? ` <span class="muted" style="font-weight:400;font-size:12px">every ` +
+          `${Math.round(g.schedule_s / 360) / 10}h</span>` : '') + `</div>` +
+        `<div class="m">${escHtml(g.goal || '')}</div>` +
+        `<div class="m">${escHtml(g.capability_summary || '')}</div>` +
+        (g.appraisal ? `<div class="m" style="font-style:italic">“${escHtml(String(g.appraisal).slice(0, 200))}”</div>` : '') +
+        ((g.disabled_reason && !awaiting)
+          ? `<div class="m" style="color:#f7768e">${escHtml(String(g.disabled_reason).slice(0, 200))}</div>` : '') +
+        lrHtml +
+        `<div class="bar" style="margin-top:6px">` +
+        (g.state !== 'disabled'
+          ? `<button class="btn secondary" onclick="graphRun('${escAttr(g.name)}')">Run now</button>`
+          : '') +
+        (g.state === 'disabled'
+          ? `<button class="btn secondary" onclick="graphState('${escAttr(g.name)}','probation')">` +
+            `${awaiting ? 'Approve &amp; enable' : 'Enable'}</button>`
+          : `<button class="btn secondary" onclick="graphState('${escAttr(g.name)}','disabled')">Disable</button>`) +
+        `<button class="btn secondary" onclick="graphSchedule('${escAttr(g.name)}', ${g.schedule_s || 0})">Schedule…</button>` +
+        `<button class="btn secondary" onclick="openGraph('${escAttr(g.name)}')">Inspect</button>` +
+        `<button class="btn danger" onclick="graphRemove('${escAttr(g.name)}')">Remove</button>` +
+        `</div></div>`;
+    }).join('');
+  }
+}
+
+async function graphRun(name) {
+  const st = document.getElementById('graphOpStatus');
+  let d = {};
+  try { d = await (await fetch('/api/own_tools/graph_run',
+        { method:'POST', body: JSON.stringify({ name }) })).json(); }
+  catch (e) { d = { error: String(e) }; }
+  flash(st, !!d.ok, d.ok ? `queued — she'll run '${name}' within about half a minute`
+                         : (d.error || 'could not queue the run'));
+}
+
+async function graphState(name, state) {
+  const d = await (await fetch('/api/own_tools/graph_state',
+        { method:'POST', body: JSON.stringify({ name, state }) })).json();
+  if (d.name || d.ok !== false) loadTools();
+  else flash(document.getElementById('graphOpStatus'), false, d.error || 'failed');
+}
+
+async function graphSchedule(name, current) {
+  const raw = prompt(`Run '${name}' every how many hours?  (0 = manual only)`,
+                     current ? String(current / 3600) : '0');
+  if (raw === null) return;
+  const hours = parseFloat(raw);
+  if (isNaN(hours) || hours < 0) return;
+  const d = await (await fetch('/api/own_tools/graph_schedule',
+        { method:'POST', body: JSON.stringify({ name, schedule_s: Math.round(hours * 3600) }) })).json();
+  if (d.name || d.ok !== false) loadTools();
+}
+
+async function graphRemove(name) {
+  if (!confirm(`Remove her tool graph '${name}'? Its run history goes with it.`)) return;
+  const d = await (await fetch('/api/own_tools/graph_remove',
+        { method:'POST', body: JSON.stringify({ name }) })).json();
+  if (d.ok) loadTools();
+}
+
+async function openGraph(name) {
+  const pre = document.getElementById('graphInspect');
+  if (pre.style.display !== 'none' && pre.dataset.name === name) {
+    pre.style.display = 'none'; return;          // second click folds it away
+  }
+  const d = await (await fetch('/api/own_tools/graph_get?name=' +
+                               encodeURIComponent(name))).json();
+  if (d.error) { flash(document.getElementById('graphOpStatus'), false, d.error); return; }
+  pre.dataset.name = name;
+  pre.textContent = JSON.stringify(
+    { graph: d.graph, capabilities: d.capabilities, manifest: d.manifest,
+      appraisal: d.appraisal, runs: d.runs }, null, 1);
+  pre.style.display = '';
 }
 
 async function requeueIdea(id) {

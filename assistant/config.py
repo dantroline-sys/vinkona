@@ -966,7 +966,17 @@ DEFAULTS: dict = {
             # spec (visible under Tool ideas at once); (2) is there a queued spec to build,
             # or a failed one to re-analyse and re-test? → attempt exactly one.
             "toolsmith": {
-                "enabled": False,           # let her write her own tools while idle
+                "enabled": False,           # let her build her own tools while idle
+                # VIN-TOOL-01 (self_tooling_spec.md): the idle pass now COMPOSES tool
+                # graphs from pre-verified blocks (palette.py) — identify a need, emit a
+                # graph under a server-enforced grammar, self-test it (dry-run, nothing
+                # real touched), deploy on probation.  What she can't compose becomes a
+                # Gap Report in the ideas queue instead of hand-rolled code.
+                "codegen_dev": False,       # DEV pathway (§0.9): flip to let the OLD free-form
+                                            # Python toolsmith run instead — for authoring new
+                                            # blocks with your hand on it, never for the runtime
+                "probation_runs": 5,        # §6.4: first N real runs keep full provenance; a
+                                            # failure among them disables the graph + files a gap
                 "min_interval_s": 21600,    # at most once every ~6h (persisted; not every boot)
                 "max_repair": 2,            # self-test failed? feed the traceback back this many times
                 "max_tools": 24,            # once she has this many, she only queues specs
@@ -1515,6 +1525,8 @@ FIELD_LEVELS: dict[str, str] = {
     "tools.own_tools.faculties.max_calls": "expert",
     "tools.own_tools.faculties.timeout_s": "expert",
     "tools.own_tools.toolsmith.enabled": "basic",
+    "tools.own_tools.toolsmith.codegen_dev": "expert",
+    "tools.own_tools.toolsmith.probation_runs": "advanced",
     "tools.own_tools.toolsmith.min_interval_s": "expert",
     "tools.own_tools.toolsmith.max_repair": "expert",
     "tools.own_tools.toolsmith.max_tools": "advanced",

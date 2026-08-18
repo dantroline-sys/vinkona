@@ -82,6 +82,7 @@ IDLECTL = _load_mod("idle_control")    # idle pause/resume + quiet-hours math
 HELPMOD = _load_mod("confighelp")      # /api/help — extracted config.py comments + help.json
 WACT = _load_mod("worker_activity")    # /api/activity — what she's doing (worker + session)
 TOOLBOX = _load_mod("toolbox")         # her own sandboxed tools (view/edit on the Tools tab)
+GRAPHSTORE = _load_mod("graphstore")   # deployed tool graphs (VIN-TOOL-01, Tools tab)
 LMTAP = _load_mod("lm_tap")            # RAM-file live feed of LM context/output (Live tab)
 UI_PATH = Path(__file__).parent / "config_ui.html"
 LOGS_DIR = Path(__file__).parent / "logs"            # written by vinkona.sh (shared filesystem)
@@ -716,6 +717,23 @@ class MemoryAdmin:
             c.commit()
         return {"ok": True, "queued": True}
 
+    def request_graph_run(self, name: str) -> dict:
+        """Queue ONE deployed-graph run for the worker — the Tools tab's Run-now
+        button on a graph row.  Value is "<name>|<ts>" so repeat clicks on the
+        same graph still read as new requests."""
+        name = str(name or "").strip()
+        if not name:
+            return {"ok": False, "error": "which graph?"}
+        if not Path(self.path).exists():
+            return {"ok": False, "error": "no memory db yet"}
+        with self._conn(ensure=True) as c:
+            c.execute("CREATE TABLE IF NOT EXISTS worker_state (key TEXT PRIMARY KEY, value TEXT)")
+            c.execute("INSERT INTO worker_state(key,value) VALUES('graph_run_request',?) "
+                      "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                      (f"{name}|{time.time()}",))
+            c.commit()
+        return {"ok": True, "queued": True, "name": name}
+
     def request_export(self) -> dict:
         """Queue a FULL research export (documents -> solved/*.md) for the worker — it polls
         worker_state and rebuilds every drop, repairing anything removed from the folder."""
@@ -902,6 +920,16 @@ class Handler(BaseHTTPRequestHandler):
             Path(__file__).resolve().parent / "var" / "own_tools")
         return TOOLBOX.Toolbox(root, cfg=otc)
 
+    def _graphstore(self):
+        """Her deployed tool graphs, same root resolution as _toolbox — the panel
+        reads/curates the same store the worker deploys into."""
+        otc = (self._cfg().get("tools", {}) or {}).get("own_tools", {}) or {}
+        root = (otc.get("dir") or "").strip() or str(
+            Path(__file__).resolve().parent / "var" / "own_tools")
+        return GRAPHSTORE.GraphStore(
+            root, probation_runs=int((otc.get("toolsmith") or {})
+                                     .get("probation_runs", 5)))
+
     def _personas_path(self):
         return self._cfg().get("personas_path", "config/personas.json")
 
@@ -1062,7 +1090,18 @@ class Handler(BaseHTTPRequestHandler):
                     "diag": diag,               # runtime/image/bridge + reason + one-line fix
                     "store": str(box.store),
                     "tools": roster,
-                    "ideas": box.ideas()})      # designs not built yet (toolsmith + you)
+                    "ideas": box.ideas(),       # specs + gap reports (toolsmith + you)
+                    "graphs": self._graphstore().list()})  # deployed tool graphs
+            except Exception as e:
+                return self._json(500, {"error": str(e)})
+        if path == "/api/own_tools/graph_get":
+            # One deployed graph, whole document (the Inspect view: pinned steps,
+            # capability summary, run provenance incl. exclusion samples, appraisal).
+            try:
+                name = self._query().get("name", [""])[0]
+                doc = self._graphstore().get(name)
+                return self._json(200 if doc else 404,
+                                  doc or {"error": "no such graph"})
             except Exception as e:
                 return self._json(500, {"error": str(e)})
         if path == "/api/own_tools/get":
@@ -1485,6 +1524,40 @@ class Handler(BaseHTTPRequestHandler):
             # Run one toolsmith pass on demand (the worker picks it up within its poll tick).
             try:
                 return self._json(200, MemoryAdmin(self._cfg()).request_toolsmith())
+            except Exception as e:
+                return self._json(500, {"ok": False, "error": str(e)})
+        if path == "/api/own_tools/graph_state":
+            # Enable / disable / re-probation a deployed graph.  Enabling a graph
+            # that was parked "awaiting your approval" IS the §5 approval.
+            try:
+                return self._json(200, self._graphstore().set_state(
+                    str(obj.get("name") or ""), str(obj.get("state") or ""),
+                    str(obj.get("reason") or "")))
+            except GRAPHSTORE.GraphStoreError as e:
+                return self._json(400, {"ok": False, "error": str(e)})
+            except Exception as e:
+                return self._json(500, {"ok": False, "error": str(e)})
+        if path == "/api/own_tools/graph_schedule":
+            try:
+                return self._json(200, self._graphstore().set_schedule(
+                    str(obj.get("name") or ""), int(obj.get("schedule_s") or 0)))
+            except GRAPHSTORE.GraphStoreError as e:
+                return self._json(400, {"ok": False, "error": str(e)})
+            except Exception as e:
+                return self._json(500, {"ok": False, "error": str(e)})
+        if path == "/api/own_tools/graph_remove":
+            try:
+                ok = self._graphstore().remove(str(obj.get("name") or ""))
+                return self._json(200 if ok else 404,
+                                  {"ok": ok} if ok else {"ok": False,
+                                                         "error": "no such graph"})
+            except Exception as e:
+                return self._json(500, {"ok": False, "error": str(e)})
+        if path == "/api/own_tools/graph_run":
+            # Run one deployed graph now (the worker picks it up within its poll tick).
+            try:
+                return self._json(200, MemoryAdmin(self._cfg())
+                                  .request_graph_run(str(obj.get("name") or "")))
             except Exception as e:
                 return self._json(500, {"ok": False, "error": str(e)})
         if path == "/api/memory":

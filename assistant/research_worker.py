@@ -1364,6 +1364,9 @@ async def main():
         if _stand_down():
             return
         await toolsmith_pass()
+        # Deployed tool graphs whose schedule is due run here too (probation
+        # bookkeeping included) — cheap when none are scheduled.
+        await graphs_pass()
         if _task_on("perspective_audit") and idle_cfg.get("perspective_audit", True):
             try:
                 pstats = await memory.audit_perspective(
@@ -1560,14 +1563,118 @@ async def main():
                              for t in (await tools.catalogue()) if t.get("function")]
             except Exception:
                 pass
-            st = await _toolsmith.run(
-                own_toolbox, _ts_chat, _ts_text, logs=memory.recent_logs(24),
-                faculties=_facs, context=memory._voice_anchor(),
-                guidance=(_ts_guidance if _tsc.get("kb_guidance", True) else None),
-                max_repair=int(_tsc.get("max_repair", 2)),
-                max_tools=int(_tsc.get("max_tools", 24)),
-                max_attempts=int(_tsc.get("max_attempts", 3)),
-                max_queue=int(_tsc.get("max_queue", 10)))
+            if _tsc.get("codegen_dev"):
+                # §0.9 dev pathway: the old free-form Python toolsmith — only
+                # when you flipped it on to author new blocks by hand.
+                st = await _toolsmith.run(
+                    own_toolbox, _ts_chat, _ts_text, logs=memory.recent_logs(24),
+                    faculties=_facs, context=memory._voice_anchor(),
+                    guidance=(_ts_guidance if _tsc.get("kb_guidance", True) else None),
+                    max_repair=int(_tsc.get("max_repair", 2)),
+                    max_tools=int(_tsc.get("max_tools", 24)),
+                    max_attempts=int(_tsc.get("max_attempts", 3)),
+                    max_queue=int(_tsc.get("max_queue", 10)))
+            else:
+                # VIN-TOOL-01 runtime: identify a need (same plain-language spec
+                # queue as ever) …
+                gs, gr, gsmod, gstore = _graph_machinery()
+                ident = await _toolsmith.identify(
+                    own_toolbox, _ts_chat, logs=memory.recent_logs(24),
+                    faculties=_facs, context=memory._voice_anchor(),
+                    max_queue=int(_tsc.get("max_queue", 10)))
+                # … then try to COMPOSE one queued spec into a graph of
+                # pre-verified blocks: grammar-constrained emission → §6
+                # self-test (dry-run; writes go to scratch only) → deploy on
+                # probation.  What can't be composed becomes a Gap Report on
+                # the idea — never hand-rolled code.
+                build = {"action": "none"}
+                max_attempts = int(_tsc.get("max_attempts", 3))
+                queue = [i for i in own_toolbox.ideas()
+                         if i.get("status") in ("proposed", "failed")
+                         and int(i.get("attempts") or 0) < max_attempts]
+                idea = next((i for i in queue if i["status"] == "proposed"),
+                            queue[0] if queue else None)
+                if idea is not None:
+                    async def _gchat(prompt, schema, name):
+                        return await memory._chat_json(
+                            big["url"], big["model"], prompt, think=True,
+                            timeout_s=_ts_to, tag="toolsmith",
+                            schema=schema, schema_name=name)
+
+                    goal = idea["title"] + (f" — {idea['rationale']}"
+                                            if idea.get("rationale") else "")
+                    res = await gs.emit_graph(
+                        _gchat, goal, max_repair=int(_tsc.get("max_repair", 2)))
+                    evidence = ""
+                    if res["ok"]:
+                        loop = asyncio.get_running_loop()
+                        import tempfile as _tmpmod
+                        with _tmpmod.TemporaryDirectory(prefix="graph-dry-") as scr:
+                            ctx = _graph_ctx(gr, loop, _ts_to, dry_scratch=scr)
+
+                            def _appraise(ev):
+                                # Her own reading of the dry-run evidence (§6.3),
+                                # logged with the deployment — not the verdict.
+                                try:
+                                    return asyncio.run_coroutine_threadsafe(
+                                        memory._chat_text(
+                                            big["url"], big["model"],
+                                            "You just dry-ran a small tool you "
+                                            "built for yourself.  In one or two "
+                                            "first-person sentences: does the "
+                                            "evidence match the goal?\n" + ev,
+                                            think=False, timeout_s=_ts_to,
+                                            tag="toolsmith"),
+                                        loop).result(_ts_to + 60) or ""
+                                except Exception:
+                                    return ""
+
+                            stres = await asyncio.to_thread(
+                                gr.selftest, res["graph"], ctx, appraise=_appraise)
+                        if stres["passed"]:
+                            doc = gstore.deploy(res["graph"],
+                                                recorded=stres["recorded"],
+                                                appraisal=stres["appraisal"])
+                            if doc["needs_approval"]:
+                                # §5: net+fs-write / mutate graphs wait for the
+                                # user; Enable in the Tools tab is the approval.
+                                gstore.set_state(doc["name"], "disabled",
+                                                 "awaiting your approval — "
+                                                 + doc["capability_summary"])
+                            own_toolbox.remove_idea(idea["id"])
+                            build = {"action": "deployed", "name": doc["name"],
+                                     "title": idea["title"],
+                                     "attempts": int(idea.get("attempts") or 0) + 1,
+                                     "reason": doc["capability_summary"]
+                                     + (" Awaiting your approval."
+                                        if doc["needs_approval"] else "")}
+                        else:
+                            bits = []
+                            for stage, info in stres["stages"].items():
+                                for err in (info or {}).get("errors") or []:
+                                    bits.append(f"{stage}: {err}")
+                            evidence = "self-test failed — " + "; ".join(bits[:6])
+                    else:
+                        evidence = ("emission failed — "
+                                    + (res.get("feedback") or "")[:1200])
+                    if evidence:
+                        n = int(idea.get("attempts") or 0) + 1
+                        own_toolbox.update_idea(
+                            idea["id"], attempts=n,
+                            status="failed" if n < max_attempts else "parked",
+                            last_error=evidence[:2000],
+                            gap={"kind": "gap", "goal": idea["title"],
+                                 "attempted_graph":
+                                     (res.get("raw") or {}).get("name", "")
+                                     if isinstance(res.get("raw"), dict) else "",
+                                 "missing": "", "closest_existing": [],
+                                 "evidence": evidence[:2000],
+                                 "urgency": "quality"})
+                        build = {"action": ("gap_report" if n >= max_attempts
+                                            else "failed"),
+                                 "title": idea["title"], "attempts": n,
+                                 "reason": evidence[:200]}
+                st = {"identified": ident, "build": build}
             memory.set_state("toolsmith_ran_at", str(time.time()))
             ident, build = st.get("identified") or {}, st.get("build") or {}
             if ident.get("action") == "proposed":
@@ -1591,6 +1698,72 @@ async def main():
         except Exception as e:
             _log(f"toolsmith failed (continuing): {e}")
             memory.set_state("toolsmith_ran_at", str(time.time()))  # don't hammer on error
+
+    async def graphs_pass(run_name: str | None = None):
+        """Run deployed tool graphs — the ones whose schedule is due, or ONE by
+        name (the panel's Run-now).  Live runs: real net via the broker, real
+        store writes (snapshotted, one-step rollback).  §6.4 probation
+        bookkeeping; a probation regression disables the graph and parks a Gap
+        Report in the ideas queue."""
+        if own_toolbox is None or not big.get("url"):
+            if run_name:
+                _log("graph run requested but own_tools is off (or no big LM)")
+            return
+        try:
+            gs, gr, gsmod, gstore = _graph_machinery()
+            rows = gstore.list()
+        except Exception as e:
+            _log(f"graph store unavailable (continuing): {e}")
+            return
+        now = time.time()
+        due = []
+        for r in rows:
+            if run_name:
+                if r["name"] == run_name:
+                    due.append(r)
+                continue
+            if r["state"] not in ("probation", "active") or not r.get("schedule_s"):
+                continue
+            last = float((r.get("last_run") or {}).get("at_s") or 0)
+            if now - last >= float(r["schedule_s"]):
+                due.append(r)
+        if not due:
+            if run_name:
+                _log(f"graph run requested but '{run_name}' is not deployed")
+            return
+        _ts_to = float((_otc.get("toolsmith") or {}).get("lm_timeout_s", 300))
+        loop = asyncio.get_running_loop()
+        for r in due:
+            set_activity("graph:" + r["name"], interruptible=run_name is None)
+            try:
+                g, _rec = gstore.load_runnable(r["name"])
+            except gsmod.GraphStoreError as e:
+                _log(f"graph '{r['name']}' not runnable: {e}")
+                continue
+            try:
+                ctx = _graph_ctx(gr, loop, _ts_to)
+                res = await asyncio.to_thread(gr.run_graph, g, ctx)
+                out = gstore.record_run(r["name"], res)
+                if out["gap"]:
+                    add = own_toolbox.add_idea(
+                        f"her tool '{r['name']}' regressed on probation",
+                        rationale=(out["gap"].get("evidence") or "")[:800],
+                        source="gap_report", status="parked")
+                    if add.get("ok"):
+                        own_toolbox.update_idea(add["idea"]["id"], gap=out["gap"])
+                    _log(f"graph '{r['name']}' regressed on probation — "
+                         "disabled, gap filed")
+                state = out["doc"]["state"]
+                _log(f"graph '{r['name']}' ran: ok={res['ok']} state={state}"
+                     + (f" probation_left={out['doc']['probation_left']}"
+                        if state == "probation" else ""))
+                trace.write(kind="graph_run", name=r["name"], ok=res["ok"],
+                            forced=bool(run_name), state=state,
+                            error=(res.get("error") or "")[:200],
+                            store_size=len(memory.entries))
+            except Exception as e:
+                _log(f"graph '{r['name']}' run failed (continuing): {e}")
+        set_activity("idle")
 
     def garden():
         stats = memory.garden()
@@ -1639,6 +1812,58 @@ async def main():
                 _toolsmith = _load("toolsmith")
         except Exception as _e:
             _log(f"own-tools registry unavailable in worker (continuing): {_e}")
+
+    # VIN-TOOL-01 (self_tooling_spec.md): the runtime toolsmith COMPOSES tool graphs
+    # from pre-verified blocks now; free-form codegen is the dev-gated §10 pathway
+    # (toolsmith.codegen_dev).  Machinery loads lazily on first use.
+    _graphmods = None
+
+    def _graph_machinery():
+        nonlocal _graphmods
+        if _graphmods is None:
+            import palette  # noqa: F401 — populates the block registry (once per process)
+            import graphrun
+            import graphsmith
+            import graphstore
+            root = (_otc.get("dir") or "").strip() or str(
+                Path(__file__).resolve().parent / "var" / "own_tools")
+            store = graphstore.GraphStore(
+                root, probation_runs=int((_otc.get("toolsmith") or {})
+                                         .get("probation_runs", 5)))
+            _graphmods = (graphsmith, graphrun, graphstore, store)
+        return _graphmods
+
+    def _graph_ctx(graphrun_mod, loop, lm_timeout, *, dry_scratch=None):
+        """A LiveCtx for graph work: net via the egress broker (policy-checked +
+        audited, never a bare socket), the LM bridged sync→async onto the
+        worker's loop, writes contained to the own-tools store (scratch in dry
+        mode)."""
+        import blocks as _bl
+
+        def _net(url):
+            try:
+                from amiga_net import broker
+                return broker.request("research", url, timeout=30.0) \
+                    .decode("utf-8", "replace")
+            except Exception as e:
+                raise _bl.BlockError(f"fetch failed or refused: {e}") from None
+
+        def _llm(prompt):
+            try:
+                out = asyncio.run_coroutine_threadsafe(
+                    memory._chat_text(big["url"], big["model"], prompt,
+                                      think=False, timeout_s=lm_timeout,
+                                      tag="toolgraph"), loop).result(lm_timeout + 60)
+            except Exception as e:
+                raise _bl.BlockError(f"language model unavailable: {e}") from None
+            if not out:
+                raise _bl.BlockError("the language model returned nothing")
+            return out
+
+        return graphrun_mod.LiveCtx(
+            net=_net, llm=_llm,
+            store_dir=own_toolbox.store if own_toolbox is not None else None,
+            dry=dry_scratch is not None, scratch_dir=dry_scratch)
 
     _ambient = _load("ambient")            # shared orientation refresh (weather/news/calendar)
     try:
@@ -1999,6 +2224,20 @@ async def main():
                     _log("toolsmith run requested but own_tools/toolsmith is off (or no "
                          "sandbox / big LM) — skipping")
                     memory.set_state("toolsmith_handled", treq)
+                continue
+            # Manual "Run this graph now" from the Tools tab (value: "<name>|<ts>").
+            greq = memory.get_state("graph_run_request")
+            if greq and greq != memory.get_state("graph_run_handled"):
+                gname = str(greq).split("|", 1)[0]
+                if should_yield():
+                    set_activity("idle")
+                    await asyncio.sleep(poll)
+                    continue
+                try:
+                    await run_big(graphs_pass(run_name=gname))
+                except Exception as e:
+                    _log(f"manual graph run failed (continuing): {e}")
+                memory.set_state("graph_run_handled", greq)
                 continue
             # Manual "Distill chat history now" from the Memory tab: fold new USER turns into the
             # durable mind-graph on demand.  Honoured regardless of idle gating — the user asked —

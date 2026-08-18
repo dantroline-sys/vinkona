@@ -66,7 +66,8 @@ proving itself.
 The §10 developer pathway **is** `toolsmith.py` — its spec→build→bank-failure→
 re-analyse loop, moved off the runtime idle loop and behind the developer's hand.
 At runtime, T3 files a Gap Report; nothing authors code.  (`own_tools.toolsmith`
-stays opt-in-off; the formal rewiring lands in stage TG5.)
+stays opt-in-off; since TG5 the idle pass composes graphs by default and the
+old codegen loop runs only under `toolsmith.codegen_dev`.)
 
 ### 0.10 Capability names mapped to this tree
 `net` routes via the amiga_net egress broker (no direct sockets from blocks);

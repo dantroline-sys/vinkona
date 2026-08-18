@@ -132,6 +132,24 @@ def _count(v) -> int:
     return len(v) if isinstance(v, list) else 1
 
 
+def _exclusion_sample(row: dict, inputs: dict, got: dict, keep: int = 3):
+    """§6 exclusion sampling: when a step visibly dropped items (one list in,
+    one list out, fewer out than in), keep a small sample of what it REJECTED
+    so a filter eating the wrong things is catchable in seconds.  Identity, not
+    equality — filter/dedupe pass the same objects through."""
+    lin = [v for v in inputs.values() if isinstance(v, list)]
+    lout = [v for v in got.values() if isinstance(v, list)]
+    if len(lin) != 1 or len(lout) != 1 or len(lout[0]) >= len(lin[0]):
+        return
+    dropped = [x for x in lin[0] if all(x is not y for y in lout[0])]
+    row["excluded"] = len(dropped)
+    row["excluded_sample"] = [
+        {"title": (d.get("title") or (d.get("text") or "")[:60] or "(untitled)"),
+         **({"url": d["url"]} if d.get("url") else {})}
+        if isinstance(d, dict) else {"title": str(d)[:60]}
+        for d in dropped[:keep]]
+
+
 def run_graph(pinned: dict, ctx: Ctx) -> dict:
     """Execute a PINNED graph.  Returns {"ok", "outputs", "steps", "error"};
     "steps" is the provenance trail — one row per step, kept even on failure
@@ -171,6 +189,7 @@ def run_graph(pinned: dict, ctx: Ctx) -> dict:
                     raise BlockError(f"output {port!r}: {bad}")
                 slots[f"{s['id']}.{port}"] = got[port]
                 row["out"][port] = _count(got[port])
+            _exclusion_sample(row, inputs, got)
             row["ok"] = True
         except BlockError as e:
             row["error"] = str(e)
