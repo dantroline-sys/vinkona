@@ -111,6 +111,22 @@ def test_bad_shapes_rejected():
         check(f"rejects {label}", hit, "; ".join(v.errors) or "validated?!")
 
 
+def test_feed_grounding():
+    # known_feeds grounds FeedRef literals: an unlisted URL is an invention.
+    g = news_graph()
+    ok_listed = validate(g, known_feeds=["http://a/feed"])
+    check("a configured feed URL validates under grounding", ok_listed.ok,
+          "; ".join(ok_listed.errors))
+    v = validate(g, known_feeds=["http://other/feed"])
+    check("an unlisted feed URL is rejected as an invention",
+          not v.ok and any("never invent" in e for e in v.errors),
+          "; ".join(v.errors))
+    v = validate(g, known_feeds=[])
+    check("with no configured feeds, every literal feed is rejected", not v.ok)
+    check("known_feeds=None skips the check (offline graphs)",
+          validate(g, known_feeds=None).ok)
+
+
 def test_cycle_rejected():
     g = {"name": "loop", "goal": "g",
          "steps": [{"id": "s1", "block": "dedupe", "inputs": {"docs": "$s2.docs"}},
@@ -144,6 +160,7 @@ def main():
     test_valid_graph()
     test_miswired_rejected()
     test_bad_shapes_rejected()
+    test_feed_grounding()
     test_cycle_rejected()
     test_capability_language()
     print(f"\n{PASS} passed, {FAIL} failed")

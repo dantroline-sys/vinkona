@@ -45,10 +45,10 @@ class LiveCtx(Ctx):
     `net`/`llm` are callables (the broker-backed fetcher and the big LM lane
     get wired in at the worker); `store_dir` is the ONLY writable root."""
 
-    def __init__(self, *, net=None, llm=None, now=time.time,
+    def __init__(self, *, net=None, llm=None, news=None, now=time.time,
                  store_dir: str | Path | None = None,
                  dry: bool = False, scratch_dir: str | Path | None = None):
-        self._net, self._llm, self._now = net, llm, now
+        self._net, self._llm, self._news, self._now = net, llm, news, now
         self.store_dir = Path(store_dir) if store_dir else None
         self.dry = bool(dry)
         self.scratch_dir = Path(scratch_dir) if scratch_dir else None
@@ -67,6 +67,12 @@ class LiveCtx(Ctx):
 
     def now(self) -> float:
         return self._now()
+
+    def news(self, query: str, hours: int, limit: int) -> list:
+        if self._news is None:
+            raise BlockError("the news archive is not available on this box "
+                             "(research.rss is off)")
+        return self._news(query, hours, limit)
 
     def write(self, relpath: str, text: str) -> str:
         """The one write faculty (§0.5).  Containment is enforced HERE, not
@@ -109,6 +115,11 @@ class RecordingCtx(Ctx):
     def __init__(self, inner: Ctx):
         self.inner = inner
         self.recorded: dict = {"net": {}, "llm": {}}
+
+    def news(self, query: str, hours: int, limit: int) -> list:
+        out = self.inner.news(query, hours, limit)
+        self.recorded.setdefault("news", out)   # first archive read = the replay
+        return out
 
     def net(self, url: str) -> str:
         out = self.inner.net(url)

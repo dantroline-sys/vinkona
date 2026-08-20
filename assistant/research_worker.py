@@ -1604,7 +1604,8 @@ async def main():
                     goal = idea["title"] + (f" — {idea['rationale']}"
                                             if idea.get("rationale") else "")
                     res = await gs.emit_graph(
-                        _gchat, goal, max_repair=int(_tsc.get("max_repair", 2)))
+                        _gchat, goal, max_repair=int(_tsc.get("max_repair", 2)),
+                        resources={"feeds": list(_tsc.get("feed_sources") or [])})
                     evidence = ""
                     if res["ok"]:
                         loop = asyncio.get_running_loop()
@@ -1860,8 +1861,16 @@ async def main():
                 raise _bl.BlockError("the language model returned nothing")
             return out
 
+        def _news(query, hours, limit):
+            # Her own archive on a fresh READ-ONLY connection: memory's handle
+            # is thread-bound and graph runs happen in a worker thread.
+            import news_store as _ns
+            return _ns.search_readonly(memory.db_path, query=query,
+                                       since=time.time() - hours * 3600,
+                                       limit=limit)
+
         return graphrun_mod.LiveCtx(
-            net=_net, llm=_llm,
+            net=_net, llm=_llm, news=_news,
             store_dir=own_toolbox.store if own_toolbox is not None else None,
             dry=dry_scratch is not None, scratch_dir=dry_scratch)
 

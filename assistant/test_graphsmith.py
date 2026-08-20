@@ -120,6 +120,39 @@ def test_emission_schema():
           and s["properties"]["outputs"]["additionalProperties"] is False)
 
 
+def test_resource_grounding():
+    # With configured feeds, the URL is an ENUM — invention is inexpressible.
+    s = gs.emission_schema({"feeds": ["http://a/feed", "http://b/feed"]})
+    rss = next(st for st in s["properties"]["steps"]["items"]["oneOf"]
+               if st["properties"]["block"]["const"] == "rss_fetch")
+    lit = rss["properties"]["inputs"]["properties"]["feed"]["oneOf"][1]
+    check("configured feeds become the url enum",
+          lit["properties"]["url"]["enum"] == ["http://a/feed", "http://b/feed"])
+    # With NO feeds configured, FeedRef literals vanish (reference-only).
+    s0 = gs.emission_schema({"feeds": []})
+    rss0 = next(st for st in s0["properties"]["steps"]["items"]["oneOf"]
+                if st["properties"]["block"]["const"] == "rss_fetch")
+    check("no feeds → feed input is reference-only",
+          rss0["properties"]["inputs"]["properties"]["feed"]
+          == {"type": "string", "pattern": gs._REF_PATTERN})
+    check("the prompt names the real feeds",
+          "http://a/feed" in gs.compose_prompt("x", None,
+                                              {"feeds": ["http://a/feed"]}))
+    check("…or says news comes from her archive",
+          "news_fetch" in gs.compose_prompt("x", None, {"feeds": []}))
+
+    # Belt and braces: an invented URL that somehow arrives is caught by the
+    # validator inside the repair loop, and the feedback says so.
+    invented = good_graph()
+    invented["steps"][0]["inputs"]["feed"] = {"url": "http://made.up/feed"}
+    chat = FakeChat([invented, good_graph()])
+    res = asyncio.run(gs.emit_graph(chat, "news digest",
+                                    resources={"feeds": ["http://a/feed"]}))
+    check("an invented URL is repaired on grounding feedback",
+          res["ok"] and res["attempts"] == 2
+          and "never invent" in chat.calls[1]["prompt"])
+
+
 # ── T2 compose ────────────────────────────────────────────────────────────────
 def test_emit_graph_happy():
     chat = FakeChat([good_graph()])
@@ -221,6 +254,7 @@ def test_prompt_budget():
 
 def main():
     test_emission_schema()
+    test_resource_grounding()
     test_emit_graph_happy()
     test_emit_graph_repair()
     test_emit_graph_gives_up_with_evidence()

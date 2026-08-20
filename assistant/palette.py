@@ -138,6 +138,39 @@ def rss_fetch(inputs, params, ctx):
 
 
 @block(
+    name="news_fetch", version="1.0.0",
+    summary="Fetch recent headlines from her OWN news archive (the news she "
+            "already follows) — no network, no URLs to know.",
+    ports_in={"query": "Query"}, ports_out={"docs": "List[Document]"},
+    params={"hours": {"type": "integer", "default": 48,
+                      "description": "How far back to look, in hours."},
+            "limit": {"type": "integer", "default": 40,
+                      "description": "Most headlines to return."}},
+    capabilities=(),          # her own archive via the injected ctx — no net, no fs
+    failure_modes=("empty or missing archive → empty list (degrade; the digest "
+                   "then renders count 0, distinct from an error)",
+                   "news feature off on this box → the ctx fails loudly"),
+    fixtures=(
+        {"name": "archive", "inputs": {"query": {"text": "rain"}},
+         "ctx": {"news": [{"title": "Rain over Alpha", "summary": "Heavy rain.",
+                           "link": "http://n/1", "source": "AlphaNews",
+                           "ts": 1780308000.0}]},
+         "expect": {"docs": [{"title": "Rain over Alpha", "text": "Heavy rain.",
+                              "url": "http://n/1", "source": "AlphaNews",
+                              "ts": 1780308000.0}]}},
+        {"name": "edge-empty-archive", "inputs": {"query": {"text": "rain"}},
+         "ctx": {"news": []}, "expect": {"docs": []}},
+    ))
+def news_fetch(inputs, params, ctx):
+    rows = ctx.news(inputs["query"]["text"], params["hours"], params["limit"])
+    return {"docs": [{"title": r.get("title") or "",
+                      "text": r.get("summary") or r.get("text") or "",
+                      "url": r.get("link") or r.get("url") or "",
+                      "source": r.get("source") or "",
+                      "ts": float(r.get("ts") or 0.0)} for r in rows]}
+
+
+@block(
     name="parse_html", version="1.0.0",
     summary="Strip HTML markup from a document's text, keeping readable prose.",
     ports_in={"doc": "Document"}, ports_out={"doc": "Document"},

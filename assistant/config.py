@@ -977,6 +977,12 @@ DEFAULTS: dict = {
                                             # blocks with your hand on it, never for the runtime
                 "probation_runs": 5,        # §6.4: first N real runs keep full provenance; a
                                             # failure among them disables the graph + files a gap
+                # Feed URLs her graphs may fetch DIRECTLY (rss_fetch) — the closed vocabulary
+                # extended to instance data: anything not listed is inexpressible, so the model
+                # can never invent a URL.  Each host also needs an egress.toml rule (the broker
+                # still checks).  Empty = none: graphs source news from her own archive
+                # (news_fetch) instead.
+                "feed_sources": [],
                 "min_interval_s": 21600,    # at most once every ~6h (persisted; not every boot)
                 "max_repair": 2,            # self-test failed? feed the traceback back this many times
                 "max_tools": 24,            # once she has this many, she only queues specs
@@ -1527,6 +1533,7 @@ FIELD_LEVELS: dict[str, str] = {
     "tools.own_tools.toolsmith.enabled": "basic",
     "tools.own_tools.toolsmith.codegen_dev": "expert",
     "tools.own_tools.toolsmith.probation_runs": "advanced",
+    "tools.own_tools.toolsmith.feed_sources": "advanced",
     "tools.own_tools.toolsmith.min_interval_s": "expert",
     "tools.own_tools.toolsmith.max_repair": "expert",
     "tools.own_tools.toolsmith.max_tools": "advanced",

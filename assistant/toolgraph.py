@@ -61,7 +61,12 @@ class Validation:
         return not self.errors
 
 
-def validate(graph: dict) -> Validation:
+def validate(graph: dict, known_feeds: list | None = None) -> Validation:
+    """`known_feeds` grounds FeedRef literals in the user's CONFIGURED sources:
+    pass a list (possibly empty) and any literal feed URL outside it is
+    rejected — a model cannot know the user's feeds, so an unlisted URL is an
+    invention, the §3 never-invent rule applied to the wiring layer.  None
+    skips the check (offline validation of hand-written graphs)."""
     v = Validation()
     err = v.errors.append
     if not isinstance(graph, dict):
@@ -139,6 +144,11 @@ def validate(graph: dict) -> Validation:
                 bad = _blocks.check_value(want_type, bound)
                 if bad:
                     err(f"step {sid} ({b.name}): literal for {port!r}: {bad}")
+                elif known_feeds is not None and want_type == "FeedRef" \
+                        and bound.get("url") not in known_feeds:
+                    err(f"step {sid} ({b.name}): {bound.get('url')!r} is not "
+                        "one of the configured feed sources — never invent a "
+                        "URL; use the news archive (news_fetch) or a listed feed")
 
     # ── graph outputs ────────────────────────────────────────────────────────
     outs = graph.get("outputs")

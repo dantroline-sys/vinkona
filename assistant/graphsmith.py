@@ -42,17 +42,30 @@ _NAME_PATTERN = r"^[a-z][a-z0-9_]{0,63}$"
 MAX_STEPS = 12
 
 
-def _input_schema(semantic_type: str) -> dict:
+def _input_schema(semantic_type: str, resources: dict | None) -> dict:
     ref = {"type": "string", "pattern": _REF_PATTERN}
     lit = _LITERAL_TYPES.get(semantic_type)
-    return {"oneOf": [ref, lit]} if lit else ref
+    if lit is None:
+        return ref
+    if semantic_type == "FeedRef" and resources is not None:
+        # Grounding: the closed vocabulary extends to INSTANCE data.  With a
+        # resources dict present, feed URLs are an enum of the user's
+        # configured sources — inventing one is inexpressible at the server;
+        # with none configured, FeedRef literals vanish (reference-only).
+        feeds = list(resources.get("feeds") or [])
+        if not feeds:
+            return ref
+        lit = {"type": "object",
+               "properties": {"url": {"type": "string", "enum": feeds}},
+               "required": ["url"], "additionalProperties": False}
+    return {"oneOf": [ref, lit]}
 
 
-def _step_schema(b) -> dict:
+def _step_schema(b, resources: dict | None) -> dict:
     props = {"id": {"type": "string", "pattern": _ID_PATTERN},
              "block": {"const": b.name},
              "inputs": {"type": "object",
-                        "properties": {p: _input_schema(t)
+                        "properties": {p: _input_schema(t, resources)
                                        for p, t in sorted(b.ports_in.items())},
                         "required": sorted(b.ports_in),
                         "additionalProperties": False}}
@@ -65,10 +78,13 @@ def _step_schema(b) -> dict:
             "additionalProperties": False}
 
 
-def emission_schema() -> dict:
+def emission_schema(resources: dict | None = None) -> dict:
     """The whole-graph schema, derived from the live registry at call time —
-    nothing stored, nothing to drift (§0.1).  One output, named 'result'."""
-    step_schemas = [_step_schema(_blocks.get(n)) for n in _blocks.names()]
+    nothing stored, nothing to drift (§0.1).  One output, named 'result'.
+    `resources` (e.g. {"feeds": [urls]}) grounds instance data — see
+    _input_schema."""
+    step_schemas = [_step_schema(_blocks.get(n), resources)
+                    for n in _blocks.names()]
     return {
         "type": "object",
         "properties": {
@@ -103,13 +119,21 @@ def t1_schema(pinned: dict) -> dict:
 
 
 # ── Prompts (≤ 8k-token budget, §2.1 — the catalogue is small by design) ─────
-def compose_prompt(goal: str, feedback: str | None = None) -> str:
+def compose_prompt(goal: str, feedback: str | None = None,
+                   resources: dict | None = None) -> str:
     cat = json.dumps(_blocks.catalogue(), indent=1)
+    feeds = list((resources or {}).get("feeds") or [])
     parts = [
         "You design a small data-pipeline (a 'tool graph') for the assistant "
         "Vinkona.  You may ONLY use blocks from this catalogue — no other "
         "operation exists:",
         cat,
+        ("The ONLY external feed URLs that exist are these — any other URL "
+         "would be an invention:\n" + "\n".join(f"- {u}" for u in feeds))
+        if feeds else
+        ("No external feed URLs are configured on this machine — do NOT use "
+         "rss_fetch or invent a URL; source news from her own archive with "
+         "news_fetch instead."),
         "Rules:\n"
         "- Steps run as a one-way pipeline.  Each step: "
         '{"id", "block", "params", "inputs"}.\n'
@@ -183,15 +207,21 @@ def _feedback(v: _tg.Validation | None, raw) -> str:
     return "\n".join(f"- {e}" for e in v.errors[:12])
 
 
-async def emit_graph(chat, goal: str, *, max_repair: int = 1) -> dict:
+async def emit_graph(chat, goal: str, *, max_repair: int = 1,
+                     resources: dict | None = None) -> dict:
     """T2 compose.  Returns {"ok", "graph" (pinned), "validation", "raw",
-    "attempts"} — on failure the evidence is Gap-Report material (§8)."""
+    "attempts"} — on failure the evidence is Gap-Report material (§8).
+    `resources` grounds instance data (configured feeds) in BOTH the schema
+    (invention inexpressible) and the validator (belt and braces)."""
+    known = list((resources or {}).get("feeds") or []) if resources is not None \
+        else None
     fb, raw, v = None, None, None
     attempts = 0
     for _ in range(1 + max(0, max_repair)):
         attempts += 1
-        raw = await chat(compose_prompt(goal, fb), emission_schema(), "tool_graph")
-        v = _tg.validate(raw) if isinstance(raw, dict) else None
+        raw = await chat(compose_prompt(goal, fb, resources),
+                         emission_schema(resources), "tool_graph")
+        v = _tg.validate(raw, known_feeds=known) if isinstance(raw, dict) else None
         if v is not None and v.ok:
             return {"ok": True, "graph": v.pinned, "validation": v,
                     "raw": raw, "attempts": attempts}
@@ -268,8 +298,11 @@ def main():
         res = asyncio.run(emit_reconfigure(chat, pinned, args.goal,
                                            max_repair=args.max_repair))
     else:
-        res = asyncio.run(emit_graph(chat, args.goal,
-                                     max_repair=args.max_repair))
+        tsc = ((cfg.get("tools") or {}).get("own_tools") or {}) \
+            .get("toolsmith", {}) or {}
+        res = asyncio.run(emit_graph(
+            chat, args.goal, max_repair=args.max_repair,
+            resources={"feeds": list(tsc.get("feed_sources") or [])}))
 
     if res["ok"]:
         print(json.dumps(res["graph"], indent=1))

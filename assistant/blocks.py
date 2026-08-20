@@ -302,6 +302,9 @@ class Ctx:
     def write(self, relpath: str, text: str) -> str:
         raise BlockError("this Ctx has no writable store")
 
+    def news(self, query: str, hours: int, limit: int) -> list:
+        raise BlockError("this Ctx has no news archive")
+
 
 class ReplayCtx(Ctx):
     """Canned side effects for fixture/shadow runs.  A miss FAILS — a fixture
@@ -311,6 +314,7 @@ class ReplayCtx(Ctx):
 
     def __init__(self, canned: dict | None = None):
         c = canned or {}
+        self._canned = c
         self._net = dict(c.get("net", {}))
         self._llm = c.get("llm")          # str (one reply) or {substr: reply}
         self._now = c.get("now", 0.0)
@@ -336,6 +340,11 @@ class ReplayCtx(Ctx):
     def write(self, relpath: str, text: str) -> str:
         self.writes.append((relpath, text))
         return f"(shadow)/{relpath}"
+
+    def news(self, query: str, hours: int, limit: int) -> list:
+        if "news" not in self._canned:
+            raise BlockError("replay miss: no canned news archive")
+        return list(self._canned["news"])[: max(1, int(limit))]
 
 
 # ── Fixtures runner (§3, §6.2) ────────────────────────────────────────────────

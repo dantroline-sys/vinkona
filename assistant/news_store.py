@@ -13,6 +13,7 @@ instructions.
 """
 
 import hashlib
+import sqlite3
 import time
 import typing as tp
 from datetime import datetime
@@ -73,6 +74,38 @@ def normalize_item(it: dict) -> tp.Optional[dict]:
         f"{source}|{title}".encode("utf-8")).hexdigest())
     return {"guid": guid, "title": title, "summary": summary, "source": source,
             "category": category, "link": link, "published_at": published}
+
+
+def search_readonly(db_path: str, *, query: str = "", since: float | None = None,
+                    limit: int = 40) -> list[dict]:
+    """Archive read on its OWN read-only connection — for callers off the main
+    thread (the cascade/worker hold a thread-bound handle; tool-graph blocks run
+    in a worker thread).  No migration, no writes; a box with no archive yet
+    reads as empty rather than erroring."""
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5)
+    except sqlite3.OperationalError:
+        return []
+    conn.row_factory = sqlite3.Row
+    try:
+        where, params = [], []
+        for term in (query or "").split():
+            where.append("(title LIKE ? OR summary LIKE ?)")
+            params += [f"%{term}%", f"%{term}%"]
+        when = "COALESCE(published_at, fetched_at)"
+        if since is not None:
+            where.append(f"{when} >= ?")
+            params.append(float(since))
+        sql = "SELECT title, summary, link, source, " + when + " AS ts FROM headlines"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += f" ORDER BY {when} DESC, id DESC LIMIT ?"
+        params.append(max(1, int(limit)))
+        return [dict(r) for r in conn.execute(sql, params).fetchall()]
+    except sqlite3.OperationalError:          # no headlines table yet
+        return []
+    finally:
+        conn.close()
 
 
 class NewsStore:
