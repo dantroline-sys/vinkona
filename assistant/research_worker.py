@@ -1826,6 +1826,15 @@ async def main():
         _rhosts.append(_tc.ToolHost({"enabled": True, "url": _kcfg["tool_url"],
                                      "timeout_s": _kcfg.get("timeout_s", 20),
                                      "auth_token": _kcfg.get("auth_token")}))
+    # The bundled local toolset (VIN-LOCAL-01) joins LAST so a real Mac host wins any
+    # name clash — research sources, crawls and calendar sync then work on a Mac-less box.
+    _localcfg = (cfg.get("tools", {}).get("local") or {})
+    if _localcfg.get("enabled"):
+        try:
+            _ltm = _load("local_tools")
+            _rhosts.append(_ltm.LocalHost(cfg, news_db_path=memory.db_path))
+        except Exception as e:
+            _log(f"local toolset unavailable: {e}")
     tools = _tc.MultiHost(_rhosts) if len(_rhosts) > 1 else _rhosts[0]
 
     # Vinkona's OWN sandboxed tools + the idle toolsmith that writes them (toolbox.py /
@@ -2011,6 +2020,12 @@ async def main():
         snapshot separately.  Lightweight (no big LM) — runs on its own cadence regardless of idle."""
         if not (rss_cfg.get("enabled") and tools.active):
             return 0
+        # With the LOCAL news genre on and no Mac host, news_index answers from our own
+        # archive — re-ingesting it would be a pointless round trip.  The local feed
+        # poller (below) owns the archive in that setup.
+        if (_localcfg.get("enabled") and (_localcfg.get("news") or {}).get("enabled")
+                and not _rhosts[0].active):
+            return 0
         tool = rss_cfg.get("tool", "news_index")
         cats = rss_cfg.get("categories") or [None]       # None → the tool's default category
         batch = int(rss_cfg.get("batch", 50))
@@ -2044,6 +2059,34 @@ async def main():
                     found=seen, new=added, total=total)
         _log(f"rss: {seen} headlines across {len(cats)} categor(y/ies), {added} new "
              f"(archive now {total})")
+        return added
+
+    async def local_news_poll():
+        """Refresh the durable archive from the feeds the USER listed
+        (tools.local.news.feeds) — the local toolset's replacement for the Mac
+        host's news pipeline.  Fetches run through the broker in a thread; the
+        guid-deduped ingest happens here on the worker loop.  No LM."""
+        ncfg = _localcfg.get("news") or {}
+        feeds = [f for f in (ncfg.get("feeds") or []) if str(f.get("url") or "").strip()]
+        if not feeds:
+            return 0
+        from local_tools import broker_fetch as _lt_fetch
+        from local_tools import egress_sync as _lt_egress
+        from local_tools import news as _lt_news
+        try:
+            _lt_egress.ensure(cfg)                # feeds may have changed since boot
+        except Exception:
+            pass
+        items, errors = await asyncio.to_thread(
+            _lt_news.poll_feeds, _lt_fetch, feeds,
+            per_feed_limit=int(ncfg.get("per_feed_limit", 30)))
+        added = memory.news.ingest(items)
+        _prune_news()
+        for url, why in errors:
+            _log(f"feed poll {url} failed (continuing): {why}")
+        trace.write(kind="local_news_poll", feeds=len(feeds), found=len(items),
+                    new=added, errors=len(errors), total=memory.news.count())
+        _log(f"feeds: {len(items)} headline(s) from {len(feeds)} feed(s), {added} new")
         return added
 
     async def news_digest():
@@ -2177,6 +2220,10 @@ async def main():
     ingest_interval = ingest_cfg.get("interval_s", 86400)
     crawl_interval = ingest_cfg.get("crawl_interval_s", 1800)
     rss_interval = rss_cfg.get("interval_s", 1800) if rss_cfg.get("enabled") else 0
+    _local_news_cfg = _localcfg.get("news") or {}
+    local_news_interval = (int(_local_news_cfg.get("poll_interval_s", 1800))
+                           if (_localcfg.get("enabled") and _local_news_cfg.get("enabled"))
+                           else 0)
     digest_interval = (digest_cfg.get("interval_s", 86400)
                        if (rss_cfg.get("enabled") and digest_cfg.get("enabled", True)) else 0)
     export_interval = (export_cfg.get("interval_s", 3600)
@@ -2186,6 +2233,7 @@ async def main():
     last_idle = 0.0
     last_crawl = 0.0                                 # 0 ⇒ start background reading soon
     last_rss = 0.0                                   # 0 ⇒ populate the news archive soon
+    last_local_news = 0.0                            # ditto for the local feed poller
     last_digest = time.time()                        # first digest after a full interval
     last_export = 0.0                                # 0 ⇒ sync the hand-off folder soon
 
@@ -2361,6 +2409,16 @@ async def main():
                 except Exception as e:
                     _log(f"rss crawl failed (continuing): {e}")
                 last_rss = time.time()
+            # The local toolset's feed poller: same job as the rss crawl, but from the
+            # user's own configured feeds via the broker (Mac-less boxes).  No big LM.
+            if (_task_on("rss") and local_news_interval
+                    and time.time() - last_local_news >= local_news_interval):
+                set_activity("rss")
+                try:
+                    await local_news_poll()
+                except Exception as e:
+                    _log(f"feed poll failed (continuing): {e}")
+                last_local_news = time.time()
             # Research export: sync new hoard out to the knowledge-host hand-off folder (no big LM).
             if _task_on("export") and export_interval and time.time() - last_export >= export_interval:
                 set_activity("export")

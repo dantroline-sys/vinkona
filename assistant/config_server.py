@@ -1453,7 +1453,29 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(400, {"error": f"invalid JSON: {e}"})
         if path == "/api/config":
             _atomic_json(Path(self.config_path), obj)
+            # Keep egress.toml's managed block in step with the local toolset the
+            # user just configured (never fatal — the save itself already landed).
+            try:
+                _load_mod("local_tools").egress_sync.ensure(self._cfg())
+            except Exception:
+                pass
             return self._json(200, {"ok": True})
+        if path == "/api/local_tools/test":
+            # The per-genre Test button: one bounded live probe (sign in to the mail
+            # account, list the calendars, fetch a feed, …) with a person-readable
+            # verdict.  Runs the saved config — hit Save before Test.
+            try:
+                cfg = self._cfg()
+                lt = _load_mod("local_tools")
+                try:
+                    lt.egress_sync.ensure(cfg)          # the probe needs its rules live
+                except Exception:
+                    pass
+                res = lt.probe(cfg, str(obj.get("genre") or ""),
+                               news_db_path=cfg.get("memory", {}).get("db_path", ""))
+                return self._json(200, res)
+            except Exception as e:
+                return self._json(500, {"ok": False, "detail": str(e)})
         if path == "/api/tts/select":
             try:
                 engine = str(obj.get("engine") or "")

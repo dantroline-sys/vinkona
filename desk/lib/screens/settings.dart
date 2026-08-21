@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 
 import '../api/backend.dart';
 import 'everyday.dart';
+import 'local_tools.dart';
 import 'persona_voice.dart';
 import 'profiles.dart';
 import 'settings_basic.dart';
@@ -16,7 +17,7 @@ class SettingsScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return DefaultTabController(
-      length: 4,
+      length: 5,
       child: Column(
         children: [
           Material(
@@ -26,6 +27,7 @@ class SettingsScreen extends StatelessWidget {
                 Tab(text: 'Persona & voice'),
                 Tab(text: 'Features'),
                 Tab(text: 'Everyday'),
+                Tab(text: 'Local tools'),
                 Tab(text: 'Profiles'),
               ],
             ),
@@ -36,6 +38,7 @@ class SettingsScreen extends StatelessWidget {
                 PersonaVoiceScreen(client: client),
                 SettingsBasicScreen(client: client),
                 EverydayScreen(client: client),
+                LocalToolsScreen(client: client),
                 ProfilesScreen(client: client),
               ],
             ),

@@ -75,6 +75,9 @@ class _EverydayScreenState extends State<EverydayScreen> {
         .where((e) => e.value == 'basic')
         .map((e) => e.key)
         .where((p) => !_recipePaths.contains(p) && !_dedicated.contains(p))
+        // tools.local.* has its own purpose-built tab (structured editors,
+        // Test probes) — the generic renderer would mangle its object lists.
+        .where((p) => !p.startsWith('tools.local.'))
         .where((p) {
       final v = configGet(_config!, p);
       return v != null && v is! Map; // leaves only, present in this config

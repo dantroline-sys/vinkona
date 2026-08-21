@@ -1029,6 +1029,64 @@ DEFAULTS: dict = {
             # research.searxng_url at the this-machine end, e.g. http://127.0.0.1:8888.
             "extra_forwards": [],
         },
+        # The BUNDLED local toolset (local_tools/) — the Mac host's genres served from
+        # THIS machine, for a setup with no Mac: files, news feeds, weather, the keyless
+        # research tools, mail (IMAP, read-only) and calendar (CalDAV).  Each genre is its
+        # own opt-in and stays off until configured; a real Mac host, when also enabled,
+        # wins any name clash (it keeps Spotlight search and OCR).  Everything HTTP goes
+        # through the amiga_net broker — enabling a genre writes the matching rule into
+        # egress.toml's managed block, so the network posture always mirrors this config.
+        # Writes: calendar events only, and only onto the calendar named below — mail and
+        # files are strictly read-only, and there is no mail_send.
+        "local": {
+            "enabled": False,               # master switch for the bundled toolset
+            "timeout_s": 20,                # wall-clock cap per tool call
+            # Files she may search and read — ONLY these folders, nothing else.
+            "files": {
+                "enabled": False,
+                "roots": [],                # e.g. ["~/Documents", "~/Notes"]
+                "max_read_chars": 20000,    # cap per file_read (PDFs need pypdf installed)
+            },
+            # News feeds she polls into her durable archive (news_headlines/news_index
+            # then serve from it).  Each feed: {"url": …, "source": "BBC", "category": "general"}.
+            "news": {
+                "enabled": False,
+                "feeds": [],
+                "poll_interval_s": 1800,    # how often the idle worker refreshes the feeds
+                "per_feed_limit": 30,       # newest headlines kept per feed per poll
+            },
+            # Keyless Open-Meteo forecasts; the location is her default "the weather".
+            "weather": {
+                "enabled": False,
+                "location": "",             # town or city, e.g. "Hobart"
+            },
+            # The keyless research tools (Europe PMC, OpenAlex, openFDA, Wikipedia,
+            # Wiktionary, Stack Exchange, Hacker News, GDELT, Open Library, Internet
+            # Archive).  NOTE the posture: with a Mac host these lookups leave the Mac;
+            # enabling this makes them leave THIS box (audited in egress.jsonl).
+            "research": {
+                "enabled": False,
+            },
+            # IMAP accounts, READ-ONLY (mailboxes are opened EXAMINE — even the read
+            # can't mark a message seen).  Use an app password where offered.  Each:
+            # {"label": "personal", "host": "imap.example.com", "port": 993,
+            #  "user": "you@example.com", "password": "app-password"}.
+            "mail": {
+                "enabled": False,
+                "accounts": [],
+                "max_read_chars": 8000,     # cap per mail_read
+            },
+            # CalDAV calendar account (iCloud/Google/Nextcloud/Radicale…).  Reads span
+            # ALL calendars so conflicts are caught; writes go ONLY to the calendar
+            # named in vinkona_calendar — create that calendar in the account first.
+            "calendar": {
+                "enabled": False,
+                "caldav_url": "",           # e.g. https://caldav.icloud.com or your Nextcloud URL
+                "user": "",
+                "password": "",             # an app-specific password, not your main one
+                "vinkona_calendar": "Vinkona",  # the ONE calendar she may write to
+            },
+        },
     },
     # Ephemeral within-conversation working memory: a small blackboard of facts true for
     # THIS conversation (agreed values, an object's location, a working assumption) that the
@@ -1561,6 +1619,26 @@ FIELD_LEVELS: dict[str, str] = {
     "tools.own_tools.toolsmith.max_queue": "expert",
     "tools.own_tools.toolsmith.kb_guidance": "advanced",
     "tools.own_tools.toolsmith.lm_timeout_s": "advanced",
+    "tools.local.enabled": "basic",
+    "tools.local.timeout_s": "expert",
+    "tools.local.files.enabled": "basic",
+    "tools.local.files.roots": "basic",
+    "tools.local.files.max_read_chars": "expert",
+    "tools.local.news.enabled": "basic",
+    "tools.local.news.feeds": "basic",
+    "tools.local.news.poll_interval_s": "advanced",
+    "tools.local.news.per_feed_limit": "expert",
+    "tools.local.weather.enabled": "basic",
+    "tools.local.weather.location": "basic",
+    "tools.local.research.enabled": "basic",
+    "tools.local.mail.enabled": "basic",
+    "tools.local.mail.accounts": "basic",
+    "tools.local.mail.max_read_chars": "expert",
+    "tools.local.calendar.enabled": "basic",
+    "tools.local.calendar.caldav_url": "basic",
+    "tools.local.calendar.user": "basic",
+    "tools.local.calendar.password": "basic",
+    "tools.local.calendar.vinkona_calendar": "advanced",
     "music.enabled": "basic",
     "knowledge.enabled": "basic",
     "knowledge_host.enabled": "basic",
@@ -1653,6 +1731,23 @@ FIELD_LABELS: dict[str, str] = {
     "tools.tunnel.remote_host": "Where the tools listen on the Mac",
     "tools.tunnel.remote_port": "The tools' port on the Mac",
     "tools.tunnel.extra_forwards": "Extra ports to relay",
+    # The bundled local toolset — plain names for the fields a non-expert fills in.
+    "tools.local.enabled": "Built-in tools on this machine",
+    "tools.local.files.enabled": "Her file access",
+    "tools.local.files.roots": "Folders she may read",
+    "tools.local.news.enabled": "News feeds",
+    "tools.local.news.feeds": "The feeds she follows",
+    "tools.local.news.poll_interval_s": "How often to check feeds (seconds)",
+    "tools.local.weather.enabled": "Weather",
+    "tools.local.weather.location": "Your town or city",
+    "tools.local.research.enabled": "Research lookups from this machine",
+    "tools.local.mail.enabled": "Reading your mail",
+    "tools.local.mail.accounts": "Mail accounts (read-only)",
+    "tools.local.calendar.enabled": "Your calendar",
+    "tools.local.calendar.caldav_url": "Calendar server address",
+    "tools.local.calendar.user": "Calendar username",
+    "tools.local.calendar.password": "Calendar app password",
+    "tools.local.calendar.vinkona_calendar": "The calendar she may write to",
     # Basic-tier fields the desktop app shows outside the feature-recipe switches — friendly
     # names so a non-technical user never reads a dotted path.
     "default_persona": "Persona",
@@ -1788,6 +1883,20 @@ FEATURE_RECIPES: dict = {
             "note": "She'll ask before doing anything that changes things, unless you turn that off.",
         },
         "disable": {"summary": "She'll answer from what she knows, without touching your tools."},
+    },
+    "tools.local.enabled": {
+        "title": "Built-in tools on this machine (no Mac needed)",
+        "enable": {
+            "summary": "She gets calendar, mail, files, news, weather and research lookups "
+                       "served from THIS machine — each one its own switch, off until you "
+                       "configure it (folders to read, feed addresses, account details). "
+                       "Mail is read-only and calendar writes only ever land on her own "
+                       "'Vinkona' calendar.",
+            "note": "Each genre you enable adds its matching rule to the network policy "
+                    "(egress.toml) — the posture always mirrors what you configured.",
+        },
+        "disable": {"summary": "The bundled toolset is off; a separate tool host (like a "
+                               "Mac) is the only way she reaches calendar, mail or files."},
     },
     "music.enabled": {
         "title": "Playing music",

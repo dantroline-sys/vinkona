@@ -68,6 +68,16 @@ block earlier ones from shipping.
   typed values); analyzer clean; `flutter build linux` builds; backend suites
   (field_levels 24, confighelp, tts_select, profiles, recipes) green.*
 
+* **D2.5 — Local tools tab** (DONE, VIN-LOCAL-01): Settings grew a fifth tab for the
+  bundled local toolset (`tools.local`) — per-genre cards (files / news feeds / weather
+  / research / mail accounts / CalDAV calendar) with structured editors the generic
+  Everyday renderer can't do (feed rows `url | source | category`, mail-account forms,
+  obscured app-password fields) and a per-genre **Test** button over the new
+  `POST /api/local_tools/test` probe.  Everyday now skips `tools.local.*` so the two
+  surfaces never fight over the same keys.
+  *Accepted: 22 Flutter tests green (render from config; Save posts the whole doc with
+  parsed feed/account structures; Test surfaces the probe verdict); analyzer clean.*
+
 * **D3 — Home becomes a real dashboard**: services health (`/api/services`,
   supervisor seam), doctor-style rows with the one-line fix when something's down,
   idle pause/resume (`/api/idle`), restart button (`/api/restart`), and the activity

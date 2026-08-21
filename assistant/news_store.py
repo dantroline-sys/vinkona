@@ -42,6 +42,12 @@ def to_epoch(s: tp.Any) -> tp.Optional[float]:
             s = s[:-1] + "+00:00"
         return datetime.fromisoformat(s).timestamp()
     except Exception:
+        pass
+    try:                    # RFC-822/2822 — what raw RSS pubDate actually carries
+        import email.utils
+        dt = email.utils.parsedate_to_datetime(s)
+        return dt.timestamp() if dt else None
+    except Exception:
         return None
 
 
@@ -101,6 +107,40 @@ def search_readonly(db_path: str, *, query: str = "", since: float | None = None
             sql += " WHERE " + " AND ".join(where)
         sql += f" ORDER BY {when} DESC, id DESC LIMIT ?"
         params.append(max(1, int(limit)))
+        return [dict(r) for r in conn.execute(sql, params).fetchall()]
+    except sqlite3.OperationalError:          # no headlines table yet
+        return []
+    finally:
+        conn.close()
+
+
+def index_readonly(db_path: str, *, category: str | None = None,
+                   source: str | None = None, offset: int = 0, limit: int = 8,
+                   newest_first: bool = False) -> list[dict]:
+    """Stable, paged archive read on its OWN read-only connection — the local
+    news genre's serving path (news_index / news_headlines run on whatever
+    thread the tool call lands on).  Crawl order is OLDEST first (§4 rule 3:
+    new rows land at the end, caught when the cursor wraps); newest_first=True
+    is the headline view.  Past the end returns [] — the cursor's reset signal."""
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5)
+    except sqlite3.OperationalError:
+        return []
+    conn.row_factory = sqlite3.Row
+    try:
+        where, params = [], []
+        if category:
+            where.append("category = ?"); params.append(category)
+        if source:
+            where.append("source LIKE ?"); params.append(f"%{source}%")
+        when = "COALESCE(published_at, fetched_at)"
+        order = "DESC" if newest_first else "ASC"
+        sql = (f"SELECT guid, title, summary, source, category, link, {when} AS ts"
+               f" FROM headlines")
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += f" ORDER BY {when} {order}, id {order} LIMIT ? OFFSET ?"
+        params += [max(1, int(limit)), max(0, int(offset))]
         return [dict(r) for r in conn.execute(sql, params).fetchall()]
     except sqlite3.OperationalError:          # no headlines table yet
         return []

@@ -302,6 +302,20 @@ class BackendClient {
     }
   }
 
+  /// One bounded live probe of a local-toolset genre (files / news / weather /
+  /// research / mail / calendar) — {ok, detail} with a person-readable verdict.
+  /// A probe signs in / fetches for real, so give it longer than a config call.
+  Future<Map<String, dynamic>> localToolsTest(String genre) async {
+    final r = await _http
+        .post(Uri.parse('$baseUrl/api/local_tools/test'),
+            body: jsonEncode({'genre': genre}))
+        .timeout(const Duration(seconds: 30));
+    final body = jsonDecode(r.body);
+    return body is Map<String, dynamic>
+        ? body
+        : {'ok': false, 'detail': 'malformed reply'};
+  }
+
   Future<Map<String, dynamic>> _postJson(String path, Object body) async {
     final r = await _http
         .post(Uri.parse('$baseUrl$path'), body: jsonEncode(body))

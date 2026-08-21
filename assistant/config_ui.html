@@ -530,6 +530,62 @@
       </div>
     </div>
 
+    <h3 style="margin:22px 0 4px">Local tools <span class="muted">— calendar, mail, files, news, weather &amp; research served from THIS machine (no Mac needed)</span></h3>
+    <div class="hint">Each genre is its own switch and stays off until you configure it. Mail is <b>read-only</b> (there is no send); calendar writes only ever land on her own calendar, named below. Enabling a genre writes its matching network rule into egress.toml automatically (visible on the Network tab). <b>Save</b> first — <b>Test</b> then runs one real probe with the saved settings. If a Mac tool host is also connected, it wins any overlapping tool.</div>
+    <div class="bar">
+      <label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="ltEnabled" style="width:auto"> <strong>Built-in tools on</strong></label>
+      <button class="btn" onclick="saveLocalTools()">Save</button>
+      <span id="ltStatus" class="status"></span>
+    </div>
+    <div id="ltCards" style="display:grid; grid-template-columns:repeat(auto-fit,minmax(340px,1fr)); gap:12px; max-width:1100px">
+      <div class="card">
+        <label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="ltFilesOn" style="width:auto"> <strong>Files</strong> <span class="muted">— search &amp; read ONLY these folders</span></label>
+        <label class="lbl">Folders she may read <span class="muted">(one per line, e.g. ~/Documents)</span></label>
+        <textarea id="ltFilesRoots" rows="3" spellcheck="false" style="width:100%; font-family:monospace; font-size:12px"></textarea>
+        <div class="bar"><button class="btn secondary" onclick="testLocalGenre('files')">Test</button><span id="ltTest-files" class="status" style="white-space:pre-wrap"></span></div>
+      </div>
+      <div class="card">
+        <label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="ltNewsOn" style="width:auto"> <strong>News feeds</strong> <span class="muted">— polled into her durable archive</span></label>
+        <label class="lbl">Feeds <span class="muted">(one per line: address | source name | category)</span></label>
+        <textarea id="ltNewsFeeds" rows="4" spellcheck="false" placeholder="https://feeds.bbci.co.uk/news/rss.xml | BBC | general" style="width:100%; font-family:monospace; font-size:12px"></textarea>
+        <label class="lbl">Check every <input type="number" id="ltNewsInterval" min="300" step="300" style="width:90px"> seconds</label>
+        <div class="bar"><button class="btn secondary" onclick="testLocalGenre('news')">Test</button><span id="ltTest-news" class="status" style="white-space:pre-wrap"></span></div>
+      </div>
+      <div class="card">
+        <label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="ltWeatherOn" style="width:auto"> <strong>Weather</strong> <span class="muted">— keyless Open-Meteo</span></label>
+        <label class="lbl">Your town or city</label>
+        <input id="ltWeatherLoc" placeholder="e.g. Hobart" style="width:100%">
+        <div class="bar"><button class="btn secondary" onclick="testLocalGenre('weather')">Test</button><span id="ltTest-weather" class="status" style="white-space:pre-wrap"></span></div>
+      </div>
+      <div class="card">
+        <label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="ltResearchOn" style="width:auto"> <strong>Research lookups</strong> <span class="muted">— the keyless sources, from this box</span></label>
+        <div class="tip" style="font-size:11px;color:#8b93a1;margin:6px 0">Europe PMC, OpenAlex, openFDA, Wikipedia, Wiktionary, Stack Exchange, Hacker News, GDELT, Open Library, Internet Archive. With a Mac host these lookups leave the Mac; this makes them leave THIS machine instead (each call audited in the Network tab). General web search stays off by design.</div>
+        <div class="bar"><button class="btn secondary" onclick="testLocalGenre('research')">Test</button><span id="ltTest-research" class="status" style="white-space:pre-wrap"></span></div>
+      </div>
+      <div class="card">
+        <label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="ltMailOn" style="width:auto"> <strong>Mail</strong> <span class="muted">— IMAP, strictly read-only</span></label>
+        <div id="ltMailAccounts"></div>
+        <div class="bar">
+          <button class="btn secondary" onclick="ltAddAccount()">+ account</button>
+          <button class="btn secondary" onclick="testLocalGenre('mail')">Test</button>
+          <span id="ltTest-mail" class="status" style="white-space:pre-wrap"></span>
+        </div>
+        <div class="tip" style="font-size:11px;color:#8b93a1">Use an app password where your provider offers one. Mailboxes open read-only — even reading can’t mark a message seen.</div>
+      </div>
+      <div class="card">
+        <label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="ltCalOn" style="width:auto"> <strong>Calendar</strong> <span class="muted">— CalDAV; reads all, writes ONE</span></label>
+        <label class="lbl">Server address <span class="muted">(e.g. https://caldav.icloud.com, or your Nextcloud/Radicale URL)</span></label>
+        <input id="ltCalUrl" style="width:100%" spellcheck="false">
+        <label class="lbl">Username</label>
+        <input id="ltCalUser" style="width:100%" spellcheck="false">
+        <label class="lbl">App password</label>
+        <input id="ltCalPass" type="password" autocomplete="off" style="width:100%">
+        <label class="lbl">The calendar she may write to <span class="muted">(create it in the account first)</span></label>
+        <input id="ltCalOwn" placeholder="Vinkona" style="width:100%">
+        <div class="bar"><button class="btn secondary" onclick="testLocalGenre('calendar')">Test</button><span id="ltTest-calendar" class="status" style="white-space:pre-wrap"></span></div>
+      </div>
+    </div>
+
     <h3 style="margin:22px 0 4px">Her tool graphs <span class="muted">— tools she composed from pre-verified blocks (self-tested, then on probation)</span></h3>
     <div class="hint">Each graph says exactly what it may touch — enabling one that is “awaiting your approval” IS the approval.
       Schedule 0 = runs only when you press Run now. <span id="graphOpStatus" class="status"></span></div>
@@ -2163,7 +2219,104 @@ const TOOL_NEW_TEST =
   "expect_keys": ["result"]
 }`;
 
+// ── Local tools (the bundled toolset — VIN-LOCAL-01) ─────────────────────────
+function ltAccRow(a) {
+  a = a || {};
+  const row = document.createElement('div');
+  row.className = 'lt-acc';
+  row.style.cssText = 'display:grid; grid-template-columns:1fr 1.4fr 64px; gap:6px; margin:6px 0; align-items:center';
+  row.innerHTML =
+    '<input data-k="label" placeholder="label (e.g. personal)" value="' + escAttr(a.label || '') + '">' +
+    '<input data-k="host" placeholder="imap.example.com" spellcheck="false" value="' + escAttr(a.host || '') + '">' +
+    '<input data-k="port" type="number" placeholder="993" value="' + escAttr(String(a.port || 993)) + '">' +
+    '<input data-k="user" placeholder="you@example.com" spellcheck="false" style="grid-column:1 / span 2" value="' + escAttr(a.user || '') + '">' +
+    '<button class="btn danger" style="padding:4px 8px" onclick="this.parentElement.remove()">✕</button>' +
+    '<input data-k="password" type="password" autocomplete="off" placeholder="app password" style="grid-column:1 / span 3" value="' + escAttr(a.password || '') + '">';
+  return row;
+}
+function ltAddAccount(a) {
+  document.getElementById('ltMailAccounts').appendChild(ltAccRow(a));
+}
+function ltCollectAccounts() {
+  const out = [];
+  document.querySelectorAll('#ltMailAccounts .lt-acc').forEach(row => {
+    const v = k => (row.querySelector('[data-k="' + k + '"]').value || '').trim();
+    if (v('host') || v('user'))
+      out.push({ label: v('label') || v('user') || 'mail', host: v('host'),
+                 port: parseInt(v('port')) || 993, user: v('user'), password: v('password') });
+  });
+  return out;
+}
+async function loadLocalTools() {
+  let cfg;
+  try { cfg = JSON.parse(await (await fetch('/api/config')).text()); } catch (e) { return; }
+  const lt = (cfg.tools || {}).local || {};
+  const g = n => lt[n] || {};
+  document.getElementById('ltEnabled').checked = !!lt.enabled;
+  document.getElementById('ltFilesOn').checked = !!g('files').enabled;
+  document.getElementById('ltFilesRoots').value = (g('files').roots || []).join('\n');
+  document.getElementById('ltNewsOn').checked = !!g('news').enabled;
+  document.getElementById('ltNewsFeeds').value = (g('news').feeds || [])
+    .map(f => [f.url || '', f.source || '', f.category || ''].join(' | ').replace(/( \| )+$/, ''))
+    .join('\n');
+  document.getElementById('ltNewsInterval').value = g('news').poll_interval_s ?? 1800;
+  document.getElementById('ltWeatherOn').checked = !!g('weather').enabled;
+  document.getElementById('ltWeatherLoc').value = g('weather').location || '';
+  document.getElementById('ltResearchOn').checked = !!g('research').enabled;
+  document.getElementById('ltMailOn').checked = !!g('mail').enabled;
+  const accBox = document.getElementById('ltMailAccounts');
+  accBox.innerHTML = '';
+  (g('mail').accounts || []).forEach(a => ltAddAccount(a));
+  document.getElementById('ltCalOn').checked = !!g('calendar').enabled;
+  document.getElementById('ltCalUrl').value = g('calendar').caldav_url || '';
+  document.getElementById('ltCalUser').value = g('calendar').user || '';
+  document.getElementById('ltCalPass').value = g('calendar').password || '';
+  document.getElementById('ltCalOwn').value = g('calendar').vinkona_calendar || 'Vinkona';
+}
+async function saveLocalTools() {
+  const cfg = JSON.parse(await (await fetch('/api/config')).text());
+  cfg.tools = cfg.tools || {};
+  const lt = cfg.tools.local = cfg.tools.local || {};
+  const gv = id => document.getElementById(id);
+  lt.enabled = gv('ltEnabled').checked;
+  lt.files = Object.assign(lt.files || {}, {
+    enabled: gv('ltFilesOn').checked,
+    roots: gv('ltFilesRoots').value.split('\n').map(s => s.trim()).filter(Boolean) });
+  lt.news = Object.assign(lt.news || {}, {
+    enabled: gv('ltNewsOn').checked,
+    poll_interval_s: parseInt(gv('ltNewsInterval').value) || 1800,
+    feeds: gv('ltNewsFeeds').value.split('\n').map(s => s.trim()).filter(Boolean).map(line => {
+      const p = line.split('|').map(x => x.trim());
+      return { url: p[0] || '', source: p[1] || '', category: p[2] || '' };
+    }).filter(f => f.url) });
+  lt.weather = Object.assign(lt.weather || {}, {
+    enabled: gv('ltWeatherOn').checked, location: gv('ltWeatherLoc').value.trim() });
+  lt.research = Object.assign(lt.research || {}, { enabled: gv('ltResearchOn').checked });
+  lt.mail = Object.assign(lt.mail || {}, {
+    enabled: gv('ltMailOn').checked, accounts: ltCollectAccounts() });
+  lt.calendar = Object.assign(lt.calendar || {}, {
+    enabled: gv('ltCalOn').checked,
+    caldav_url: gv('ltCalUrl').value.trim(),
+    user: gv('ltCalUser').value.trim(),
+    password: gv('ltCalPass').value,
+    vinkona_calendar: gv('ltCalOwn').value.trim() || 'Vinkona' });
+  const d = await (await fetch('/api/config', { method: 'POST', body: JSON.stringify(cfg) })).json();
+  flash(document.getElementById('ltStatus'), d.ok,
+        d.ok ? 'saved ✓ — a new chat picks it up; the background worker after a restart' : ('error: ' + (d.error || '')));
+}
+async function testLocalGenre(genre) {
+  const el = document.getElementById('ltTest-' + genre);
+  el.className = 'status'; el.textContent = 'testing…';
+  let d;
+  try { d = await (await fetch('/api/local_tools/test',
+    { method: 'POST', body: JSON.stringify({ genre }) })).json(); }
+  catch (e) { d = { ok: false, detail: 'request failed: ' + e }; }
+  el.className = 'status' + (d.ok ? '' : ' err');
+  el.textContent = (d.ok ? '✓ ' : '✗ ') + (d.detail || '');
+}
+
 async function loadTools() {
+  loadLocalTools();                        // the bundled local-toolset cards (independent fetch)
   const list = document.getElementById('toolsList');
   let d;
   try { d = await (await fetch('/api/own_tools')).json(); }

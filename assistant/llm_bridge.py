@@ -256,11 +256,16 @@ def resolve_wikipedia_flag(tools_cfg: dict) -> bool:
     """tools.wikipedia: "auto" (default) offers the built-in ONLINE Wikipedia
     lookup exactly when no tool host is enabled — the minimal setup (e.g. a Mac
     mini with no Mac tool host) keeps live reference search, while a real host's
-    richer web/wikipedia tools take over as soon as one is configured.  Explicit
-    true/false override either way."""
+    richer web/wikipedia tools take over as soon as one is configured.  The
+    bundled local RESEARCH genre counts as such a host (its reference_lookup is
+    the same lookup) — auto steps aside for it too.  Explicit true/false
+    override either way."""
     flag = tools_cfg.get("wikipedia", "auto")
     if flag in ("auto", None, ""):
-        return not bool(tools_cfg.get("enabled"))
+        local = tools_cfg.get("local") or {}
+        local_research = bool(local.get("enabled")) and \
+            bool((local.get("research") or {}).get("enabled"))
+        return not (bool(tools_cfg.get("enabled")) or local_research)
     return bool(flag)
 
 

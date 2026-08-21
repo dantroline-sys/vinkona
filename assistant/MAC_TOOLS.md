@@ -1,5 +1,10 @@
 # Vinkona Tool Host — contract for the Mac side
 
+> **No Mac?** The same genres — calendar, mail, files, news, weather, research —
+> ship bundled with Vinkona as the optional **local toolset** (LOCAL_TOOLS.md),
+> configured from the panel/desk app.  This document stays the contract for any
+> external host; a connected Mac host outranks the local one on a name clash.
+
 Vinkona (the voice assistant, on the Linux GPU box) can call **tools** mid-conversation
 to fetch live info — calendar, files, mail — that lives on the **Mac Mini**. The Mac
 runs a small **tool host**: one HTTP service that exposes those tools. Vinkona is the

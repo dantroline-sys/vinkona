@@ -212,6 +212,7 @@ class CascadeServer:
         self._capture_mod = _load("capture")    # durable orchestration-trace capture (skill-LoRA)
         self._cal_sync_mod = _load("calendar_sync")  # mirror-aware calendar folding (dedupe + notes)
         self._facade_mod = _load("tool_facade")   # simplified fast-LM tool surface (wrappers)
+        self._localtools_mod = _load("local_tools")  # bundled Mac-host genres (VIN-LOCAL-01)
         self._toolbox_mod = _load("toolbox")      # her own sandboxed tools (read-any/write-store)
         self._spont_mod = _load("spontaneity")    # things she's holding + the segue test
         self._init_mod = _load("initiative")      # conversation openers (VIN-INIT-01)
@@ -430,6 +431,17 @@ class CascadeServer:
                 _log(f"notification scheduler: {e}")
             await asyncio.sleep(max(15, poll))
 
+    def _bg_tools(self, cfg):
+        """The background lanes' tool host: the Mac host plus, when enabled, the bundled
+        local toolset — so ambient, notifications and the calendar scan keep working on a
+        box with no Mac at all.  Same precedence as the chat path: the Mac wins a clash."""
+        hosts = [self._tools_mod.ToolHost(cfg["tools"])]
+        local_cfg = (cfg.get("tools") or {}).get("local") or {}
+        if local_cfg.get("enabled") and self._localtools_mod:
+            hosts.append(self._localtools_mod.LocalHost(
+                cfg, news_db_path=self.memory.db_path if self.memory else ""))
+        return self._tools_mod.MultiHost(hosts) if len(hosts) > 1 else hosts[0]
+
     async def _refresh_ambient(self, cfg):
         """Keep the ambient snapshot current.  In orientation mode (the default) this is a
         deliberate whole-world pull at boot and then no more than once a day — she catches
@@ -437,7 +449,7 @@ class CascadeServer:
         orientation off it falls back to per-source ttl_s polling.  No LM either way."""
         acfg = cfg.get("ambient", {})
         ocfg = acfg.get("orient", {})
-        tools = self._tools_mod.ToolHost(cfg["tools"])
+        tools = self._bg_tools(cfg)
         if not tools.active:
             return
         if ocfg.get("enabled", True):
@@ -454,7 +466,7 @@ class CascadeServer:
             force=False, trace=self.trace, log=_log)
 
     async def _scan_calendar(self, cfg, ncfg, pcfg):
-        tools = self._tools_mod.ToolHost(cfg["tools"])
+        tools = self._bg_tools(cfg)
         if not tools.active:
             return
         args = ncfg.get("calendar_args") if ncfg.get("enabled") else None
@@ -759,6 +771,12 @@ class _Session:
             _hosts.append(_tm.ToolHost({"enabled": True, "url": knowledge_cfg["tool_url"],
                                         "timeout_s": knowledge_cfg.get("timeout_s", 20),
                                         "auth_token": knowledge_cfg.get("auth_token")}))
+        # The bundled local toolset (files/news/weather/research/mail/calendar served
+        # from THIS machine) joins LAST, so a real Mac host wins any name clash.
+        local_cfg = self.cfg["tools"].get("local") or {}
+        if local_cfg.get("enabled") and self.s._localtools_mod:
+            _hosts.append(self.s._localtools_mod.LocalHost(
+                self.cfg, news_db_path=self.s.memory.db_path if self.s.memory else ""))
         tool_host = _tm.MultiHost(_hosts) if len(_hosts) > 1 else _hosts[0]
         # Wrap the host in the simplified facade for the FAST LM only (the research worker
         # builds its own un-wrapped host, so it keeps the full granular set).  The facade
