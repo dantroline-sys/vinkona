@@ -200,6 +200,48 @@ def test_feeders():
     check("graph-term overlap lands as relational fit", it["fit"] > 0)
 
 
+def test_opener_lane():
+    import time as _time
+    now = _time.time()                    # the lane lives on the wall clock
+    iq = q()
+    lane = initiative.OpenerLane(iq, {"enabled": True, "p_open": 1.0})
+
+    blk = lane.block("so, what's new?", session_id="s1")
+    check("empty queue + invitation → the honesty block, never a volley",
+          "never turn the question back" in blk and "invent" in blk)
+
+    iq.add("backlog", "the falcon migration question I left open",
+           grounding=["plan_question:3"], fit=0.8, now=now)
+    blk = lane.block("what's new with you?", session_id="s1")
+    check("an item renders as ONE pointer with the drop-it-freely rule",
+          "falcon migration" in blk and "drop it without a word" in blk
+          and "channel" not in blk)
+
+    lane.spoken("I keep coming back to the falcon migration question — "
+                "did you ever look into it?")
+    it = iq.items(now + 60)[0]
+    check("the watermark records a real raise", it["raised_count"] == 1)
+    lane.judge("oh the falcons! yes — don't they cross the strait in a day?")
+    check("their take-up lands as engaged (item retires)",
+          iq.get(it["id"])["status"] == "retired"
+          and iq.get(it["id"])["last_outcome"] == "engaged")
+
+    r2 = iq.add("backlog", "the glass harmonica repertoire question",
+                grounding=["plan_question:4"], fit=0.8, now=now)
+    blk = lane.block("morning", session_id="s2", rng=lambda: 0.0)
+    check("a fresh session's first turn may carry an opener",
+          "glass harmonica" in blk)
+    lane.spoken("Morning! Sleep well?")
+    check("an unspoken candidate returns UNDISCOUNTED",
+          iq.get(r2["item"]["id"])["raised_count"] == 0)
+    check("mid-session small talk carries nothing",
+          lane.block("tell me about cheese", session_id="s2") == "")
+
+    off = initiative.OpenerLane(iq, {"enabled": False})
+    check("a disabled lane says nothing at all",
+          off.block("what's new?", session_id="s3") == "")
+
+
 def main():
     test_grounding_mandatory()
     test_open_loop_window()
@@ -211,6 +253,7 @@ def main():
     test_queue_hygiene()
     test_novelty_channel_penalty()
     test_feeders()
+    test_opener_lane()
     print(f"\n{PASS} passed, {FAIL} failed")
     raise SystemExit(1 if FAIL else 0)
 

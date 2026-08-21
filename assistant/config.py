@@ -1769,6 +1769,16 @@ FEATURE_RECIPES: dict = {
         },
         "disable": {"summary": "She'll stop building the long-term picture. What she's learned so far is kept."},
     },
+    "initiative.enabled": {
+        "title": "Opening with her own thoughts",
+        "enable": {
+            "summary": "When you greet her — or ask what's new — she may open with one real "
+                       "thing of her own: something she built, read, or left unresolved. "
+                       "Always grounded in something that actually happened, at most one per "
+                       "conversation, and she drops it if you arrive with your own topic.",
+        },
+        "disable": {"summary": "She'll wait for you to set the topic."},
+    },
     "tools.enabled": {
         "title": "Doing things for you (calendar, mail, and so on)",
         "enable": {

@@ -62,6 +62,7 @@ _ts = localmod.use("timesense")         # usage-rhythm log + recurrence store (t
 UsageLog, RhythmStore = _ts.UsageLog, _ts.RhythmStore
 AmbientStore = localmod.use("ambient").AmbientStore      # disposable ambient-context cache
 NewsStore = localmod.use("news_store").NewsStore         # RSS/news headline archive
+InitiativeQueue = localmod.use("initiative").InitiativeQueue  # her conversation openers (VIN-INIT-01)
 _pron = localmod.use("pronouns")        # persona pronouns (she/he/it) for prompt text
 _spon = localmod.use("spontaneity")     # what she has brought up unprompted, and how it landed
 OfferLog = _spon.OfferLog
@@ -793,6 +794,7 @@ class MemoryStore:
         self.ambient = AmbientStore(self.db)
         self.news = NewsStore(self.db)
         self.offers = OfferLog(self.db)               # things she raised unprompted + outcomes
+        self.initiative_queue = InitiativeQueue(self.db, cfg.get("initiative"))  # her openers
         self.usage = UsageLog(self.db)                # when the user is active (rhythm)
         self.rhythms = RhythmStore(self.db)           # detected recurrences (every nth day/week)
         self.calendar = CalendarStore(self.db)        # consolidated schedule, instant-retrieval copy

@@ -470,6 +470,14 @@
     <div class="hint">Pick a memory on the left to edit it on the right. Edits recompute the embedding
       via the configured embed model and are picked up on the cascade's next connection. Priority ≥ the
       cooldown-override threshold fires even during cooldown.</div>
+
+    <h3 style="margin:22px 0 4px">Her conversation openers <span class="muted">— things she might bring up herself (VIN-INIT-01; grounded, one per greeting at most)</span></h3>
+    <div class="bar">
+      <button class="btn secondary" onclick="loadInitiative()">Refresh</button>
+      <button class="btn danger" onclick="clearInitiative()">Clear the queue</button>
+      <span id="initStatus" class="status"></span>
+    </div>
+    <div id="initList" class="mem-list" style="max-width:720px"></div>
   </section>
 
   <!-- ── Self ─────────────────────────────────────────────────────────────── -->
@@ -1481,7 +1489,37 @@ function renderEvent(e) {
 
 // ── Memory ──────────────────────────────────────────────────────────────────
 let memEntries = [], memSelId = null;            // master-detail state
+async function loadInitiative() {
+  let d = {};
+  try { d = await (await fetch('/api/initiative')).json(); } catch (e) { return; }
+  const el = document.getElementById('initList');
+  const items = d.items || [];
+  if (!items.length) {
+    el.innerHTML = '<div class="mem-empty">Nothing queued — the idle feeders add ' +
+                   'items from what she does and reads (initiative.enabled must be on).</div>';
+    return;
+  }
+  const chip = s => ({none: '', personal: ' · personal',
+                      grief_adjacent: ' · respond-only'}[s] || '');
+  el.innerHTML = items.map(i =>
+    `<div class="mem-item">` +
+    `<div class="t">${escHtml(i.pointer)} <span class="muted" style="font-weight:400;font-size:12px">` +
+    `(${escHtml(i.channel)}${chip(i.sensitivity)} · salience ${i.salience})</span></div>` +
+    (i.relational_context ? `<div class="m">${escHtml(i.relational_context)}</div>` : '') +
+    `<div class="m muted">why she'd ask: ${escHtml((i.grounding || []).join(', '))}` +
+    (i.raised_count ? ` · raised ${i.raised_count}×` : '') +
+    (i.deflections ? ` · deflected ${i.deflections}×` : '') + `</div></div>`).join('');
+}
+
+async function clearInitiative() {
+  if (!confirm('Clear her queued conversation openers?')) return;
+  const d = await (await fetch('/api/initiative/clear', { method:'POST', body:'{}' })).json();
+  flash(document.getElementById('initStatus'), !!d.ok, d.ok ? 'cleared' : (d.error || 'failed'));
+  loadInitiative();
+}
+
 async function loadMemory() {
+  loadInitiative();
   let d;
   try { d = await (await fetch('/api/memory')).json(); }
   catch (e) { return; }

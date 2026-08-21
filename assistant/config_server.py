@@ -83,6 +83,7 @@ HELPMOD = _load_mod("confighelp")      # /api/help — extracted config.py comme
 WACT = _load_mod("worker_activity")    # /api/activity — what she's doing (worker + session)
 TOOLBOX = _load_mod("toolbox")         # her own sandboxed tools (view/edit on the Tools tab)
 GRAPHSTORE = _load_mod("graphstore")   # deployed tool graphs (VIN-TOOL-01, Tools tab)
+INITIATIVE = _load_mod("initiative")   # her conversation openers (VIN-INIT-01, Memory tab)
 LMTAP = _load_mod("lm_tap")            # RAM-file live feed of LM context/output (Live tab)
 UI_PATH = Path(__file__).parent / "config_ui.html"
 LOGS_DIR = Path(__file__).parent / "logs"            # written by vinkona.sh (shared filesystem)
@@ -717,6 +718,23 @@ class MemoryAdmin:
             c.commit()
         return {"ok": True, "queued": True}
 
+    def initiative_items(self) -> dict:
+        """Her queued conversation openers, salience-annotated, grounding
+        visible — §9's 'why did you ask me that?' as a listing."""
+        if not Path(self.path).exists():
+            return {"items": []}
+        with self._conn(ensure=True) as c:
+            return {"items": INITIATIVE.InitiativeQueue(c).items()}
+
+    def initiative_clear(self, channel: str | None = None) -> dict:
+        if not Path(self.path).exists():
+            return {"ok": True, "cleared": 0}
+        with self._conn(ensure=True) as c:
+            iq = INITIATIVE.InitiativeQueue(c)
+            n = len(iq.items())
+            iq.clear(channel or None)
+            return {"ok": True, "cleared": n}
+
     def request_graph_run(self, name: str) -> dict:
         """Queue ONE deployed-graph run for the worker — the Tools tab's Run-now
         button on a graph row.  Value is "<name>|<ts>" so repeat clicks on the
@@ -1184,6 +1202,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, MemoryAdmin(self._cfg()).idle_status(self._cfg()))
             except Exception as e:
                 return self._json(500, {"error": str(e)})
+        if path == "/api/initiative":
+            # Her queued conversation openers (VIN-INIT-01) — the Memory tab's
+            # inspect view; grounding shown so "why did you ask?" is answerable.
+            try:
+                return self._json(200, MemoryAdmin(self._cfg()).initiative_items())
+            except Exception as e:
+                return self._json(500, {"error": str(e)})
         if path == "/api/activity":
             try:
                 cfg = self._cfg()
@@ -1551,6 +1576,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200 if ok else 404,
                                   {"ok": ok} if ok else {"ok": False,
                                                          "error": "no such graph"})
+            except Exception as e:
+                return self._json(500, {"ok": False, "error": str(e)})
+        if path == "/api/initiative/clear":
+            # Privacy: the whole queue (or one channel) goes, no questions asked.
+            try:
+                return self._json(200, MemoryAdmin(self._cfg())
+                                  .initiative_clear(str(obj.get("channel") or "")))
             except Exception as e:
                 return self._json(500, {"ok": False, "error": str(e)})
         if path == "/api/own_tools/graph_run":

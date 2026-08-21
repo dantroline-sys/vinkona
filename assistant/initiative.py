@@ -277,6 +277,12 @@ class InitiativeQueue:
                 best, best_s = it, s
         return best
 
+    def last_raised_channel(self) -> str | None:
+        r = self.db.execute(
+            "SELECT channel FROM initiative_items WHERE last_raised_at IS NOT "
+            "NULL ORDER BY last_raised_at DESC LIMIT 1").fetchone()
+        return r["channel"] if r else None
+
     # ── outcomes (§7) ────────────────────────────────────────────────────────
     def record_outcome(self, item_id: str, outcome: str):
         """raised: spoken, reception unclear.  engaged: taken up (item retires —
@@ -286,23 +292,114 @@ class InitiativeQueue:
         if it is None or outcome == "dropped":
             return
         if outcome == "raised":
+            # The one place raised_count moves — engaged/deflected refine the
+            # SAME raise, they don't count a second one.
             self.db.execute(
                 "UPDATE initiative_items SET raised_count=raised_count+1,"
                 " last_outcome='unraised', last_raised_at=? WHERE id=?",
                 (time.time(), item_id))
         elif outcome == "engaged":
             self.db.execute(
-                "UPDATE initiative_items SET raised_count=raised_count+1,"
-                " last_outcome='engaged', last_raised_at=?, status='retired'"
-                " WHERE id=?", (time.time(), item_id))
+                "UPDATE initiative_items SET last_outcome='engaged',"
+                " status='retired' WHERE id=?", (item_id,))
         elif outcome == "deflected":
             retire = int(it.get("deflections") or 0) + 1 >= 2
             self.db.execute(
-                "UPDATE initiative_items SET raised_count=raised_count+1,"
-                " deflections=deflections+1, last_outcome='deflected',"
-                " last_raised_at=?" + (", status='retired'" if retire else "")
-                + " WHERE id=?", (time.time(), item_id))
+                "UPDATE initiative_items SET deflections=deflections+1,"
+                " last_outcome='deflected'"
+                + (", status='retired'" if retire else "")
+                + " WHERE id=?", (item_id,))
         self.db.commit()
+
+
+# ── IN3: the conversation-open lane (§7 verbalisation contract) ──────────────
+def opener_block(item: dict) -> str:
+    """Exactly one item, never the queue, never channel metadata."""
+    why = item.get("relational_context") or ""
+    return ("\n\nOne thing of your OWN you might open with:\n"
+            f"- {item['pointer']}\n"
+            + (f"- why it matters: {why}\n" if why else "")
+            + "Raise it naturally only if their opening gives room — weave it "
+              "in as your own thought, not a report.  If they arrive with "
+              "their own agenda, drop it without a word; that is the right "
+              "call, not a failure.")
+
+
+_EMPTY_INVITE_BLOCK = (
+    "\n\nThey're inviting you to bring something up, and you have nothing "
+    "queued of your own right now: answer honestly from what you've actually "
+    "been doing and noticing (your briefing above) — never turn the question "
+    "back on them, and never invent news.")
+
+
+class OpenerLane:
+    """The bridge-side consumer: three methods wired beside the spontaneity
+    lane (block → system prompt, spoken → after the reply, judge → on the
+    next user turn).  Session state keys on session_id, so a new chat resets
+    the never-twice governor without needing an explicit hook.  §0.7: the
+    watermark and engagement tests are spontaneity's own."""
+
+    def __init__(self, queue: InitiativeQueue, cfg: dict | None = None):
+        c = cfg or {}
+        self.queue = queue
+        self.enabled = bool(c.get("enabled"))
+        self.p_open = float(c.get("p_open", 0.6))
+        self._session = None
+        self._turns = 0
+        self._session_raised = False
+        self._candidate = None                # offered this turn, awaiting spoken()
+        self._awaiting = None                 # raised last turn, awaiting judge()
+
+    def _reset(self, session_id):
+        self._session = session_id
+        self._turns = 0
+        self._session_raised = False
+        self._candidate = None
+        self._awaiting = None
+
+    def block(self, user_text: str, *, session_id: str = "",
+              recent_topics: set | None = None, rng=None) -> str:
+        if session_id != self._session:
+            self._reset(session_id)
+        self._candidate = None
+        if not self.enabled:
+            return ""
+        self._turns += 1
+        invite = is_invitation(user_text)
+        if not (self._turns == 1 or invite):
+            return ""                         # the open lane opens; segues are spontaneity's
+        item = self.queue.pick(opener=user_text, p=self.p_open, rng=rng,
+                               session_raised=self._session_raised,
+                               last_channel=self.queue.last_raised_channel(),
+                               recent_topics=recent_topics)
+        if item is None:
+            return _EMPTY_INVITE_BLOCK if invite else ""
+        self._candidate = item
+        return opener_block(item)
+
+    def spoken(self, reply: str):
+        """Watermark: did she actually work it in?  A pass returns the item
+        undiscounted (§7 — dropping for fit is correct behaviour)."""
+        it, self._candidate = self._candidate, None
+        if it is None:
+            return
+        import spontaneity as _sp
+        if _sp.was_spoken({"text": it["pointer"]}, reply or ""):
+            self.queue.record_outcome(it["id"], "raised")
+            self._awaiting = it
+            self._session_raised = True
+        else:
+            self.queue.record_outcome(it["id"], "dropped")
+
+    def judge(self, user_text: str):
+        """What they said back decides engaged vs deflected (two deflections
+        retire the item — §5)."""
+        it, self._awaiting = self._awaiting, None
+        if it is None:
+            return
+        import spontaneity as _sp
+        took = _sp.engaged_with({"text": it["pointer"]}, user_text or "")
+        self.queue.record_outcome(it["id"], "engaged" if took else "deflected")
 
 
 # ── IN2: the LM-free feeders ──────────────────────────────────────────────────

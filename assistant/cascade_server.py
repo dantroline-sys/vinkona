@@ -214,6 +214,7 @@ class CascadeServer:
         self._facade_mod = _load("tool_facade")   # simplified fast-LM tool surface (wrappers)
         self._toolbox_mod = _load("toolbox")      # her own sandboxed tools (read-any/write-store)
         self._spont_mod = _load("spontaneity")    # things she's holding + the segue test
+        self._init_mod = _load("initiative")      # conversation openers (VIN-INIT-01)
         self._pron_mod = _load("pronouns")        # persona pronouns (she/he/it)
         self._wsauth = _load("wsauth")
         # Pre-shared WS access token (P1): the cascade listens on the network, so a client
@@ -831,11 +832,9 @@ class _Session:
                                  if (self.s.memory
                                      and self.cfg.get("research", {}).get("plans", {}).get("enabled", True))
                                  else None),
-            offer_hook=(self._offer_block
-                        if (self.s.memory
-                            and self.cfg.get("spontaneity", {}).get("enabled", True)) else None),
-            offer_spoken_hook=(self._offer_spoken if self.s.memory else None),
-            offer_judge_hook=(self._offer_judge if self.s.memory else None),
+            offer_hook=(self._raise_block if self.s.memory else None),
+            offer_spoken_hook=(self._raise_spoken if self.s.memory else None),
+            offer_judge_hook=(self._raise_judge if self.s.memory else None),
             log_hook=self._log_turn if self.s.memory else None,
             trace_hook=self._trace if self.s.trace else None,
             asides_enabled=(bool(self.s.memory)
@@ -1316,6 +1315,53 @@ class _Session:
         return "\n".join(f"- {q['question']}" for q in qs)
 
     # ── spontaneity: things she's holding, offered only when there's a way in ──
+    # ── The two "she raises something" lanes share the bridge's three offer
+    # hooks: spontaneity (mid-conversation segues) + initiative (conversation
+    # openers, VIN-INIT-01).  Each lane fails privately; neither costs a turn.
+    def _init_lane(self):
+        lane = getattr(self, "_initiative_lane", None)
+        if lane is None and self.s.memory is not None:
+            lane = self.s._init_mod.OpenerLane(
+                self.s.memory.initiative_queue, self.cfg.get("initiative"))
+            self._initiative_lane = lane
+        return lane
+
+    def _raise_block(self, user_text: str) -> str:
+        out = ""
+        if self.cfg.get("spontaneity", {}).get("enabled", True):
+            out += self._offer_block(user_text) or ""
+        lane = self._init_lane()
+        if lane is not None:
+            try:
+                blk = lane.block(user_text, session_id=self.session_id)
+                if blk and self.s.trace and lane._candidate is not None:
+                    self._trace({"ts": time.time(), "kind": "initiative_offer",
+                                 "id": lane._candidate["id"],
+                                 "channel": lane._candidate["channel"],
+                                 "pointer": lane._candidate["pointer"][:160]})
+                out += blk
+            except Exception as exc:
+                _log(f"initiative block failed ({exc})")
+        return out
+
+    def _raise_spoken(self, reply: str) -> None:
+        self._offer_spoken(reply)
+        lane = self._init_lane()
+        if lane is not None:
+            try:
+                lane.spoken(reply)
+            except Exception as exc:
+                _log(f"initiative record failed ({exc})")
+
+    def _raise_judge(self, user_text: str) -> None:
+        self._offer_judge(user_text)
+        lane = self._init_lane()
+        if lane is not None:
+            try:
+                lane.judge(user_text)
+            except Exception as exc:
+                _log(f"initiative judge failed ({exc})")
+
     def _offer_block(self, user_text: str) -> str:
         """One thing she could bring up, IF it touches what was just said.
 

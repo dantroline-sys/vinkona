@@ -1367,6 +1367,38 @@ async def main():
         # Deployed tool graphs whose schedule is due run here too (probation
         # bookkeeping included) — cheap when none are scheduled.
         await graphs_pass()
+        # VIN-INIT-01 IN2 feeders: LM-free, every idle pass — her real doings
+        # (trace events) and her open curiosity (research-plan questions)
+        # become potential conversation openers.  Grounded or refused.
+        if cfg.get("initiative", {}).get("enabled"):
+            try:
+                import initiative as _init_mod
+                iq = memory.initiative_queue
+                events = []
+                if trace.path and trace.path.exists():
+                    cutoff = time.time() - 259_200          # 3 days of doings
+                    for ln in trace.path.read_text().splitlines()[-120:]:
+                        try:
+                            e = json.loads(ln)
+                        except ValueError:
+                            continue
+                        if float(e.get("ts") or 0) >= cutoff:
+                            events.append(e)
+                a = _init_mod.feed_self_state(iq, events)
+                terms = set()
+                try:                                        # mind-graph labels = her world's terms
+                    terms = {str(r[0]).lower() for r in memory.db.execute(
+                        "SELECT label FROM kg_nodes WHERE status='active' "
+                        "LIMIT 200")}
+                except Exception:
+                    pass
+                b = _init_mod.feed_backlog(
+                    iq, memory.next_plan_questions("research", 6),
+                    graph_terms=terms)
+                if a or b:
+                    _log(f"initiative feeders: +{a} self-state, +{b} backlog")
+            except Exception as e:
+                _log(f"initiative feeders failed (continuing): {e}")
         if _task_on("perspective_audit") and idle_cfg.get("perspective_audit", True):
             try:
                 pstats = await memory.audit_perspective(
