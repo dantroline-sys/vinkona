@@ -44,6 +44,8 @@ in the [top-level README](../README.md).
   config_server.py :8090 — web UI: Personas, Models, Live trace, Memory, Settings
   tools_client.py — tool-host contract (MAC_TOOLS.md): knowledge-host, Mac tools,
               music host … whatever implements GET /tools + POST /call
+  local_tools/ — the bundled toolset (LOCAL_TOOLS.md): calendar, mail, files,
+              news, weather, research served in-process, per-genre opt-in
 ```
 
 Every stage is a separate process with its own environment (see
@@ -76,7 +78,7 @@ barge-in via VAD.
 | Memory & graphs | `memory.py`, `mind_graph.py` (durable chat-derived graph), `working_graph.py` (volatile per-conversation graph), `people.py`, `news_store.py`, `calendar_sync.py`, `calendar_resolve.py` | [`MEMORY_CONSOLIDATION.md`](MEMORY_CONSOLIDATION.md), [`working_memory_graph_spec.md`](working_memory_graph_spec.md) |
 | Conscious reasoning | `user_model.py` (+ the corrections idle-reviewer in `memory.py`/`research_worker.py`) | [`CONSCIOUS_REASONING.md`](CONSCIOUS_REASONING.md), [`USER_MODEL_INTEGRATION.md`](USER_MODEL_INTEGRATION.md) |
 | Research loop | `research_worker.py`, `research_export.py`, `capture.py`, `idle_control.py` (quiet hours), `worker_activity.py` (activity surface + preemption) | [`research_loop_spec.md`](research_loop_spec.md) |
-| Tools & hosts | `tools_client.py`, `knowledge_host.py`, `local_kb.py` (in-process knowledge packs), `safety.py`, `wsauth.py` | [`MAC_TOOLS.md`](MAC_TOOLS.md), [`KNOWLEDGE.md`](KNOWLEDGE.md), [`MUSIC.md`](MUSIC.md), [`WS_AUTH.md`](WS_AUTH.md) |
+| Tools & hosts | `tools_client.py`, `local_tools/` (the bundled toolset: files, news, weather, research, mail, CalDAV calendar), `knowledge_host.py`, `local_kb.py` (in-process knowledge packs), `safety.py`, `wsauth.py` | [`MAC_TOOLS.md`](MAC_TOOLS.md), [`LOCAL_TOOLS.md`](LOCAL_TOOLS.md), [`KNOWLEDGE.md`](KNOWLEDGE.md), [`MUSIC.md`](MUSIC.md), [`WS_AUTH.md`](WS_AUTH.md) |
 | Network & egress | `amiga_net/` (the broker: policy, leases, audit, status), `egress.toml` (the policy file), `posture.py` (leak check), `netadmin.py` (Network tab server side) | — |
 | Awareness | `timesense.py`, `spoken_time.py`, `ambient.py`, `spontaneity.py`, `pronouns.py` | [`NOTIFICATIONS.md`](NOTIFICATIONS.md) |
 | Config & UI | `config.py`, `confighelp.py`, `config_server.py`, `config_ui.html`, `chat_ui.html` | — |

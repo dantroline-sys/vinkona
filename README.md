@@ -4,6 +4,46 @@ A local, private voice assistant that learns its user. Everything runs on your
 own hardware: speech recognition, language models, speech synthesis, memory,
 and research. Nothing about you is sent to a cloud service.
 
+## What Vinkona does, in plain words
+
+Vinkona is a talking assistant that lives entirely on your own computer. You
+speak to her and she answers in a natural voice, with a personality and a name
+you choose. There is no account, no subscription, and no cloud service behind
+her: the listening, the thinking, the voice, and everything she knows about
+you stay on hardware you own.
+
+What makes her different from a phone assistant:
+
+- **She remembers you.** Conversations leave lasting memories — the people you
+  mention, what you're working on, what matters to you, what you corrected her
+  about. Over weeks she builds up a real picture of your world and uses it to
+  answer the way *you* need, not the way an average person would.
+- **She can do real things for you** — each ability is its own switch, off
+  until you turn it on: check your calendar and book appointments (only ever
+  into a calendar of her own, so yours can't be damaged), read your email to
+  you (reading only — she cannot send, delete, or even mark anything as read),
+  find and read files in folders you share with her, follow your news feeds,
+  tell you the weather, and look things up in encyclopedias, dictionaries and
+  research databases.
+- **She uses her quiet time.** When you're not talking to her, she reads up on
+  questions that came up in conversation, sorts what she learned, and tidies
+  her memory — a little like sleeping on it. The next time you say "so, what's
+  new?", she may open with something she actually did or found, instead of
+  turning the question back on you.
+- **She is careful by design.** Nothing personal is sent anywhere. Her network
+  access is locked down so that only the specific, harmless lookups you've
+  allowed can happen at all — and every single one is written to a log you can
+  read. Anything she brings back from the internet is treated as untrusted
+  material, never as instructions.
+- **You can look inside.** A settings page in your browser — and a desktop app
+  — shows what she remembers, what she's doing right now, what she's allowed
+  to reach on the network, and every option in plain language. You can change
+  anything, or wipe anything, at any time.
+
+She runs comfortably on a single consumer graphics card (smaller setups work
+too, with smaller models). The rest of this README is the technical version of
+this story.
+
 > **Vinkona and Vinur.** Until 2026-07-13 this repository also contained the
 > knowledge host. It now lives in its own repository,
 > [**Vinur**](https://github.com/dantroline-sys/vinur) (*vinur* and *vinkona*
@@ -26,7 +66,7 @@ already own, alongside a lower-tier TTS model.
 
 | Where | What it is |
 |---|---|
-| [`assistant/`](assistant/) (this repo) | The voice assistant: a real-time local cascade (denoise → VAD → ASR → fast LM → TTS, with a big LM reasoning in the background), pluggable TTS engines (Orpheus-GGUF default · Chatterbox · NeuTTS · Qwen3-TTS), persistent memory, personas, a Flutter client, a config web UI, and an autonomous research worker. |
+| [`assistant/`](assistant/) (this repo) | The voice assistant: a real-time local cascade (denoise → VAD → ASR → fast LM → TTS, with a big LM reasoning in the background), pluggable TTS engines (Orpheus-GGUF default · Chatterbox · NeuTTS · Qwen3-TTS), persistent memory, personas, a Flutter client, a config web UI, a desktop settings app ([`desk/`](desk/)), an optional **built-in local toolset** (calendar · mail · files · news · weather · research — [`assistant/LOCAL_TOOLS.md`](assistant/LOCAL_TOOLS.md)), and an autonomous research worker. |
 | [Vinur](https://github.com/dantroline-sys/vinur) (its own repo, Apache 2.0) | A standalone knowledge-base service: ingests Wikipedia snapshots, PDFs, books and the assistant's own research; distills them into typed, cited knowledge cards; answers `kb_search`/`kb_ask` over HTTP with trust tiers, facets, and conflict checking. |
 
 They are separate services that speak a tiny, shared **tool-host contract**
@@ -56,13 +96,14 @@ contract plugs into the assistant as a tool the fast LM can call mid-conversatio
                    │  research_worker.py — idle research → solved/*.md drops  │
                    └────────┼─────────────────────────────────────────────────┘
                             │ tool-host contract (GET /tools + POST /call)
-          ┌─────────────────┼───────────────────────┬─────────────────────┐
-          ▼                 ▼                       ▼                     ▼
-   Vinur (own repo)   Mac tool host*          music host*         (your own hosts)
-   kb_search/kb_ask   calendar, mail,         local library
-   cards + citations  files, keyless          search & queue
-   (:8771)            research sources
-                      (* not included — see "External tool hosts")
+      ┌─────────────────────┼─────────────────┬──────────────────┬───────────────┐
+      ▼                     ▼                 ▼                  ▼               ▼
+   local toolset      Vinur (own repo)   Mac tool host*     music host*   (your own hosts)
+   built in, opt-in   kb_search/kb_ask   calendar, mail,    local library
+   calendar, mail,    cards + citations  files, OCR,        search & queue
+   files, news,       (:8771)            keyless research
+   weather, research
+   (LOCAL_TOOLS.md)                      (* not included — see "Tool hosts")
 ```
 
 The research loop closes on itself: conversations raise questions → the research
@@ -107,6 +148,18 @@ Grown around those since:
 - **Spontaneity with a way in** — she can raise a headline, finding, or open
   research question mid-reply when it genuinely touches what was just said;
   every segue is watermarked and outcome-judged.
+- **Conversation openers** (`assistant/initiative.py`) — at greeting time she
+  gets at most ONE deterministically selected, *grounded* item to raise
+  naturally or drop freely (something she built, read, or left unresolved), so
+  "what's new?" gets a real answer instead of a mirrored question. Governed
+  fail-closed: sensitive topics are respond-only, uncorroborated news never
+  opens, and two deflections retire an item.
+- **Self-composed tool graphs** (`assistant/blocks.py` → `graphstore.py`) — in
+  idle time she composes small tools for herself from a closed palette of
+  pre-verified blocks (the model emits *data* under a server-enforced grammar,
+  never code), self-tests them on fixtures and a dry run, then runs them on
+  probation; anything that writes or reaches the network needs your explicit
+  approval in the panel.
 - **Time-sense and orientation** — a semantic clock (time of day, rhythm,
   sunrise, holidays) plus an orientation pull at boot, dreaming, and daily, so
   she wakes already knowing the basics.
@@ -138,16 +191,31 @@ Grown around those since:
   knowledge host's reference knowledge are different databases with different
   trust tiers; bulk knowledge can never overwrite personal fact.
 
-## External tool hosts (referenced, not included)
+## Tool hosts
 
 The assistant talks to tool hosts over the contract in
-[`assistant/MAC_TOOLS.md`](assistant/MAC_TOOLS.md). Two hosts used in
-development are **not** part of this repository:
+[`assistant/MAC_TOOLS.md`](assistant/MAC_TOOLS.md); anything implementing it
+plugs in as tools the fast LM can call mid-conversation.
 
-- **Mac tool host** — calendar, reminders, mail, file search, and keyless
-  research sources (OpenAlex, Europe PMC, StackExchange, GDELT, Wikidata,
-  Internet Archive, …). Any implementation of the contract works; back it with
-  whatever your platform offers (e.g. MCP servers).
+**Bundled: the local toolset** ([`assistant/LOCAL_TOOLS.md`](assistant/LOCAL_TOOLS.md),
+`assistant/local_tools/`). The Mac host's genres served from the machine
+Vinkona runs on, for a setup with no second computer at all: **files** (only
+the folders you list), **news** (your RSS/Atom feeds, polled into the durable
+archive), **weather** (keyless Open-Meteo), **research** (the keyless
+scholarly/reference sources), **mail** (IMAP, strictly read-only — no send
+exists), and **calendar** (CalDAV — reads span all calendars, writes land only
+on a calendar of her own). Every genre is its own opt-in, configured from the
+web panel's Tools tab or the desk app, each with a live **Test** button;
+enabling one derives its egress rule automatically, so the network policy
+always mirrors the configuration.
+
+**External hosts used in development, not part of this repository:**
+
+- **Mac tool host** — the richer platform-native version of the same genres:
+  Spotlight file search, OCR for scanned documents, EventKit calendars. Any
+  implementation of the contract works; back it with whatever your platform
+  offers (e.g. MCP servers). When both are connected, the Mac host wins any
+  overlapping tool name.
 - **Music host** — local music library search and playback queue, per
   [`assistant/MUSIC.md`](assistant/MUSIC.md) (Surface 1).
 
@@ -284,8 +352,9 @@ Minimal setups keep live reference lookup: when no tool host is configured
 (`tools.enabled` false), the assistant automatically offers a built-in
 **online Wikipedia search** tool to the fast LM (keyless REST, results
 fenced as untrusted data). It steps aside as soon as a real tool host with
-richer web tools is enabled; `tools.wikipedia` (`"auto"`/true/false) and
-`tools.wikipedia_lang` control it.
+richer web tools — or the bundled local research genre
+(`tools.local.research`) — is enabled; `tools.wikipedia`
+(`"auto"`/true/false) and `tools.wikipedia_lang` control it.
 
 **Windows** is planned: the Python layer (uv + one lockfile) and the process
 supervisor (`assistant/supervisor.py`, stdlib Python) are already portable in
