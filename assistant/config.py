@@ -1984,12 +1984,31 @@ def resolve_read(path: str | Path) -> Path:
     config.json / personas.json are user data (git-ignored).  A fresh clone has only
     config.example.json / personas.example.json, so we fall back to those.  Writers
     always target the real (non-example) path, so the first save creates the user file.
+
+    A RELATIVE path anchors to the assistant tree (_ROOT), never the caller's
+    working directory: the supervisor runs from the repo root, and its model
+    preflight once read pure DEFAULTS there (config/config.json didn't resolve)
+    and warned about default model files the user's real config never named,
+    while every supervised service — started with cwd=assistant — read the real
+    file and served fine.  Anchoring makes every entry point, whatever its cwd,
+    read the same config the services do.
     """
     p = Path(path)
+    if not p.is_absolute():
+        p = _ROOT / p
     if p.exists():
         return p
     example = p.with_name(p.stem + ".example" + p.suffix)   # config.json → config.example.json
     return example if example.exists() else p
+
+
+def resolve_write(path: str | Path) -> Path:
+    """Where a config/personas WRITE lands: the real (non-example) file, with a
+    relative path anchored to the assistant tree exactly like resolve_read — so
+    a save from any working directory targets the same file the readers use,
+    never a stray copy under the caller's cwd."""
+    p = Path(path)
+    return p if p.is_absolute() else _ROOT / p
 
 
 def _deep_merge(base: dict, over: dict) -> dict:

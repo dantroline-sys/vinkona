@@ -108,6 +108,30 @@ def main():
           full["personas_path"].endswith(str(Path("profiles") / "work" / "personas.json")))
     check("available profiles listed", set(full["profile"]["available"]) >= {"default", "work"})
 
+    # ── cwd independence (the supervisor false-alarm regression) ──
+    # vinkona.sh runs the supervisor from the REPO ROOT; its model preflight
+    # once resolved the relative "config/config.json" against that cwd, read
+    # pure DEFAULTS, and warned about default model files the user's real
+    # config never named.  A relative config path must anchor to the assistant
+    # tree from ANY working directory.  Fresh subprocess: the module in THIS
+    # process has its globals redirected at the temp tree.
+    import subprocess
+    here = Path(__file__).resolve().parent
+    out = subprocess.run(
+        [sys.executable, "-c",
+         "import os, sys; os.chdir('/'); "
+         f"sys.path.insert(0, {str(here)!r}); "
+         "import config as c; "
+         "print(c.resolve_read('config/config.json')); "
+         "print(c.resolve_write('config/config.json'))"],
+        capture_output=True, text=True)
+    lines = out.stdout.strip().splitlines()
+    check("resolve_read anchors a relative config path to the assistant tree "
+          "from any cwd",
+          len(lines) == 2 and lines[0].startswith(str(here)))
+    check("resolve_write targets the same tree (no stray cwd-local copy)",
+          len(lines) == 2 and lines[1] == str(here / "config" / "config.json"))
+
     print(f"\n{PASS} passed, {FAIL} failed")
     sys.exit(1 if FAIL else 0)
 

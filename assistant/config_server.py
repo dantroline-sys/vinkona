@@ -1765,7 +1765,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="config/config.json")
     args = ap.parse_args()
-    Handler.config_path = args.config
+    # Anchor once: every downstream writer (config save, netadmin, tts_select)
+    # then targets the same absolute file the readers resolve, whatever the cwd.
+    Handler.config_path = str(CFGMOD.resolve_write(args.config))
     cfg = CFGMOD.load_config(args.config)
     host, port = cfg["config_server"]["host"], cfg["config_server"]["port"]
     print(f"[config] editor on http://{host}:{port}  (editing {args.config})", flush=True)
