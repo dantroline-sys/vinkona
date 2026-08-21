@@ -29,7 +29,8 @@ What makes her different from a phone assistant:
   questions that came up in conversation, sorts what she learned, and tidies
   her memory — a little like sleeping on it. The next time you say "so, what's
   new?", she may open with something she actually did or found, instead of
-  turning the question back on you.
+  turning the question back on you. The next time you re-visit a topic, she
+  will have researched it and grown in her knowledge of it.
 - **She is careful by design.** Nothing personal is sent anywhere. Her network
   access is locked down so that only the specific, harmless lookups you've
   allowed can happen at all — and every single one is written to a log you can
