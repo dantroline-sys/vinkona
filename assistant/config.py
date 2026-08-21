@@ -1348,6 +1348,21 @@ DEFAULTS: dict = {
     "asides": {
         "enabled": True,     # she may jot brief private thoughts alongside her replies (her inner voice)
     },
+    # Conversational initiative (VIN-INIT-01, initiative_spec.md): a small ranked queue of
+    # things SHE might open with — an unresolved thread, her own curiosity, something she
+    # built — selected deterministically, verbalised (or dropped) by the model.  Cures the
+    # "what's new?" mirror: one grounded item, never the queue, never a fabrication.
+    "initiative": {
+        "enabled": False,               # opt-in until the IN3 injection lane ships
+        "p_open": 0.6,                  # chance an ordinary greeting carries an opener;
+                                        # explicit invitations ("what's new?") always do
+        "max_queue": 12,                # queue hard-cap; lowest-salience pruned on insert
+        # §5 scoring weights (deterministic; per-channel learning arrives at IN5)
+        "weights": {"timeliness": 1.0, "relational": 0.8, "novelty": 0.5,
+                    "sensitivity": 1.5, "fatigue": 0.9},
+        "expiry_s": {"news": 172800, "self_state": 259200,     # 2d / 3d
+                     "backlog": 3888000, "reflection": 1209600},  # 45d / 14d
+    },
     "spontaneity": {
         "enabled": True,
         "kinds": ["news", "finding", "question", "weather"],
@@ -1502,6 +1517,11 @@ FIELD_LEVELS: dict[str, str] = {
     "people.enabled": "basic",
     "affect.enabled": "basic",
     "asides.enabled": "basic",
+    "initiative.enabled": "basic",
+    "initiative.p_open": "advanced",
+    "initiative.max_queue": "expert",
+    "initiative.weights.*": "expert",
+    "initiative.expiry_s.*": "expert",
     "tts.engine": "basic",
     "tts.default_voice": "basic",
     "memory.enabled": "basic",
